@@ -952,6 +952,10 @@ enum tcp_skb_cb_sacked_flags {
 				   TCPCB_REPAIRED),
 };
 
+#define tcp_res_flag_byte(th) (((u_int8_t *)th)[12])
+
+#define TCPHDR_ESCE 0x01
+
 /* This is what the send packet queuing engine uses to pass
  * TCP per-packet control information to the transmission code.
  * We also store the host-order sequence numbers in here too.
@@ -971,6 +975,7 @@ struct tcp_skb_cb {
 			u16	tcp_gso_size;
 		};
 	};
+	__u8		tcp_res_flags;	/* TCP reserved flags. (tcp[12]) */
 	__u8		tcp_flags;	/* TCP header flags. (tcp[13])	*/
 
 	__u8		sacked;		/* State flags for SACK.	*/
