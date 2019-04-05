@@ -13,6 +13,8 @@
 enum {
 	INET_ECN_NOT_ECT = 0,
 	INET_ECN_ECT_1 = 1,
+	INET_ECN_SCE = 1,
+	INET_ECN_ECT = 2,
 	INET_ECN_ECT_0 = 2,
 	INET_ECN_CE = 3,
 	INET_ECN_MASK = 3,
@@ -25,6 +27,11 @@ static inline int INET_ECN_is_ce(__u8 dsfield)
 	return (dsfield & INET_ECN_MASK) == INET_ECN_CE;
 }
 
+static inline int INET_ECN_is_sce(__u8 dsfield)
+{
+	return (dsfield & INET_ECN_MASK) == INET_ECN_SCE;
+}
+
 static inline int INET_ECN_is_not_ect(__u8 dsfield)
 {
 	return (dsfield & INET_ECN_MASK) == INET_ECN_NOT_ECT;
@@ -32,7 +39,7 @@ static inline int INET_ECN_is_not_ect(__u8 dsfield)
 
 static inline int INET_ECN_is_capable(__u8 dsfield)
 {
-	return dsfield & INET_ECN_ECT_0;
+	return dsfield & INET_ECN_MASK;
 }
 
 /*
