@@ -393,7 +393,7 @@ static void tcp_ecn_send(struct sock *sk, struct sk_buff *skb,
 		if (tp->ecn_flags & TCP_ECN_QUEUE_ESCE) {
 			tp->ecn_flags &= ~TCP_ECN_QUEUE_ESCE;
 			th->esce = 1;
-        }
+		}
 	}
 }
 
