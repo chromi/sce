@@ -326,6 +326,13 @@ static bool tcp_ecn_rcv_ecn_echo(const struct tcp_sock *tp, const struct tcphdr 
 	return false;
 }
 
+static bool tcp_ecn_rcv_sce_echo(const struct tcp_sock *tp, const struct tcphdr *th)
+{
+	if (th->esce && !th->syn && (tp->ecn_flags & TCP_ECN_OK))
+		return true;
+	return false;
+}
+
 /* Buffer size and advertised window tuning.
  *
  * 1. Tuning sk->sk_sndbuf, when connection enters established state.
@@ -3650,6 +3657,9 @@ static int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)
 			flag |= FLAG_ECE;
 			ack_ev_flags |= CA_ACK_ECE;
 		}
+
+		if (tcp_ecn_rcv_sce_echo(tp, tcp_hdr(skb)))
+			ack_ev_flags |= CA_ACK_ESCE;
 
 		if (flag & FLAG_WIN_UPDATE)
 			ack_ev_flags |= CA_ACK_WIN_UPDATE;
