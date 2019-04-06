@@ -288,8 +288,10 @@ static void __tcp_ecn_check_ce(struct sock *sk, const struct sk_buff *skb)
 		tp->ecn_flags |= TCP_ECN_SEEN;
 		break;
 	case INET_ECN_SCE:
-		tcp_enter_quickack_mode(sk, 2);
-		tp->ecn_flags |= TCP_ECN_QUEUE_ESCE;
+		if (sock_net(sk)->ipv4.sysctl_tcp_sce) {
+			tcp_enter_quickack_mode(sk, 2);
+			tp->ecn_flags |= TCP_ECN_QUEUE_ESCE;
+		}
 		break;
 	default:
 		if (tcp_ca_needs_ecn(sk))
