@@ -649,6 +649,16 @@ config TCP_CONG_DCTCP
 	For further details see:
 	  http://simula.stanford.edu/~alizade/Site/DCTCP_files/dctcp-final.pdf
 
+config TCP_CONG_DCTCP_SCE
+	tristate "DataCenter TCP (DCTCP) with SCE support"
+	default n
+	---help---
+	DCTCP-SCE leverages Some Congestion Experienced (SCE) in the network to
+	provide high-fidelity feedback to the end hosts.
+
+	Whilst based on DCTCP (see above), it adds backwards compatibility with
+	standard RFC-3168 compliant and other TCP-friendly traffic.
+
 config TCP_CONG_CDG
 	tristate "CAIA Delay-Gradient (CDG)"
 	default n
@@ -711,6 +721,9 @@ choice
 	config DEFAULT_DCTCP
 		bool "DCTCP" if TCP_CONG_DCTCP=y
 
+	config DEFAULT_DCTCP_SCE
+		bool "DCTCP-SCE" if TCP_CONG_DCTCP_SCE=y
+
 	config DEFAULT_CDG
 		bool "CDG" if TCP_CONG_CDG=y
 
@@ -739,6 +752,7 @@ config DEFAULT_TCP_CONG
 	default "veno" if DEFAULT_VENO
 	default "reno" if DEFAULT_RENO
 	default "dctcp" if DEFAULT_DCTCP
+	default "dctcp-sce" if DEFAULT_DCTCP_SCE
 	default "cdg" if DEFAULT_CDG
 	default "bbr" if DEFAULT_BBR
 	default "cubic"
