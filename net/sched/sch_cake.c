@@ -1204,7 +1204,7 @@ static struct sk_buff *cake_ack_filter(struct cake_sched_data *q,
 		 * previous packet as this would lose information.
 		 */
 		if (elig_ack && (tcp_flag_word(tcph_check) &
-				 (TCP_FLAG_ECE | TCP_FLAG_CWR)) != elig_flags) {
+				 (TCP_FLAG_ECE | TCP_FLAG_CWR | TCP_FLAG_ESCE)) != elig_flags) {
 			elig_ack = NULL;
 			elig_ack_prev = NULL;
 			num_found--;
@@ -1247,7 +1247,7 @@ static struct sk_buff *cake_ack_filter(struct cake_sched_data *q,
 			elig_ack = skb_check;
 			elig_ack_prev = skb_prev;
 			elig_flags = (tcp_flag_word(tcph_check)
-				      & (TCP_FLAG_ECE | TCP_FLAG_CWR));
+				      & (TCP_FLAG_ECE | TCP_FLAG_CWR | TCP_FLAG_ESCE));
 		}
 
 		if (num_found++ > 0)
@@ -1262,7 +1262,7 @@ static struct sk_buff *cake_ack_filter(struct cake_sched_data *q,
 	 */
 	if (elig_ack && aggressive && elig_ack->next == skb &&
 	    (elig_flags == (tcp_flag_word(tcph) &
-			    (TCP_FLAG_ECE | TCP_FLAG_CWR))))
+			    (TCP_FLAG_ECE | TCP_FLAG_CWR | TCP_FLAG_ESCE))))
 		goto found;
 
 	return NULL;
