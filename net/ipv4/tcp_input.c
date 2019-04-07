@@ -289,7 +289,7 @@ static void __tcp_ecn_check_ce(struct sock *sk, const struct sk_buff *skb)
 		break;
 	case INET_ECN_SCE:
 		if (sock_net(sk)->ipv4.sysctl_tcp_sce) {
-			tcp_enter_quickack_mode(sk, 2);
+			tcp_enter_quickack_mode(sk, 1);
 			tp->ecn_flags |= TCP_ECN_QUEUE_ESCE;
 		}
 		break;
