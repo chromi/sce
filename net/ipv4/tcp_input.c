@@ -294,24 +294,26 @@ static void __tcp_ecn_check_ce(struct sock *sk, const struct sk_buff *skb)
 				__tcp_send_ack(sk, tp->sce_prior_rcv_nxt);
 			}
 			tcp_enter_quickack_mode(sk, 1);
-			tp->ecn_flags |= TCP_ECN_QUEUE_ESCE;
-			tp->ecn_flags |= TCP_ECN_PRIOR_ESCE;
-			goto save_rcv_nxt;
+			tp->ecn_flags |= TCP_ECN_QUEUE_ESCE | TCP_ECN_PRIOR_ESCE | TCP_ECN_SEEN;
+			break;
 		}
-		break;
-	default:
+		/* fallthrough, since ECT(1) == ECT(0) in RFC-3168 */
+	default: /* INET_ECN_ECT */
+		if (sock_net(sk)->ipv4.sysctl_tcp_sce) {
+			if ((tp->ecn_flags & TCP_ECN_PRIOR_ESCE) &&
+				inet_csk(sk)->icsk_ack.pending & ICSK_ACK_TIMER) {
+				__tcp_send_ack(sk, tp->sce_prior_rcv_nxt);
+			}
+			tcp_enter_quickack_mode(sk, 1);
+			tp->ecn_flags &= ~(TCP_ECN_QUEUE_ESCE | TCP_ECN_PRIOR_ESCE);
+		}
 		if (tcp_ca_needs_ecn(sk))
 			tcp_ca_event(sk, CA_EVENT_ECN_NO_CE);
 		tp->ecn_flags |= TCP_ECN_SEEN;
 		break;
 	}
 
-	if (sock_net(sk)->ipv4.sysctl_tcp_sce) {
-		tp->ecn_flags &= ~TCP_ECN_PRIOR_ESCE;
-
-save_rcv_nxt:
-		tp->sce_prior_rcv_nxt = tcp_sk(sk)->rcv_nxt;
-	}
+	tp->sce_prior_rcv_nxt = tcp_sk(sk)->rcv_nxt;
 }
 
 static void tcp_ecn_check_ce(struct sock *sk, const struct sk_buff *skb)
