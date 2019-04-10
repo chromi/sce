@@ -159,19 +159,12 @@ static void dctcp_update_alpha(struct sock *sk, u32 flags)
 
 static void dctcp_state(struct sock *sk, u8 new_state)
 {
-	if (dctcp_clamp_alpha_on_loss && new_state == TCP_CA_Loss) {
-		struct dctcp *ca = inet_csk_ca(sk);
+	struct dctcp *ca = inet_csk_ca(sk);
 
-		/* If this extension is enabled, we clamp dctcp_alpha to
-		 * max on packet loss; the motivation is that dctcp_alpha
-		 * is an indicator to the extend of congestion and packet
-		 * loss is an indicator of extreme congestion; setting
-		 * this in practice turned out to be beneficial, and
-		 * effectively assumes total congestion which reduces the
-		 * window by half.
-		 */
-		ca->dctcp_alpha = DCTCP_MAX_ALPHA;
-	}
+	/* Clamp dctcp_alpha to max on packet loss, to reflect
+	 * congestion status assumed.
+	 */
+	ca->dctcp_alpha = DCTCP_MAX_ALPHA;
 }
 
 static void dctcp_react_to_loss(struct sock *sk, u32 logdiv)
@@ -180,7 +173,8 @@ static void dctcp_react_to_loss(struct sock *sk, u32 logdiv)
 	struct dctcp    *ca = inet_csk_ca(sk);
 
 	ca->loss_cwnd = tp->snd_cwnd;
-	tp->snd_ssthresh = max(tp->snd_cwnd - max(tp->snd_cwnd >> logdiv, 1U), 2U);
+	tp->snd_cwnd = max(tp->snd_cwnd - max(tp->snd_cwnd >> logdiv, 1U), 2U);
+	tp->snd_ssthresh = tp->snd_cwnd >> 1;
 }
 
 static void dctcp_cwnd_event(struct sock *sk, enum tcp_ca_event ev)
