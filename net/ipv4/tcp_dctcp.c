@@ -115,7 +115,7 @@ __bpf_kfunc static u32 dctcp_ssthresh(struct sock *sk)
 
 __bpf_kfunc static void dctcp_update_alpha(struct sock *sk, u32 flags)
 {
-	const struct tcp_sock *tp = tcp_sk(sk);
+	struct tcp_sock *tp = tcp_sk(sk);
 	struct dctcp *ca = inet_csk_ca(sk);
 
 	/* Expired RTT */
