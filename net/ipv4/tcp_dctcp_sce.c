@@ -157,16 +157,6 @@ static void dctcp_update_alpha(struct sock *sk, u32 flags)
 	}
 }
 
-static void dctcp_state(struct sock *sk, u8 new_state)
-{
-	struct dctcp *ca = inet_csk_ca(sk);
-
-	/* Clamp dctcp_alpha to max on packet loss, to reflect
-	 * congestion status assumed.
-	 */
-	ca->dctcp_alpha = DCTCP_MAX_ALPHA;
-}
-
 static void dctcp_react_to_loss(struct sock *sk, u32 logdiv)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -234,7 +224,6 @@ static struct tcp_congestion_ops dctcp __read_mostly = {
 	.ssthresh	= dctcp_ssthresh,
 	.cong_avoid	= tcp_reno_cong_avoid,
 	.undo_cwnd	= dctcp_cwnd_undo,
-	.set_state	= dctcp_state,
 	.get_info	= dctcp_get_info,
 	.owner		= THIS_MODULE,
 	.name		= "dctcp-sce",
