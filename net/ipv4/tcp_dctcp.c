@@ -157,6 +157,7 @@ __bpf_kfunc static void dctcp_update_alpha(struct sock *sk, u32 flags)
 		 */
 		WRITE_ONCE(ca->dctcp_alpha, alpha);
 		dctcp_reset(tp, ca);
+		tp->snd_cwnd = dctcp_ssthresh(sk);
 	}
 }
 
