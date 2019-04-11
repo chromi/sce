@@ -247,7 +247,6 @@ static struct tcp_congestion_ops dctcp __read_mostly = {
 	.ssthresh	= dctcp_ssthresh,
 	.cong_avoid	= tcp_reno_cong_avoid,
 	.undo_cwnd	= dctcp_cwnd_undo,
-	.set_state	= dctcp_state,
 	.get_info	= dctcp_get_info,
 	.flags		= TCP_CONG_NEEDS_ECN,
 	.owner		= THIS_MODULE,
