@@ -1,7 +1,5 @@
 /* DataCenter TCP (DCTCP) congestion control, modified for SCE support.
  *
- * http://simula.stanford.edu/~alizade/Site/DCTCP.html
- *
  * This is an implementation of DCTCP over Reno, an enhancement to the
  * TCP congestion control algorithm designed for data centers. DCTCP
  * leverages Explicit Congestion Notification (ECN) in the network to
@@ -13,28 +11,8 @@
  *  - High throughput (continuous data updates, large file transfers)
  *    with commodity shallow buffered switches
  *
- * The algorithm is described in detail in the following two papers:
- *
- * 1) Mohammad Alizadeh, Albert Greenberg, David A. Maltz, Jitendra Padhye,
- *    Parveen Patel, Balaji Prabhakar, Sudipta Sengupta, and Murari Sridharan:
- *      "Data Center TCP (DCTCP)", Data Center Networks session
- *      Proc. ACM SIGCOMM, New Delhi, 2010.
- *   http://simula.stanford.edu/~alizade/Site/DCTCP_files/dctcp-final.pdf
- *
- * 2) Mohammad Alizadeh, Adel Javanmard, and Balaji Prabhakar:
- *      "Analysis of DCTCP: Stability, Convergence, and Fairness"
- *      Proc. ACM SIGMETRICS, San Jose, 2011.
- *   http://simula.stanford.edu/~alizade/Site/DCTCP_files/dctcp_analysis-full.pdf
- *
- * Initial prototype from Abdul Kabbani, Masato Yasuda and Mohammad Alizadeh.
- *
- * Authors:
- *
- *	Daniel Borkmann <dborkman@redhat.com>
- *	Florian Westphal <fw@strlen.de>
- *	Glenn Judd <glenn.judd@morganstanley.com>
- *
- * SCE support:
+ * This version was extensively modified to add SCE support and
+ * generally improve its performance and compatibility on real networks.
  *
  *	Jonathan Morton <chromatix99@gmail.com>
  *
@@ -49,38 +27,15 @@
 #include <net/tcp.h>
 #include <linux/inet_diag.h>
 
-#define DCTCP_MAX_ALPHA	1024U
-
 struct dctcp {
-	u32 acked_bytes_sce;
-	u32 acked_bytes_total;
 	u32 prior_snd_una;
 	u32 prior_rcv_nxt;
-	u32 dctcp_alpha;
 	u32 next_seq;
+
+	s32 snd_cwnd_cnt;
 	u32 loss_cwnd;
+	u32 recent_sce;
 };
-
-static unsigned int dctcp_shift_g __read_mostly = 4; /* g = 1/2^4 */
-module_param(dctcp_shift_g, uint, 0644);
-MODULE_PARM_DESC(dctcp_shift_g, "parameter g for updating dctcp_alpha");
-
-static unsigned int dctcp_alpha_on_init __read_mostly = DCTCP_MAX_ALPHA;
-module_param(dctcp_alpha_on_init, uint, 0644);
-MODULE_PARM_DESC(dctcp_alpha_on_init, "parameter for initial alpha value");
-
-static unsigned int dctcp_clamp_alpha_on_loss __read_mostly;
-module_param(dctcp_clamp_alpha_on_loss, uint, 0644);
-MODULE_PARM_DESC(dctcp_clamp_alpha_on_loss,
-		 "parameter for clamping alpha on loss");
-
-static void dctcp_reset(const struct tcp_sock *tp, struct dctcp *ca)
-{
-	ca->next_seq = tp->snd_nxt;
-
-	ca->acked_bytes_sce = 0;
-	ca->acked_bytes_total = 0;
-}
 
 static void dctcp_init(struct sock *sk)
 {
@@ -93,12 +48,12 @@ static void dctcp_init(struct sock *sk)
 
 		ca->prior_snd_una = tp->snd_una;
 		ca->prior_rcv_nxt = tp->rcv_nxt;
+		ca->next_seq = tp->snd_nxt;
 
-		ca->dctcp_alpha = min(dctcp_alpha_on_init, DCTCP_MAX_ALPHA);
-
+		ca->snd_cwnd_cnt = 0;
 		ca->loss_cwnd = 0;
+		ca->recent_sce = 0;
 
-		dctcp_reset(tp, ca);
 		return;
 	}
 }
@@ -106,56 +61,81 @@ static void dctcp_init(struct sock *sk)
 static u32 dctcp_ssthresh(struct sock *sk)
 {
 	struct dctcp *ca = inet_csk_ca(sk);
-	struct tcp_sock *tp = tcp_sk(sk);
 
-	ca->loss_cwnd = tp->snd_cwnd;
-	return max(tp->snd_cwnd - ((tp->snd_cwnd * ca->dctcp_alpha) >> 11U), 2U);
+	return max(ca->loss_cwnd >> 1U, 2U);
 }
 
-static void dctcp_update_alpha(struct sock *sk, u32 flags)
+static void dctcp_handle_ack(struct sock *sk, u32 flags)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct dctcp *ca = inet_csk_ca(sk);
 	u32 acked_bytes = tp->snd_una - ca->prior_snd_una;
+	u32 mss = inet_csk(sk)->icsk_ack.rcv_mss;
 
 	/* If ack did not advance snd_una, count dupack as MSS size.
 	 * If ack did update window, do not count it at all.
 	 */
 	if (acked_bytes == 0 && !(flags & CA_ACK_WIN_UPDATE))
-		acked_bytes = inet_csk(sk)->icsk_ack.rcv_mss;
+		acked_bytes = mss;
 	if (acked_bytes) {
-		ca->acked_bytes_total += acked_bytes;
 		ca->prior_snd_una = tp->snd_una;
 
-		if (flags & CA_ACK_ESCE)
-			ca->acked_bytes_sce += acked_bytes;
-	}
-
-	/* Expired RTT */
-	if (!before(tp->snd_una, ca->next_seq)) {
-		u64 bytes_sce = ca->acked_bytes_sce;
-		u32 alpha = ca->dctcp_alpha;
-
-		/* alpha = (1 - g) * alpha + g * F */
-
-		alpha -= min_not_zero(alpha, alpha >> dctcp_shift_g);
-		if (bytes_sce) {
-			/* If dctcp_shift_g == 1, a 32bit value would overflow
-			 * after 8 Mbytes.
+		if (flags & (CA_ACK_ESCE | CA_ACK_ECE)) {
+			/* Respond to SCE feedback - DCTCP style:
+			 * Subtract half of SCE-acked bytes from the cwnd.
+			 * If SCE seen recently, subtract one-eighth of
+			 * CE-marked bytes from the cwnd, else subtract
+			 * one-quarter of them.  Assume ECE is sticky
+			 * as per RFC-3168.
 			 */
-			bytes_sce <<= (10 - dctcp_shift_g);
-			do_div(bytes_sce, max(1U, ca->acked_bytes_total));
+			u8 shift = 0;
+			if(flags & CA_ACK_ESCE) {
+				shift = 1;
+				ca->recent_sce = tp->snd_cwnd;
+			} else {
+				shift = ca->recent_sce ? 3 : 2;
+				ca->recent_sce--;
+			}
+			ca->snd_cwnd_cnt -= (acked_bytes * mss) >> shift;
 
-			alpha = min(alpha + (u32)bytes_sce, DCTCP_MAX_ALPHA);
+			while(ca->snd_cwnd_cnt <= -(tp->snd_cwnd * mss)) {
+				ca->snd_cwnd_cnt += tp->snd_cwnd * mss;
+				if(tp->snd_cwnd > 2)
+					tp->snd_cwnd--;
+			}
+
+			ca->loss_cwnd  = tp->snd_cwnd;
+			tp->snd_ssthresh = dctcp_ssthresh(sk);
+		} else if(!tcp_in_slow_start(tp) && tcp_is_cwnd_limited(sk)) {
+			/* Reno linear growth */
+			ca->snd_cwnd_cnt += acked_bytes;
+
+			while(ca->snd_cwnd_cnt >= tp->snd_cwnd * mss) {
+				ca->snd_cwnd_cnt -= tp->snd_cwnd * mss;
+				tp->snd_cwnd++;
+			}
+			tp->snd_cwnd = min(tp->snd_cwnd, tp->snd_cwnd_clamp);
+
+			if(ca->recent_sce)
+				ca->recent_sce--;
 		}
-		/* dctcp_alpha can be read from dctcp_get_info() without
-		 * synchro, so we ask compiler to not use dctcp_alpha
-		 * as a temporary variable in prior operations.
-		 */
-		WRITE_ONCE(ca->dctcp_alpha, alpha);
-		dctcp_reset(tp, ca);
-		tp->snd_cwnd = dctcp_ssthresh(sk);
 	}
+}
+
+static void dctcp_cong_avoid(struct sock *sk, u32 ack, u32 acked)
+{
+	struct tcp_sock *tp = tcp_sk(sk);
+	struct dctcp    *ca = inet_csk_ca(sk);
+
+	if (!tcp_is_cwnd_limited(sk))
+		return;
+
+	if (tcp_in_slow_start(tp)) {
+		acked = tcp_slow_start(tp, acked);
+		ca->snd_cwnd_cnt = acked * inet_csk(sk)->icsk_ack.rcv_mss;
+	}
+
+	/* if not in slow-start, cwnd evolution governed by ack handler */
 }
 
 static void dctcp_react_to_loss(struct sock *sk, u32 logdiv)
@@ -170,13 +150,13 @@ static void dctcp_react_to_loss(struct sock *sk, u32 logdiv)
 
 static void dctcp_cwnd_event(struct sock *sk, enum tcp_ca_event ev)
 {
-	struct dctcp *ca = inet_csk_ca(sk);
-
 	switch (ev) {
+	/* now handled in ack handler
 	case CA_EVENT_COMPLETE_CWR:
 		// ABE 75%, or 87.5% with SCE
-		dctcp_react_to_loss(sk, 2 + !!ca->dctcp_alpha);
+		dctcp_react_to_loss(sk, 2);
 		break;
+	*/
 	case CA_EVENT_LOSS:
 		// loss 50%
 		dctcp_react_to_loss(sk, 1);
@@ -190,8 +170,6 @@ static void dctcp_cwnd_event(struct sock *sk, enum tcp_ca_event ev)
 static size_t dctcp_get_info(struct sock *sk, u32 ext, int *attr,
 			     union tcp_cc_info *info)
 {
-	const struct dctcp *ca = inet_csk_ca(sk);
-
 	/* Fill it also in case of VEGASINFO due to req struct limits.
 	 * We can still correctly retrieve it later.
 	 */
@@ -201,9 +179,9 @@ static size_t dctcp_get_info(struct sock *sk, u32 ext, int *attr,
 
 		info->dctcp.dctcp_enabled = 1;
 		info->dctcp.dctcp_ce_state = 0;
-		info->dctcp.dctcp_alpha = ca->dctcp_alpha;
-		info->dctcp.dctcp_ab_ecn = ca->acked_bytes_sce;
-		info->dctcp.dctcp_ab_tot = ca->acked_bytes_total;
+		info->dctcp.dctcp_alpha = 0;
+		info->dctcp.dctcp_ab_ecn = 0;
+		info->dctcp.dctcp_ab_tot = 0;
 
 		*attr = INET_DIAG_DCTCPINFO;
 		return sizeof(info->dctcp);
@@ -220,10 +198,10 @@ static u32 dctcp_cwnd_undo(struct sock *sk)
 
 static struct tcp_congestion_ops dctcp __read_mostly = {
 	.init		= dctcp_init,
-	.in_ack_event   = dctcp_update_alpha,
+	.in_ack_event   = dctcp_handle_ack,
 	.cwnd_event	= dctcp_cwnd_event,
 	.ssthresh	= dctcp_ssthresh,
-	.cong_avoid	= tcp_reno_cong_avoid,
+	.cong_avoid	= dctcp_cong_avoid,
 	.undo_cwnd	= dctcp_cwnd_undo,
 	.get_info	= dctcp_get_info,
 	.owner		= THIS_MODULE,
@@ -244,9 +222,6 @@ static void __exit dctcp_unregister(void)
 module_init(dctcp_register);
 module_exit(dctcp_unregister);
 
-MODULE_AUTHOR("Daniel Borkmann <dborkman@redhat.com>");
-MODULE_AUTHOR("Florian Westphal <fw@strlen.de>");
-MODULE_AUTHOR("Glenn Judd <glenn.judd@morganstanley.com>");
 MODULE_AUTHOR("Jonathan Morton <chromatix99@gmail.com>");
 
 MODULE_LICENSE("GPL v2");
