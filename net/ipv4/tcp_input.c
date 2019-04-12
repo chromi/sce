@@ -3651,7 +3651,10 @@ static int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)
 		tcp_snd_una_update(tp, ack);
 		flag |= FLAG_WIN_UPDATE;
 
-		tcp_in_ack_event(sk, CA_ACK_WIN_UPDATE);
+		if (tcp_ecn_rcv_sce_echo(tp, tcp_hdr(skb)))
+			tcp_in_ack_event(sk, CA_ACK_WIN_UPDATE | CA_ACK_ESCE);
+		else
+			tcp_in_ack_event(sk, CA_ACK_WIN_UPDATE);
 
 		NET_INC_STATS(sock_net(sk), LINUX_MIB_TCPHPACKS);
 	} else {
