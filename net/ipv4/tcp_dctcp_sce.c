@@ -92,9 +92,11 @@ static void dctcp_handle_ack(struct sock *sk, u32 flags)
 			if(flags & CA_ACK_ESCE) {
 				shift = 1;
 				ca->recent_sce = tp->snd_cwnd;
-			} else {
-				shift = ca->recent_sce ? 3 : 2;
+			} else if(ca->recent_sce) {
+				shift = 3;
 				ca->recent_sce--;
+			} else {
+				shift = 2;
 			}
 			ca->snd_cwnd_cnt -= (acked_bytes * mss) >> shift;
 
@@ -118,6 +120,8 @@ static void dctcp_handle_ack(struct sock *sk, u32 flags)
 
 			if(ca->recent_sce)
 				ca->recent_sce--;
+		} else if(ca->recent_sce) {
+			ca->recent_sce--;
 		}
 	}
 }
@@ -132,7 +136,7 @@ static void dctcp_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 
 	if (tcp_in_slow_start(tp)) {
 		acked = tcp_slow_start(tp, acked);
-		ca->snd_cwnd_cnt = acked * inet_csk(sk)->icsk_ack.rcv_mss;
+		ca->snd_cwnd_cnt += acked * inet_csk(sk)->icsk_ack.rcv_mss;
 	}
 
 	/* if not in slow-start, cwnd evolution governed by ack handler */
@@ -144,6 +148,7 @@ static void dctcp_react_to_loss(struct sock *sk, u32 logdiv)
 	struct dctcp    *ca = inet_csk_ca(sk);
 
 	ca->loss_cwnd = tp->snd_cwnd;
+	ca->snd_cwnd_cnt = 0;
 	tp->snd_cwnd = max(tp->snd_cwnd - max(tp->snd_cwnd >> logdiv, 1U), 2U);
 	tp->snd_ssthresh = tp->snd_cwnd >> 1;
 }
