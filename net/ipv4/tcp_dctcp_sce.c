@@ -106,8 +106,7 @@ static void dctcp_handle_ack(struct sock *sk, u32 flags)
 					tp->snd_cwnd--;
 			}
 
-			ca->loss_cwnd  = tp->snd_cwnd;
-			tp->snd_ssthresh = dctcp_ssthresh(sk);
+			ca->loss_cwnd = tp->snd_cwnd;
 		} else if(!tcp_in_slow_start(tp) && tcp_is_cwnd_limited(sk)) {
 			/* Reno linear growth */
 			ca->snd_cwnd_cnt += acked_bytes;
@@ -117,10 +116,12 @@ static void dctcp_handle_ack(struct sock *sk, u32 flags)
 				tp->snd_cwnd++;
 			}
 			tp->snd_cwnd = min(tp->snd_cwnd, tp->snd_cwnd_clamp);
+			ca->loss_cwnd = max(ca->loss_cwnd, tp->snd_cwnd);
 
 			if(ca->recent_sce)
 				ca->recent_sce--;
 		} else if(ca->recent_sce) {
+			/* slow-start or app-limited, without SCE */
 			ca->recent_sce--;
 		}
 	}
@@ -147,10 +148,10 @@ static void dctcp_react_to_loss(struct sock *sk, u32 logdiv)
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct dctcp    *ca = inet_csk_ca(sk);
 
-	ca->loss_cwnd = tp->snd_cwnd;
-	ca->snd_cwnd_cnt = 0;
-	tp->snd_cwnd = max(tp->snd_cwnd - max(tp->snd_cwnd >> logdiv, 1U), 2U);
+	ca->loss_cwnd    = tp->snd_cwnd;
 	tp->snd_ssthresh = tp->snd_cwnd >> 1;
+	ca->snd_cwnd_cnt = 0;
+	tp->snd_cwnd     = max(tp->snd_cwnd - max(tp->snd_cwnd >> logdiv, 1U), 2U);
 }
 
 static void dctcp_cwnd_event(struct sock *sk, enum tcp_ca_event ev)
@@ -175,6 +176,8 @@ static void dctcp_cwnd_event(struct sock *sk, enum tcp_ca_event ev)
 static size_t dctcp_get_info(struct sock *sk, u32 ext, int *attr,
 			     union tcp_cc_info *info)
 {
+	const struct dctcp *ca = inet_csk_ca(sk);
+
 	/* Fill it also in case of VEGASINFO due to req struct limits.
 	 * We can still correctly retrieve it later.
 	 */
@@ -183,7 +186,7 @@ static size_t dctcp_get_info(struct sock *sk, u32 ext, int *attr,
 		memset(&info->dctcp, 0, sizeof(info->dctcp));
 
 		info->dctcp.dctcp_enabled = 1;
-		info->dctcp.dctcp_ce_state = 0;
+		info->dctcp.dctcp_ce_state = ca->recent_sce;
 		info->dctcp.dctcp_alpha = 0;
 		info->dctcp.dctcp_ab_ecn = 0;
 		info->dctcp.dctcp_ab_tot = 0;
