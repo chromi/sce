@@ -99,26 +99,10 @@ static void dctcp_handle_ack(struct sock *sk, u32 flags)
 				shift = 2;
 			}
 			ca->snd_cwnd_cnt -= (acked_bytes * tp->snd_cwnd) >> shift;
-
-			while(ca->snd_cwnd_cnt <= -(tp->snd_cwnd * mss)) {
-				ca->snd_cwnd_cnt += tp->snd_cwnd * mss;
-				if(tp->snd_cwnd > 2)
-					tp->snd_cwnd--;
-			}
-
-			ca->loss_cwnd    = tp->snd_cwnd;
-			tp->snd_ssthresh = tp->snd_cwnd >> 1;
+			ca->loss_cwnd     = tp->snd_cwnd;
 		} else if(!tcp_in_slow_start(tp) && tcp_is_cwnd_limited(sk)) {
 			/* Reno linear growth */
 			ca->snd_cwnd_cnt += acked_bytes;
-
-			while(ca->snd_cwnd_cnt >= tp->snd_cwnd * mss) {
-				ca->snd_cwnd_cnt -= tp->snd_cwnd * mss;
-				tp->snd_cwnd++;
-			}
-			tp->snd_cwnd = min(tp->snd_cwnd, tp->snd_cwnd_clamp);
-			ca->loss_cwnd = max(ca->loss_cwnd, tp->snd_cwnd);
-			tp->snd_ssthresh = ca->loss_cwnd >> 1;
 
 			if(ca->recent_sce)
 				ca->recent_sce--;
@@ -126,6 +110,21 @@ static void dctcp_handle_ack(struct sock *sk, u32 flags)
 			/* slow-start or app-limited, without SCE */
 			ca->recent_sce--;
 		}
+
+		/* underflow of counter -> shrink cwnd */
+		while(ca->snd_cwnd_cnt <= -(tp->snd_cwnd * mss)) {
+			ca->snd_cwnd_cnt += tp->snd_cwnd * mss;
+			if(tp->snd_cwnd > 2)
+				tp->snd_cwnd--;
+		}
+
+		/* overflow of counter -> grow cwnd */
+		while(ca->snd_cwnd_cnt >= tp->snd_cwnd * mss) {
+			ca->snd_cwnd_cnt -= tp->snd_cwnd * mss;
+			tp->snd_cwnd++;
+		}
+		tp->snd_cwnd = min(tp->snd_cwnd, tp->snd_cwnd_clamp);
+		ca->loss_cwnd = max(ca->loss_cwnd, tp->snd_cwnd);
 	}
 }
 
@@ -151,7 +150,6 @@ static void dctcp_react_to_loss(struct sock *sk, u32 logdiv)
 	struct dctcp    *ca = inet_csk_ca(sk);
 
 	ca->loss_cwnd    = tp->snd_cwnd;
-	tp->snd_ssthresh = tp->snd_cwnd >> 1;
 	ca->snd_cwnd_cnt = 0;
 	tp->snd_cwnd     = max(tp->snd_cwnd - max(tp->snd_cwnd >> logdiv, 1U), 2U);
 }
