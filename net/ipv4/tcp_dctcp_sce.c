@@ -71,6 +71,7 @@ static void dctcp_handle_ack(struct sock *sk, u32 flags)
 	struct dctcp *ca = inet_csk_ca(sk);
 	u32 acked_bytes = tp->snd_una - ca->prior_snd_una;
 	u32 mss = inet_csk(sk)->icsk_ack.rcv_mss;
+	s32 cnt_over = mss * tp->snd_cwnd;
 
 	/* If ack did not advance snd_una, count dupack as MSS size.
 	 * If ack did update window, do not count it at all.
@@ -88,43 +89,39 @@ static void dctcp_handle_ack(struct sock *sk, u32 flags)
 			 * one-quarter of them.  Assume ECE is sticky
 			 * as per RFC-3168.
 			 */
-			u8 shift = 0;
+			u32 scaled_ack = acked_bytes * tp->snd_cwnd;
 			if(flags & CA_ACK_ESCE) {
-				shift = 1;
-				ca->recent_sce = tp->snd_cwnd;
+				scaled_ack /= 2;
+				ca->recent_sce = tp->snd_cwnd + 1;
 			} else if(ca->recent_sce) {
-				shift = 3;
-				ca->recent_sce--;
+				scaled_ack /= 8;
 			} else {
-				shift = 2;
+				scaled_ack /= 4;
 			}
-			ca->snd_cwnd_cnt -= (acked_bytes * tp->snd_cwnd) >> shift;
+			ca->snd_cwnd_cnt -= scaled_ack;
 			ca->loss_cwnd     = tp->snd_cwnd;
 		} else if(!tcp_in_slow_start(tp) && tcp_is_cwnd_limited(sk)) {
 			/* Reno linear growth */
 			ca->snd_cwnd_cnt += acked_bytes;
-
-			if(ca->recent_sce)
-				ca->recent_sce--;
-		} else if(ca->recent_sce) {
-			/* slow-start or app-limited, without SCE */
-			ca->recent_sce--;
+			ca->loss_cwnd = max(ca->loss_cwnd, tp->snd_cwnd);
 		}
 
 		/* underflow of counter -> shrink cwnd */
-		while(ca->snd_cwnd_cnt <= -(tp->snd_cwnd * mss)) {
-			ca->snd_cwnd_cnt += tp->snd_cwnd * mss;
+		while(ca->snd_cwnd_cnt <= -cnt_over) {
+			ca->snd_cwnd_cnt += cnt_over;
 			if(tp->snd_cwnd > 2)
 				tp->snd_cwnd--;
 		}
 
 		/* overflow of counter -> grow cwnd */
-		while(ca->snd_cwnd_cnt >= tp->snd_cwnd * mss) {
-			ca->snd_cwnd_cnt -= tp->snd_cwnd * mss;
-			tp->snd_cwnd++;
+		while(ca->snd_cwnd_cnt >= cnt_over) {
+			ca->snd_cwnd_cnt -= cnt_over;
+			if(tp->snd_cwnd < tp->snd_cwnd_clamp)
+				tp->snd_cwnd++;
 		}
-		tp->snd_cwnd = min(tp->snd_cwnd, tp->snd_cwnd_clamp);
-		ca->loss_cwnd = max(ca->loss_cwnd, tp->snd_cwnd);
+
+		if(ca->recent_sce)
+			ca->recent_sce--;
 	}
 }
 
