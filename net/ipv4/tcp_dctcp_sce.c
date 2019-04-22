@@ -98,7 +98,7 @@ static void dctcp_handle_ack(struct sock *sk, u32 flags)
 			} else {
 				shift = 2;
 			}
-			ca->snd_cwnd_cnt -= (acked_bytes * mss) >> shift;
+			ca->snd_cwnd_cnt -= (acked_bytes * tp->snd_cwnd) >> shift;
 
 			while(ca->snd_cwnd_cnt <= -(tp->snd_cwnd * mss)) {
 				ca->snd_cwnd_cnt += tp->snd_cwnd * mss;
