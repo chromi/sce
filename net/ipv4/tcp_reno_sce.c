@@ -207,7 +207,7 @@ static struct tcp_congestion_ops dctcp __read_mostly = {
 	.undo_cwnd	= reno_sce_cwnd_undo,
 	.get_info	= reno_sce_get_info,
 	.owner		= THIS_MODULE,
-	.name		= "dctcp-sce",
+	.name		= "reno-sce",
 };
 
 static int __init reno_sce_register(void)
