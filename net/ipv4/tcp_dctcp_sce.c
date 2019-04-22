@@ -106,7 +106,8 @@ static void dctcp_handle_ack(struct sock *sk, u32 flags)
 					tp->snd_cwnd--;
 			}
 
-			ca->loss_cwnd = tp->snd_cwnd;
+			ca->loss_cwnd    = tp->snd_cwnd;
+			tp->snd_ssthresh = tp->snd_cwnd >> 1;
 		} else if(!tcp_in_slow_start(tp) && tcp_is_cwnd_limited(sk)) {
 			/* Reno linear growth */
 			ca->snd_cwnd_cnt += acked_bytes;
@@ -117,6 +118,7 @@ static void dctcp_handle_ack(struct sock *sk, u32 flags)
 			}
 			tp->snd_cwnd = min(tp->snd_cwnd, tp->snd_cwnd_clamp);
 			ca->loss_cwnd = max(ca->loss_cwnd, tp->snd_cwnd);
+			tp->snd_ssthresh = ca->loss_cwnd >> 1;
 
 			if(ca->recent_sce)
 				ca->recent_sce--;
