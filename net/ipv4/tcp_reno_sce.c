@@ -76,14 +76,16 @@ static void reno_sce_handle_ack(struct sock *sk, u32 flags)
 			/* Respond to SCE & CE feedback.
 			 * Assume ECE is sticky as per RFC-3168.
 			 */
-			u32 scaled_ack = acked_bytes * ca->sqrt_cwnd;
+			u32 scaled_ack = acked_bytes;
 			if(flags & CA_ACK_ESCE) {
+				/* SCE response: pro-rata sqrt(cwnd) */
+				scaled_ack *= ca->sqrt_cwnd;
 				scaled_ack /= 2;
 				ca->recent_sce = tp->snd_cwnd + 1;
-			} else if(ca->recent_sce) {
-				scaled_ack /= 8;
 			} else {
-				scaled_ack /= 4;
+				/* CE response: 75% or 87.5% over RTT */
+				scaled_ack *= tp->snd_cwnd;
+				scaled_ack /= ca->recent_sce ? 8 : 4;
 			}
 			ca->snd_cwnd_cnt -= scaled_ack;
 			ca->loss_cwnd     = tp->snd_cwnd;
