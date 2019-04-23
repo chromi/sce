@@ -587,7 +587,7 @@ static bool cobalt_should_drop(struct cobalt_vars *vars,
 
 	/* Simple SCE ramp function */
 	if (is_bulk && sojourn > (p->target/2))
-		if (over_target || prandom_u32() < (sojourn - p->target/2) * (p->inv_target*2))
+		if (over_target || prandom_u32() < ((sojourn - p->target/2) * p->inv_target) * 2)
 			vars->sce_marked = INET_ECN_set_sce(skb);
 
 	/* Overload the drop_next field as an activity timeout */
@@ -2232,7 +2232,7 @@ static void cake_set_rate(struct cake_tin_data *b, u64 rate, u32 mtu,
 	b->cparams.mtu_time = byte_target_ns;
 	b->cparams.p_inc = 1 << 24; /* 1/256 */
 	b->cparams.p_dec = 1 << 20; /* 1/4096 */
-	b->cparams.inv_target = max(div64_u64(0x100000000ULL,
+	b->cparams.inv_target = max(div64_u64(0xFFFFFFFFULL,
 				       b->cparams.target), 1ULL);
 }
 
