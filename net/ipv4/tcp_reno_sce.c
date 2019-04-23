@@ -72,24 +72,16 @@ static void reno_sce_handle_ack(struct sock *sk, u32 flags)
 	if (acked_bytes) {
 		ca->prior_snd_una = tp->snd_una;
 
-		if (flags & (CA_ACK_ESCE | CA_ACK_ECE)) {
-			/* Respond to SCE & CE feedback.
-			 * Assume ECE is sticky as per RFC-3168.
-			 */
-			u32 scaled_ack = acked_bytes;
-			if(flags & CA_ACK_ESCE) {
-				/* SCE response: pro-rata sqrt(cwnd) */
-				scaled_ack *= ca->sqrt_cwnd;
-				scaled_ack /= 2;
-				ca->recent_sce = tp->snd_cwnd + 1;
-			} else {
-				/* CE response: 75% or 87.5% over RTT */
-				scaled_ack *= tp->snd_cwnd;
-				scaled_ack /= ca->recent_sce ? 8 : 4;
-			}
+		if (flags & CA_ACK_ESCE) {
+			/* Respond to SCE feedback. */
+			/* SCE response: pro-rata sqrt(cwnd) */
+			u32 scaled_ack = acked_bytes * ca->sqrt_cwnd;
+
 			ca->snd_cwnd_cnt -= scaled_ack;
 			ca->loss_cwnd     = tp->snd_cwnd;
 			tp->snd_ssthresh  = reno_sce_ssthresh(sk);
+
+			ca->recent_sce    = tp->snd_cwnd + 1;
 		} else if(!tcp_in_slow_start(tp) && tcp_is_cwnd_limited(sk)) {
 			/* Reno linear growth */
 			ca->snd_cwnd_cnt += acked_bytes;
@@ -152,13 +144,13 @@ static void reno_sce_react_to_loss(struct sock *sk, u32 logdiv)
 
 static void reno_sce_cwnd_event(struct sock *sk, enum tcp_ca_event ev)
 {
+	struct dctcp    *ca = inet_csk_ca(sk);
+
 	switch (ev) {
-	/* now handled in ack handler
 	case CA_EVENT_COMPLETE_CWR:
 		// ABE 75%, or 87.5% with SCE
-		reno_sce_react_to_loss(sk, 2);
+		reno_sce_react_to_loss(sk, ca->recent_sce ? 3 : 2);
 		break;
-	*/
 	case CA_EVENT_LOSS:
 		// loss 50%
 		reno_sce_react_to_loss(sk, 1);

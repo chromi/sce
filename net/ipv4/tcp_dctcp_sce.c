@@ -81,26 +81,17 @@ static void dctcp_handle_ack(struct sock *sk, u32 flags)
 	if (acked_bytes) {
 		ca->prior_snd_una = tp->snd_una;
 
-		if (flags & (CA_ACK_ESCE | CA_ACK_ECE)) {
+		if (flags & CA_ACK_ESCE) {
 			/* Respond to SCE feedback - DCTCP style:
 			 * Subtract half of SCE-acked bytes from the cwnd.
-			 * If SCE seen recently, subtract one-eighth of
-			 * CE-marked bytes from the cwnd, else subtract
-			 * one-quarter of them.  Assume ECE is sticky
-			 * as per RFC-3168.
 			 */
 			u32 scaled_ack = acked_bytes * tp->snd_cwnd;
-			if(flags & CA_ACK_ESCE) {
-				scaled_ack /= 2;
-				ca->recent_sce = tp->snd_cwnd + 1;
-			} else if(ca->recent_sce) {
-				scaled_ack /= 8;
-			} else {
-				scaled_ack /= 4;
-			}
-			ca->snd_cwnd_cnt -= scaled_ack;
+
+			ca->snd_cwnd_cnt -= scaled_ack / 2;
 			ca->loss_cwnd     = tp->snd_cwnd;
 			tp->snd_ssthresh  = dctcp_ssthresh(sk);
+
+			ca->recent_sce    = tp->snd_cwnd + 1;
 		} else if(!tcp_in_slow_start(tp) && tcp_is_cwnd_limited(sk)) {
 			/* Reno linear growth */
 			ca->snd_cwnd_cnt += acked_bytes;
@@ -154,13 +145,13 @@ static void dctcp_react_to_loss(struct sock *sk, u32 logdiv)
 
 static void dctcp_cwnd_event(struct sock *sk, enum tcp_ca_event ev)
 {
+	struct dctcp    *ca = inet_csk_ca(sk);
+
 	switch (ev) {
-	/* now handled in ack handler
 	case CA_EVENT_COMPLETE_CWR:
 		// ABE 75%, or 87.5% with SCE
-		dctcp_react_to_loss(sk, 2);
+		dctcp_react_to_loss(sk, ca->recent_sce ? 3 : 2);
 		break;
-	*/
 	case CA_EVENT_LOSS:
 		// loss 50%
 		dctcp_react_to_loss(sk, 1);
