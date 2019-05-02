@@ -273,7 +273,6 @@ struct tcp_sock {
 					 * sacked_out > 0)
 					 */
 	u8	ecn_flags;	/* ECN status bits.			*/
-	u32	sce_prior_rcv_nxt; /* rcv_nxt for prior packet, for use by SCE */
 	__cacheline_group_end(tcp_sock_write_tx);
 
 	/* TXRX read-write hotpath cache lines */
