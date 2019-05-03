@@ -391,12 +391,12 @@ static void tcp_ecn_send(struct sock *sk, struct sk_buff *skb,
 		if (tp->ecn_flags & TCP_ECN_DEMAND_CWR)
 			th->ece = 1;
 		if (tp->ecn_flags & TCP_ECN_QUEUE_ESCE) {
-			tp->ecn_flags &= ~(TCP_ECN_QUEUE_ESCE | TCP_ECN_MAYBE_ESCE);
+			tp->ecn_flags &= ~(TCP_ECN_QUEUE_ESCE | TCP_ECN_DITHER_ESCE);
 			th->esce = 1;
-		} else if (tp->ecn_flags & TCP_ECN_MAYBE_ESCE) {
-			tp->ecn_flags &= ~TCP_ECN_MAYBE_ESCE;
-			tp->ecn_flags ^= TCP_ECN_LAST_ESCE;
-			if (tp->ecn_flags & TCP_ECN_LAST_ESCE)
+		} else if (tp->ecn_flags & TCP_ECN_DITHER_ESCE) {
+			tp->ecn_flags &= ~TCP_ECN_DITHER_ESCE;
+			tp->ecn_flags ^= TCP_ECN_DPRIOR_ESCE;
+			if (tp->ecn_flags & TCP_ECN_DPRIOR_ESCE)
 				th->esce = 1;
 		}
 	}
