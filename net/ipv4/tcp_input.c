@@ -383,10 +383,10 @@ static void __tcp_ecn_check_ce(struct sock *sk, const struct sk_buff *skb)
 		break;
 	case INET_ECN_SCE:
 		if (sock_net(sk)->ipv4.sysctl_tcp_sce) {
-			if (tp->ecn_flags & TCP_ECN_DITHER_ESCE) {
+			if (tp->ecn_flags & TCP_ECN_MAYBE_ESCE) {
 				tp->ecn_flags |= TCP_ECN_QUEUE_ESCE;
 			} else {
-				tp->ecn_flags |= TCP_ECN_DITHER_ESCE;
+				tp->ecn_flags |= TCP_ECN_MAYBE_ESCE;
 			}
 		}
 		break;
