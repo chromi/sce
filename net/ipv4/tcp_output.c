@@ -1217,7 +1217,7 @@ static void tcp_update_skb_after_send(struct sock *sk, struct sk_buff *skb,
 		 * Note that tp->data_segs_out overflows after 2^32 packets,
 		 * this is a minor annoyance.
 		 */
-		if (rate != ~0UL && rate && tp->data_segs_out >= 10) {
+		if (rate != ~0UL && rate && tp->data_segs_out >= 1) {
 			u64 len_ns = div64_ul((u64)skb->len * NSEC_PER_SEC, rate);
 			u64 credit = tp->tcp_wstamp_ns - prior_wstamp;
 
