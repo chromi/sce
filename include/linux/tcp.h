@@ -268,6 +268,7 @@ struct tcp_sock {
 
 	u16	urg_data;	/* Saved octet of OOB data and control flags */
 	u8	ecn_flags;	/* ECN status bits.			*/
+	u32	sce_prior_rcv_nxt; /* rcv_nxt for prior packet, for use by SCE */
 	u8	keepalive_probes; /* num of allowed keep alive probes	*/
 	u32	reordering;	/* Packet reordering metric.		*/
 	u32	reord_seen;	/* number of data packet reordering events */
