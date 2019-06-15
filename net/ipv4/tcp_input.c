@@ -292,6 +292,7 @@ static void __tcp_ecn_check_ce(struct sock *sk, const struct sk_buff *skb)
 			if (!(tp->ecn_flags & TCP_ECN_PRIOR_ESCE) &&
 				inet_csk(sk)->icsk_ack.pending & ICSK_ACK_TIMER) {
 				__tcp_send_ack(sk, tp->sce_prior_rcv_nxt);
+				tcp_enter_quickack_mode(sk, 0);
 			}
 			tp->ecn_flags |= TCP_ECN_QUEUE_ESCE | TCP_ECN_PRIOR_ESCE | TCP_ECN_SEEN;
 			break;
@@ -302,6 +303,7 @@ static void __tcp_ecn_check_ce(struct sock *sk, const struct sk_buff *skb)
 			if ((tp->ecn_flags & TCP_ECN_PRIOR_ESCE) &&
 				inet_csk(sk)->icsk_ack.pending & ICSK_ACK_TIMER) {
 				__tcp_send_ack(sk, tp->sce_prior_rcv_nxt);
+				tcp_enter_quickack_mode(sk, 0);
 			}
 			tp->ecn_flags &= ~(TCP_ECN_QUEUE_ESCE | TCP_ECN_PRIOR_ESCE);
 		}
