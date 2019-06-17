@@ -51,6 +51,7 @@ obj-$(CONFIG_TCP_CONG_BBR) += tcp_bbr.o
 obj-$(CONFIG_TCP_CONG_BIC) += tcp_bic.o
 obj-$(CONFIG_TCP_CONG_CDG) += tcp_cdg.o
 obj-$(CONFIG_TCP_CONG_CUBIC) += tcp_cubic.o
+obj-$(CONFIG_TCP_CONG_CUBIC_SCE) += tcp_cubic_sce.o
 obj-$(CONFIG_TCP_CONG_DCTCP) += tcp_dctcp.o
 obj-$(CONFIG_TCP_CONG_DCTCP_SCE) += tcp_dctcp_sce.o
 obj-$(CONFIG_TCP_CONG_RENO_SCE) += tcp_reno_sce.o

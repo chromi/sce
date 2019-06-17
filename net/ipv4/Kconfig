@@ -668,6 +668,12 @@ config TCP_CONG_RENO_SCE
 	manner.  If used with SCE-ignorant endpoints and/or middleboxes, this
 	should behave similarly to NewReno.
 
+config TCP_CONG_CUBIC_SCE
+	tristate "CUBIC TCP with SCE support"
+	default n
+	---help---
+	This is CUBIC with support for Some Congestion Experienced (SCE) signals.
+
 config TCP_CONG_CDG
 	tristate "CAIA Delay-Gradient (CDG)"
 	default n
@@ -736,6 +742,9 @@ choice
 	config DEFAULT_RENO_SCE
 		bool "NewReno-SCE" if TCP_CONG_RENO_SCE=y
 
+	config DEFAULT_CUBIC_SCE
+		bool "CUBIC-SCE" if TCP_CONG_CUBIC_SCE=y
+
 	config DEFAULT_CDG
 		bool "CDG" if TCP_CONG_CDG=y
 
@@ -766,6 +775,7 @@ config DEFAULT_TCP_CONG
 	default "dctcp" if DEFAULT_DCTCP
 	default "dctcp-sce" if DEFAULT_DCTCP_SCE
 	default "reno-sce" if DEFAULT_RENO_SCE
+	default "cubic-sce" if DEFAULT_CUBIC_SCE
 	default "cdg" if DEFAULT_CDG
 	default "bbr" if DEFAULT_BBR
 	default "cubic"
