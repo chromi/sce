@@ -62,7 +62,7 @@ static u64 cube_factor __read_mostly;
 module_param(fast_convergence, int, 0644);
 MODULE_PARM_DESC(fast_convergence, "turn on/off fast convergence");
 module_param(beta, int, 0644);
-MODULE_PARM_DESC(beta, "beta for multiplicative increase");
+MODULE_PARM_DESC(beta, "beta for multiplicative decrease");
 module_param(initial_ssthresh, int, 0644);
 MODULE_PARM_DESC(initial_ssthresh, "initial value of slow start threshold");
 module_param(bic_scale, int, 0444);
@@ -90,7 +90,7 @@ struct bictcp {
 				   from the beginning of the current epoch */
 	u32	delay_min;	/* min delay (msec << 3) */
 	u32	epoch_start;	/* beginning of an epoch */
-	u32	ack_cnt;	/* number of acks */
+	s32	ack_cnt;	/* number of acks */
 	u32	tcp_cwnd;	/* estimated tcp cwnd */
 	u16	unused;
 	u8	sample_cnt;	/* number of samples to decide curr_rtt */
@@ -99,6 +99,14 @@ struct bictcp {
 	u32	end_seq;	/* end_seq of the round */
 	u32	last_ack;	/* last time when the ACK spacing is close */
 	u32	curr_rtt;	/* the minimum rtt of current round */
+
+	/* added SCE-related fields */
+	u32	prior_snd_una;
+	u32	prior_rcv_nxt;
+	u32	next_seq;
+	u32	sqrt_cnt;
+	u32	recent_sce;
+	u32	mss;
 };
 
 static inline void bictcp_reset(struct bictcp *ca)
@@ -114,6 +122,10 @@ static inline void bictcp_reset(struct bictcp *ca)
 	ca->ack_cnt = 0;
 	ca->tcp_cwnd = 0;
 	ca->found = 0;
+
+	/* added SCE-related fields */
+	ca->sqrt_cnt = 1;
+	ca->recent_sce = 0;
 }
 
 static inline u32 bictcp_clock(void)
@@ -138,6 +150,7 @@ static inline void bictcp_hystart_reset(struct sock *sk)
 
 static void bictcp_init(struct sock *sk)
 {
+	struct tcp_sock *tp = tcp_sk(sk);
 	struct bictcp *ca = inet_csk_ca(sk);
 
 	bictcp_reset(ca);
@@ -147,6 +160,11 @@ static void bictcp_init(struct sock *sk)
 
 	if (!hystart && initial_ssthresh)
 		tcp_sk(sk)->snd_ssthresh = initial_ssthresh;
+
+	/* added SCE-related fields */
+	ca->prior_snd_una = tp->snd_una;
+	ca->prior_rcv_nxt = tp->rcv_nxt;
+	ca->next_seq = tp->snd_nxt;
 }
 
 static void bictcp_cwnd_event(struct sock *sk, enum tcp_ca_event event)
@@ -226,8 +244,6 @@ static inline void bictcp_update(struct bictcp *ca, u32 cwnd, u32 acked)
 	u32 delta, bic_target, max_cnt;
 	u64 offs, t;
 
-	ca->ack_cnt += acked;	/* count the number of ACKed packets */
-
 	if (ca->last_cwnd == cwnd &&
 	    (s32)(tcp_jiffies32 - ca->last_time) <= HZ / 32)
 		return;
@@ -244,7 +260,7 @@ static inline void bictcp_update(struct bictcp *ca, u32 cwnd, u32 acked)
 
 	if (ca->epoch_start == 0) {
 		ca->epoch_start = tcp_jiffies32;	/* record beginning */
-		ca->ack_cnt = acked;			/* start counting */
+		ca->ack_cnt = 0;			/* start counting */
 		ca->tcp_cwnd = cwnd;			/* syn with cubic */
 
 		if (ca->last_max_cwnd <= cwnd) {
@@ -309,9 +325,9 @@ static inline void bictcp_update(struct bictcp *ca, u32 cwnd, u32 acked)
 tcp_friendliness:
 	/* TCP Friendly */
 	if (tcp_friendliness) {
-		u32 scale = beta_scale;
+		u32 scale = beta_scale * ca->mss;
+		s32 delta = (cwnd * scale) / 8;
 
-		delta = (cwnd * scale) >> 3;
 		while (ca->ack_cnt > delta) {		/* update tcp cwnd */
 			ca->ack_cnt -= delta;
 			ca->tcp_cwnd++;
@@ -346,8 +362,14 @@ static void bictcp_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 		if (!acked)
 			return;
 	}
+	ca->ack_cnt += acked * ca->mss;
 	bictcp_update(ca, tp->snd_cwnd, acked);
 	tcp_cong_avoid_ai(tp, ca->cnt, acked);
+
+	while(ca->sqrt_cnt * ca->sqrt_cnt < tp->snd_cwnd)
+		ca->sqrt_cnt++;
+	while(ca->sqrt_cnt * ca->sqrt_cnt >= tp->snd_cwnd)
+		ca->sqrt_cnt--;
 }
 
 static u32 bictcp_recalc_ssthresh(struct sock *sk)
@@ -364,6 +386,8 @@ static u32 bictcp_recalc_ssthresh(struct sock *sk)
 	else
 		ca->last_max_cwnd = tp->snd_cwnd;
 
+	if(ca->recent_sce)
+		return max((tp->snd_cwnd * 7U) / 8U, 2U);
 	return max((tp->snd_cwnd * beta) / BICTCP_BETA_SCALE, 2U);
 }
 
@@ -454,6 +478,91 @@ static void bictcp_acked(struct sock *sk, const struct ack_sample *sample)
 		hystart_update(sk, delay);
 }
 
+/* Handle SCE feedback. */
+static void bictcp_handle_ack(struct sock *sk, u32 flags)
+{
+	struct tcp_sock *tp = tcp_sk(sk);
+	struct bictcp *ca = inet_csk_ca(sk);
+	u32 acked_bytes = tp->snd_una - ca->prior_snd_una;
+	u32 mss = ca->mss = inet_csk(sk)->icsk_ack.rcv_mss;
+	s32 cnt_over = mss * tp->snd_cwnd;
+
+	if (acked_bytes == 0 && !(flags & CA_ACK_WIN_UPDATE))
+		acked_bytes = ca->mss;
+	if (acked_bytes) {
+		ca->prior_snd_una = tp->snd_una;
+
+		if (flags & CA_ACK_ESCE && !ca->epoch_start) {
+			/* drop out of slow-start */
+			tp->snd_ssthresh = tp->snd_cwnd / 2;
+		} else if (flags & CA_ACK_ESCE) {
+			/* We have a block of SCE feedback */
+			u32 now = tcp_jiffies32;
+			s64 t = now - ca->epoch_start;
+
+			/* Reduce gradient of CUBIC function */
+			t = (t << BICTCP_HZ) / HZ;
+			if (t < ca->bic_K) {
+				u64 offs = ca->bic_K - t;
+				u32 delta1 = (cube_rtt_scale * offs * offs * offs) >> (10+3*BICTCP_HZ);
+				u32 delta2;
+
+				/* below inflection point, bring it back towards us */
+				ca->epoch_start = now;
+				ca->bic_K -= t;
+				if(acked_bytes < ca->sqrt_cnt)
+					ca->bic_K = (ca->bic_K * (ca->sqrt_cnt - acked_bytes)) / ca->sqrt_cnt;
+				else
+					ca->bic_K = 0;
+
+				/* calculate adjustment to inflection point level */
+				offs = ca->bic_K - t;
+				delta2 = (cube_rtt_scale * offs * offs * offs) >> (10+3*BICTCP_HZ);
+				ca->bic_origin_point -= delta2 - delta1;
+			} else {
+				u64 offs = t - ca->bic_K;
+				u32 delta1 = (cube_rtt_scale * offs * offs * offs) >> (10+3*BICTCP_HZ);
+				u32 delta2;
+
+				/* above inflection point, advance it towards us */
+				ca->epoch_start += (ca->bic_K * HZ) >> BICTCP_HZ;
+				t -= ca->bic_K;
+				if(acked_bytes < ca->sqrt_cnt)
+					ca->bic_K = (t * acked_bytes) / ca->sqrt_cnt;
+				else
+					ca->bic_K = t;
+
+				/* calculate adjustment to inflection point level */
+				offs = t - ca->bic_K;
+				delta2 = (cube_rtt_scale * offs * offs * offs) >> (10+3*BICTCP_HZ);
+				ca->bic_origin_point += delta1 - delta2;
+			}
+
+			/* Also step down both the inflection point and the current cwnd. */
+			/* A full cwnd of ESCE results in sqrt(cwnd) reduction. */
+			ca->ack_cnt   -= acked_bytes * ca->sqrt_cnt;
+			ca->recent_sce = tp->snd_cwnd + 1;
+
+			while(ca->ack_cnt <= -cnt_over) {
+				ca->ack_cnt += cnt_over;
+				if(tp->snd_cwnd > 2) {
+					tp->snd_cwnd--;
+					if(ca->sqrt_cnt * ca->sqrt_cnt >= tp->snd_cwnd)
+						ca->sqrt_cnt--;
+				}
+				if(ca->bic_origin_point > 0)
+					ca->bic_origin_point--;
+			}
+
+			/* drop out of slow-start */
+			tp->snd_ssthresh = tp->snd_cwnd / 2;
+		}
+
+		if(ca->recent_sce)
+			ca->recent_sce--;
+	}
+}
+
 static struct tcp_congestion_ops cubictcp __read_mostly = {
 	.init		= bictcp_init,
 	.ssthresh	= bictcp_recalc_ssthresh,
@@ -462,6 +571,7 @@ static struct tcp_congestion_ops cubictcp __read_mostly = {
 	.undo_cwnd	= tcp_reno_undo_cwnd,
 	.cwnd_event	= bictcp_cwnd_event,
 	.pkts_acked     = bictcp_acked,
+	.in_ack_event   = bictcp_handle_ack,
 	.owner		= THIS_MODULE,
 	.name		= "cubic-sce",
 };
