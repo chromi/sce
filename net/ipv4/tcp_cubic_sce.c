@@ -501,7 +501,9 @@ static void bictcp_handle_ack(struct sock *sk, u32 flags)
 			s64 t = now - ca->epoch_start;
 
 			/* Reduce gradient of CUBIC function */
-			t = (t << BICTCP_HZ) / HZ;
+			t <<= BICTCP_HZ;
+			do_div(t, HZ);
+
 			if (t < ca->bic_K) {
 				u64 offs = ca->bic_K - t;
 				u32 delta1 = (cube_rtt_scale * offs * offs * offs) >> (10+3*BICTCP_HZ);
