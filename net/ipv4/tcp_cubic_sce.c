@@ -326,9 +326,9 @@ tcp_friendliness:
 	/* TCP Friendly */
 	if (tcp_friendliness) {
 		u32 scale = beta_scale * ca->mss;
-		s32 delta = (cwnd * scale) / 8;
+		u32 delta = (cwnd * scale) / 8;
 
-		while (ca->ack_cnt > delta) {		/* update tcp cwnd */
+		while (ca->ack_cnt > (s32) delta) {	/* update tcp cwnd */
 			ca->ack_cnt -= delta;
 			ca->tcp_cwnd++;
 		}
