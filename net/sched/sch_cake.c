@@ -2245,12 +2245,12 @@ static void cake_set_rate(struct cake_tin_data *b, u64 rate, u32 mtu,
 	if(ramp_divisor > 1024) {
 		b->cparams.sce_ramp_knee = 0;
 		b->cparams.sce_ramp_lo   = 0;
-		b->cparams.sce_ramp_hi = 0xFFFFFFFFU / b->cparams.target;
+		b->cparams.sce_ramp_hi = div64_u64(0xFFFFFFFFU, b->cparams.target);
 	} else if(ramp_divisor) {
 		u32 ramp_knee;
 		b->cparams.sce_ramp_knee = ramp_knee = 0xFFFFFFFFU / ramp_divisor;
-		b->cparams.sce_ramp_lo = ramp_knee / (b->cparams.target/2);
-		b->cparams.sce_ramp_hi = (0xFFFFFFFFU - ramp_knee) / b->cparams.target;
+		b->cparams.sce_ramp_lo = div64_u64(ramp_knee, (b->cparams.target/2));
+		b->cparams.sce_ramp_hi = div64_u64((0xFFFFFFFFU - ramp_knee), b->cparams.target);
 	} else {
 		b->cparams.sce_ramp_knee = 0;
 		b->cparams.sce_ramp_lo   = 0;
