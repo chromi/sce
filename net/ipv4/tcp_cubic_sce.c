@@ -511,8 +511,7 @@ static void bictcp_handle_ack(struct sock *sk, u32 flags)
 				ca->epoch_start = now;
 				ca->bic_K -= t;
 				if(acked_bytes < ca->sqrt_cnt) {
-					ca->bic_K = ca->bic_K * (ca->sqrt_cnt - acked_bytes);
-					do_div(ca->bic_K, ca->sqrt_cnt);
+					ca->bic_K = ca->bic_K * (ca->sqrt_cnt - acked_bytes) / ca->sqrt_cnt;
 				} else {
 					ca->bic_K = 0;
 				}
@@ -528,10 +527,9 @@ static void bictcp_handle_ack(struct sock *sk, u32 flags)
 
 				/* above inflection point, advance it towards us */
 				ca->epoch_start += (ca->bic_K * HZ) >> BICTCP_HZ;
-				t -= ca->bic_K;
+				t = offs;
 				if(acked_bytes < ca->sqrt_cnt) {
-					ca->bic_K = t * acked_bytes;
-					do_div(ca->bic_K, ca->sqrt_cnt);
+					ca->bic_K = ((u32) t) * acked_bytes / ca->sqrt_cnt;
 				} else {
 					ca->bic_K = t;
 				}
