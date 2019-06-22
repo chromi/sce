@@ -498,7 +498,7 @@ static void bictcp_handle_ack(struct sock *sk, u32 flags)
 		} else if (flags & CA_ACK_ESCE) {
 			/* We have a block of SCE feedback */
 			u32 now = tcp_jiffies32;
-			s64 t = now - ca->epoch_start;
+			u64 t = now - ca->epoch_start;
 
 			/* Reduce gradient of CUBIC function */
 			t <<= BICTCP_HZ;
