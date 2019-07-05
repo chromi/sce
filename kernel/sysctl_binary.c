@@ -378,6 +378,7 @@ static const struct bin_table bin_net_ipv4_table[] = {
 	{ CTL_INT,	NET_TCP_REORDERING,			"tcp_reordering" },
 	{ CTL_INT,	NET_TCP_ECN,				"tcp_ecn" },
 	{ CTL_INT,	NET_TCP_SCE,				"tcp_sce" },
+	{ CTL_INT,	NET_TCP_SCE_FEEDBACK_MODE,	"tcp_sce_feedback_mode" },
 	{ CTL_INT,	NET_TCP_DSACK,				"tcp_dsack" },
 	{ CTL_INT,	NET_TCP_MEM,				"tcp_mem" },
 	{ CTL_INT,	NET_TCP_WMEM,				"tcp_wmem" },
