@@ -263,16 +263,6 @@ static void tcp_ecn_withdraw_cwr(struct tcp_sock *tp)
 	tp->ecn_flags &= ~TCP_ECN_DEMAND_CWR;
 }
 
-static void tcp_sce_quickack_prior(struct sock *sk) {
-	struct tcp_sock *tp = tcp_sk(sk);
-
-	if ((tp->ecn_flags & TCP_ECN_PRIOR_ESCE) &&
-		inet_csk(sk)->icsk_ack.pending & ICSK_ACK_TIMER) {
-		__tcp_send_ack(sk, tp->sce_prior_rcv_nxt);
-		tcp_enter_quickack_mode(sk, 1);
-	}
-}
-
 static void __tcp_ecn_check_ce(struct sock *sk, const struct sk_buff *skb)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -305,7 +295,11 @@ static void __tcp_ecn_check_ce(struct sock *sk, const struct sk_buff *skb)
 				else
 					tp->ecn_flags |= (TCP_ECN_DITHER_ESCE | TCP_ECN_SEEN);
 			} else {
-				tcp_sce_quickack_prior(sk);
+				if (!(tp->ecn_flags & TCP_ECN_PRIOR_ESCE) &&
+					inet_csk(sk)->icsk_ack.pending & ICSK_ACK_TIMER) {
+					__tcp_send_ack(sk, tp->sce_prior_rcv_nxt);
+					tcp_enter_quickack_mode(sk, 1);
+				}
 				tp->ecn_flags |= TCP_ECN_QUEUE_ESCE | TCP_ECN_PRIOR_ESCE | TCP_ECN_SEEN;
 			}
 			break;
@@ -314,7 +308,11 @@ static void __tcp_ecn_check_ce(struct sock *sk, const struct sk_buff *skb)
 	default: /* INET_ECN_ECT */
 		if (sock_net(sk)->ipv4.sysctl_tcp_sce &&
 			sock_net(sk)->ipv4.sysctl_tcp_sce_feedback_mode == 1) {
-			tcp_sce_quickack_prior(sk);
+			if ((tp->ecn_flags & TCP_ECN_PRIOR_ESCE) &&
+				inet_csk(sk)->icsk_ack.pending & ICSK_ACK_TIMER) {
+				__tcp_send_ack(sk, tp->sce_prior_rcv_nxt);
+				tcp_enter_quickack_mode(sk, 1);
+			}
 			tp->ecn_flags &= ~(TCP_ECN_QUEUE_ESCE | TCP_ECN_PRIOR_ESCE);
 		}
 		if (tcp_ca_needs_ecn(sk))
