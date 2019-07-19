@@ -326,9 +326,9 @@ tcp_friendliness:
 	/* TCP Friendly */
 	if (tcp_friendliness) {
 		u32 scale = beta_scale * ca->mss;
-		s32 delta = (cwnd * scale) / 8;
+		u32 delta = (cwnd * scale) / 8;
 
-		while (ca->ack_cnt > delta) {		/* update tcp cwnd */
+		while (ca->ack_cnt > (s32) delta) {	/* update tcp cwnd */
 			ca->ack_cnt -= delta;
 			ca->tcp_cwnd++;
 		}
@@ -498,10 +498,12 @@ static void bictcp_handle_ack(struct sock *sk, u32 flags)
 		} else if (flags & CA_ACK_ESCE) {
 			/* We have a block of SCE feedback */
 			u32 now = tcp_jiffies32;
-			s64 t = now - ca->epoch_start;
+			u64 t = now - ca->epoch_start;
 
 			/* Reduce gradient of CUBIC function */
-			t = (t << BICTCP_HZ) / HZ;
+			t <<= BICTCP_HZ;
+			do_div(t, HZ);
+
 			if (t < ca->bic_K) {
 				u64 offs = ca->bic_K - t;
 				u32 delta1 = (cube_rtt_scale * offs * offs * offs) >> (10+3*BICTCP_HZ);
@@ -511,8 +513,7 @@ static void bictcp_handle_ack(struct sock *sk, u32 flags)
 				ca->epoch_start = now;
 				ca->bic_K -= t;
 				if(acked_bytes < ca->sqrt_cnt) {
-					ca->bic_K = ca->bic_K * (ca->sqrt_cnt - acked_bytes);
-					do_div(ca->bic_K, ca->sqrt_cnt);
+					ca->bic_K = ca->bic_K * (ca->sqrt_cnt - acked_bytes) / ca->sqrt_cnt;
 				} else {
 					ca->bic_K = 0;
 				}
@@ -528,10 +529,9 @@ static void bictcp_handle_ack(struct sock *sk, u32 flags)
 
 				/* above inflection point, advance it towards us */
 				ca->epoch_start += (ca->bic_K * HZ) >> BICTCP_HZ;
-				t -= ca->bic_K;
+				t = offs;
 				if(acked_bytes < ca->sqrt_cnt) {
-					ca->bic_K = t * acked_bytes;
-					do_div(ca->bic_K, ca->sqrt_cnt);
+					ca->bic_K = ((u32) t) * acked_bytes / ca->sqrt_cnt;
 				} else {
 					ca->bic_K = t;
 				}
