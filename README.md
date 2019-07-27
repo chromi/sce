@@ -59,9 +59,17 @@ the operation of SCE and related functionality:
   (for senders)
 - `net.ipv4.ip_forward` - set to 1 to enable IP forwarding, e.g. on middleboxes
   running Cake
-- `net.ipv4.tcp_congestion_control` - set to one reno-sce, dctcp-sce or
+- `net.ipv4.tcp_congestion_control` - set to one of reno-sce, dctcp-sce or
   cubic-sce to default all TCP connections to use this CC algorithm, although
   setting it explicitly for individual test flows may be the preferred method
+
+In some setups, changing Linux's default pacing parameters may improve
+performance and reduce CE marks or drops (e.g. the one that may sometimes be
+seen as a flow reaches BDP). We've found the following settings to be an
+interesting starting point for experimentation:
+
+- `net.ipv4.tcp_pacing_ca_ratio` - set to 40 (Linux default is 120)
+- `net.ipv4.tcp_pacing_ss_ratio` - set to 100 (Linux default is 200)
 
 ## Cake and its SCE related parameters
 
