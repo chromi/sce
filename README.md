@@ -40,7 +40,7 @@ binary. Here are commands that may be used to compile and install the updated
 tc:
 
 ```
-sudo apt-get install pkg-config bison flex libcap-dev libmnl-dev libelf-dev
+sudo apt-get install pkg-config bison flex libcap-dev libmnl-dev libelf-dev libdb-dev
 git clone https://github.com/dtaht/tc-adv # tc-adv repo
 cd tc-adv
 ./configure
