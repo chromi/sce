@@ -186,7 +186,7 @@ static void cobalt_vars_init(struct cobalt_vars *vars)
 {
 	memset(vars, 0, sizeof(*vars));
 
-	if (!cobalt_rec_inv_sqrt_cache[0])
+	if (!cobalt_isqrt_cache[0])
 		cobalt_cache_init();
 }
 
@@ -201,7 +201,7 @@ static bool cobalt_queue_full(struct cobalt_vars *vars,
 {
 	bool up = false;
 
-	if (ktime_to_ns(ktime_sub(now, vars->blue_timer)) > p->target) {
+	if (ktime_to_ns(ktime_sub(now, vars->blue_timer)) > p->ce_target) {
 		up = !vars->p_drop;
 		vars->p_drop += p->p_inc;
 		if (vars->p_drop < p->p_inc)
@@ -231,7 +231,7 @@ static bool cobalt_queue_empty(struct cobalt_vars *vars,
 	bool down = false;
 
 	if (vars->p_drop &&
-	    ktime_to_ns(ktime_sub(now, vars->blue_timer)) > p->target) {
+	    ktime_to_ns(ktime_sub(now, vars->blue_timer)) > p->ce_target) {
 		if (vars->p_drop < p->p_dec)
 			vars->p_drop = 0;
 		else
@@ -239,11 +239,12 @@ static bool cobalt_queue_empty(struct cobalt_vars *vars,
 		vars->blue_timer = now;
 		down = !vars->p_drop;
 	}
-	vars->dropping = false;
+	vars->ce_dropping = false;
+	vars->sce_dropping = false;
 
 	if (vars->ce_count && ktime_to_ns(ktime_sub(now, vars->ce_next)) >= 0) {
 		vars->ce_count--;
-		vars->ce_isqrt = cobalt_invsqrt(vars->ce_count, vars->ce_isqrt);
+		cobalt_invsqrt(vars);
 		vars->ce_next = cobalt_control(vars->ce_next,
 						 p->ce_interval,
 						 vars->ce_isqrt);
@@ -251,7 +252,7 @@ static bool cobalt_queue_empty(struct cobalt_vars *vars,
 
 	if (vars->sce_count && ktime_to_ns(ktime_sub(now, vars->sce_next)) >= 0) {
 		vars->sce_count--;
-		vars->sce_isqrt = cobalt_invsqrt(vars->sce_count, vars->sce_isqrt);
+		cobalt_invsqrt(vars);
 		vars->sce_next = cobalt_control(vars->sce_next,
 						 p->sce_interval,
 						 vars->sce_isqrt);
@@ -272,7 +273,7 @@ static bool cobalt_should_drop(struct cobalt_vars *vars,
 	/* Handle SCE marking, but only if enabled */
 	vars->sce_marked = false;
 	schedule = ktime_sub(now, vars->sce_next);
-	over_target =	vars->sce_interval &&
+	over_target =	p->sce_interval &&
 			sojourn > p->sce_target &&
 			sojourn > p->mtu_time * 2;
 	next_due = vars->sce_count && schedule >= 0;
@@ -294,19 +295,19 @@ static bool cobalt_should_drop(struct cobalt_vars *vars,
 			vars->sce_count++;
 			if (!vars->sce_count)
 				vars->sce_count--;
-			vars->sce_isqrt = cobalt_invsqrt(vars->sce_count, vars->sce_isqrt);
+			cobalt_invsqrt(vars);
 			vars->sce_next = cobalt_control(vars->sce_next, p->sce_interval, vars->sce_isqrt);
 		}
 	} else while (next_due) {
 		vars->sce_count--;
-		vars->sce_isqrt = cobalt_invsqrt(vars->sce_count, vars->sce_isqrt);
+		cobalt_invsqrt(vars);
 		vars->sce_next = cobalt_control(vars->sce_next, p->sce_interval, vars->sce_isqrt);
 		schedule = ktime_sub(now, vars->sce_next);
 		next_due = vars->sce_count && schedule >= 0;
 	}
 
 	/* Handle CE marking */
-	vars->ecn_marked = false;
+	vars->ce_marked = false;
 	schedule = ktime_sub(now, vars->ce_next);
 	over_target =	sojourn > p->ce_target &&
 			sojourn > p->mtu_time * 4;
@@ -324,16 +325,16 @@ static bool cobalt_should_drop(struct cobalt_vars *vars,
 	}
 
 	if (next_due && vars->ce_dropping) {
-		drop = !(vars->ecn_marked = INET_ECN_set_ce(skb));
+		drop = !(vars->ce_marked = INET_ECN_set_ce(skb));
 		vars->ce_count++;
 		if (!vars->ce_count)
 			vars->ce_count--;
-		vars->ce_isqrt = cobalt_invsqrt(vars->ce_count, vars->ce_isqrt);
+		cobalt_invsqrt(vars);
 		vars->ce_next = cobalt_control(vars->ce_next, p->ce_interval, vars->ce_isqrt);
 		schedule = ktime_sub(now, vars->ce_next);
 	} else while (next_due) {
 		vars->ce_count--;
-		vars->ce_isqrt = cobalt_invsqrt(vars->ce_count, vars->ce_isqrt);
+		cobalt_invsqrt(vars);
 		vars->ce_next = cobalt_control(vars->ce_next, p->ce_interval, vars->ce_isqrt);
 		schedule = ktime_sub(now, vars->ce_next);
 		next_due = vars->ce_count && schedule >= 0;
@@ -347,7 +348,7 @@ static bool cobalt_should_drop(struct cobalt_vars *vars,
 
 	/* Activity timeout */
 	if (!vars->ce_count)
-		vars->ce_next = ktime_add_ns(now, p->interval);
+		vars->ce_next = ktime_add_ns(now, p->ce_interval);
 	else if (schedule > 0 && !drop)
 		vars->ce_next = now;
 
@@ -429,7 +430,7 @@ static int cnq_advance_shaper(struct cnq_sched_data *q,
 	u32 len = cnq_overhead(q, skb);
 
 	if (q->rate_ns) {
-		u64 global_dur = (len * q->rate_ns) >> q->rate_shft;
+		u64 global_dur = (len * q->rate_ns) >> q->rate_shift;
 
 		q->time_next_packet = ktime_add_ns(q->time_next_packet,
 						   global_dur);
@@ -439,7 +440,7 @@ static int cnq_advance_shaper(struct cnq_sched_data *q,
 
 static void cnq_unstale_shaper(struct cnq_sched_data *q, ktime_t now)
 {
-	if (!q->buffer_used) {
+	if (!q->backlog) {
 		if (ktime_before(q->time_next_packet, now))
 			q->time_next_packet = now;
 		else
@@ -543,7 +544,7 @@ static s32 cnq_enqueue(struct sk_buff *skb, struct Qdisc *sch, struct sk_buff **
 	u32 flow = cnq_hash(q, skb);
 
 	/* TODO: add GSO splitting */
-	cb->enqueue_time = now;
+	cobalt_set_enqueue_time(skb, now);
 	cb->flow = flow;
 	cb->sparse = false;
 
@@ -667,7 +668,7 @@ static int cnq_change(struct Qdisc *sch, struct nlattr *opt,
 		q->rate_mpu = nla_get_u32(tb[TCA_CAKE_MPU]);
 
 	if (tb[TCA_CAKE_RTT]) {
-		q->cparams.ce_interval = nla_get_u32(tb[TCA_CAKE_RTT]);
+		q->cparams.ce_interval = us_to_ns(nla_get_u32(tb[TCA_CAKE_RTT]));
 
 		if (!q->cparams.ce_interval)
 			q->cparams.ce_interval = 1;
@@ -676,7 +677,7 @@ static int cnq_change(struct Qdisc *sch, struct nlattr *opt,
 	}
 
 	if (tb[TCA_CAKE_TARGET]) {
-		q->cparams.ce_target = nla_get_u32(tb[TCA_CAKE_TARGET]);
+		q->cparams.ce_target = us_to_ns(nla_get_u32(tb[TCA_CAKE_TARGET]));
 
 		if (!q->cparams.ce_target)
 			q->cparams.ce_target = 1;
@@ -701,12 +702,11 @@ static int cnq_change(struct Qdisc *sch, struct nlattr *opt,
 		sch->flags |= TCQ_F_CAN_BYPASS;
 	} else {
 		/* convert bytes per second into nanoseconds per byte */
-		static const u64 MIN_RATE = 64;
 		u8  rate_shft = 34;
 		u64 rate_ns = 0;
 
 		rate_ns = ((u64)NSEC_PER_SEC) << rate_shft;
-		rate_ns = div64_u64(rate_ns, max(MIN_RATE, rate));
+		rate_ns = div64_u64(rate_ns, max(64ULL, q->rate_bps));
 		while(!!(rate_ns >> 34)) {
 			rate_ns >>= 1;
 			rate_shft--;
@@ -733,10 +733,10 @@ static int cnq_dump(struct Qdisc *sch, struct sk_buff *skb)
 			      TCA_CAKE_PAD))
 		goto nla_put_failure;
 
-	if (nla_put_u32(skb, TCA_CAKE_RTT, q->cparams.ce_interval))
+	if (nla_put_u32(skb, TCA_CAKE_RTT, q->cparams.ce_interval / NSEC_PER_USEC))
 		goto nla_put_failure;
 
-	if (nla_put_u32(skb, TCA_CAKE_TARGET, q->cparams.ce_target))
+	if (nla_put_u32(skb, TCA_CAKE_TARGET, q->cparams.ce_target / NSEC_PER_USEC))
 		goto nla_put_failure;
 
 	if (nla_put_u32(skb, TCA_CAKE_OVERHEAD, q->rate_overhead))
@@ -770,9 +770,9 @@ static int cnq_init(struct Qdisc *sch, struct nlattr *opt,
 		    struct netlink_ext_ack *extack)
 {
 	struct cnq_sched_data *q = qdisc_priv(sch);
-	int i, err;
 
 	memset(q, 0, sizeof(*q));
+	cobalt_vars_init(&q->cvars);
 	sch->limit = 10240;
 
 	q->cparams.ce_interval  = 100000;
@@ -799,9 +799,9 @@ static void cnq_reset(struct Qdisc *sch)
 	struct cnq_sched_data *q = qdisc_priv(sch);
 	struct sk_buff *skb;
 
-	while (!!(skb = dequeue_sparse(sch)))
+	while (!!(skb = dequeue_sparse(q)))
 		kfree_skb(skb);
-	while (!!(skb = dequeue_bulk(sch)))
+	while (!!(skb = dequeue_bulk(q)))
 		kfree_skb(skb);
 	q->backlog = 0;
 	sch->q.qlen = 0;
@@ -815,7 +815,7 @@ static void cnq_destroy(struct Qdisc *sch)
 }
 
 
-static struct Qdisc_ops cnq_dqisc_ops __read_mostly = {
+static struct Qdisc_ops cnq_qdisc_ops __read_mostly = {
 	.id		=	"cnq_cobalt",
 	.priv_size	=	sizeof(struct cnq_sched_data),
 	.enqueue	=	cnq_enqueue,
