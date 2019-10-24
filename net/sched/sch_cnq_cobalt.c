@@ -125,6 +125,11 @@ static u64 us_to_ns(u64 us)
 	return us * NSEC_PER_USEC;
 }
 
+static u64 ns_to_us(u64 ns)
+{
+	return div64_u64(ns, NSEC_PER_USEC);
+}
+
 static struct cnq_cobalt_skb_cb *get_cobalt_cb(const struct sk_buff *skb)
 {
 	qdisc_cb_private_validate(skb, sizeof(struct cnq_cobalt_skb_cb));
@@ -733,10 +738,10 @@ static int cnq_dump(struct Qdisc *sch, struct sk_buff *skb)
 			      TCA_CAKE_PAD))
 		goto nla_put_failure;
 
-	if (nla_put_u32(skb, TCA_CAKE_RTT, q->cparams.ce_interval / NSEC_PER_USEC))
+	if (nla_put_u32(skb, TCA_CAKE_RTT, ns_to_us(q->cparams.ce_interval)))
 		goto nla_put_failure;
 
-	if (nla_put_u32(skb, TCA_CAKE_TARGET, q->cparams.ce_target / NSEC_PER_USEC))
+	if (nla_put_u32(skb, TCA_CAKE_TARGET, ns_to_us(q->cparams.ce_target)))
 		goto nla_put_failure;
 
 	if (nla_put_u32(skb, TCA_CAKE_OVERHEAD, q->rate_overhead))
@@ -756,7 +761,7 @@ static int cnq_dump(struct Qdisc *sch, struct sk_buff *skb)
 		goto nla_put_failure;
 
 	if (nla_put_u32(skb, TCA_CAKE_SCE, q->cparams.sce_interval ?
-	                q->cparams.ce_interval / q->cparams.sce_interval
+	                div64_u64(q->cparams.ce_interval, q->cparams.sce_interval)
 	                : 0))
 		goto nla_put_failure;
 
