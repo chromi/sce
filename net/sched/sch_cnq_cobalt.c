@@ -693,7 +693,7 @@ static int cnq_change(struct Qdisc *sch, struct nlattr *opt,
 	if (tb[TCA_CAKE_SCE]) {
 		u32 sce = nla_get_u32(tb[TCA_CAKE_SCE]);
 		if(sce) {
-			q->cparams.sce_interval = q->cparams.ce_interval / sce;
+			q->cparams.sce_interval = div64_u64(q->cparams.ce_interval, sce);
 			if(!q->cparams.sce_interval)
 				q->cparams.sce_interval = 1;
 		} else {
