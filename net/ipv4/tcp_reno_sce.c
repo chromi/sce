@@ -44,6 +44,7 @@ static void reno_sce_init(struct sock *sk)
 
 static u32 reno_sce_ssthresh(struct sock *sk)
 {
+	const struct tcp_sock *tp = tcp_sk(sk);
 	struct dctcp *ca = inet_csk_ca(sk);
 
 	return max(tp->snd_ssthresh, max(ca->loss_cwnd >> 1U, 2U));
