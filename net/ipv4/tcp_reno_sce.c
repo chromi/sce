@@ -131,7 +131,7 @@ static void reno_sce_react_to_loss(struct sock *sk, u32 logdiv)
 	ca->loss_cwnd    = tp->snd_cwnd;
 	ca->snd_cwnd_cnt = 0;
 	tp->snd_cwnd     = max(tp->snd_cwnd - max(tp->snd_cwnd >> logdiv, 1U), 2U);
-	tp->snd_ssthresh = reno_sce_ssthresh(sk);
+	tp->snd_ssthresh = ca->loss_cwnd >> 1;
 
 	while(ca->sqrt_cwnd * ca->sqrt_cwnd >= tp->snd_cwnd)
 		ca->sqrt_cwnd--;
