@@ -130,6 +130,11 @@ static u64 ns_to_us(u64 ns)
 	return div64_u64(ns, NSEC_PER_USEC);
 }
 
+static u64 ms_to_ns(u64 ms)
+{
+	return ms * NSEC_PER_MSEC;
+}
+
 static struct cnq_cobalt_skb_cb *get_cobalt_cb(const struct sk_buff *skb)
 {
 	qdisc_cb_private_validate(skb, sizeof(struct cnq_cobalt_skb_cb));
@@ -247,7 +252,7 @@ static bool cobalt_queue_empty(struct cobalt_vars *vars,
 	vars->ce_dropping = false;
 	vars->sce_dropping = false;
 
-	if (vars->ce_count && ktime_to_ns(ktime_sub(now, vars->ce_next)) >= 0) {
+	while (vars->ce_count && ktime_sub(now, vars->ce_next) >= 0) {
 		vars->ce_count--;
 		cobalt_invsqrt(vars);
 		vars->ce_next = cobalt_control(vars->ce_next,
@@ -255,7 +260,7 @@ static bool cobalt_queue_empty(struct cobalt_vars *vars,
 						 vars->ce_isqrt);
 	}
 
-	if (vars->sce_count && ktime_to_ns(ktime_sub(now, vars->sce_next)) >= 0) {
+	while (vars->sce_count && ktime_sub(now, vars->sce_next) >= 0) {
 		vars->sce_count--;
 		cobalt_invsqrt(vars);
 		vars->sce_next = cobalt_control(vars->sce_next,
@@ -546,11 +551,39 @@ static s32 cnq_enqueue(struct sk_buff *skb, struct Qdisc *sch, struct sk_buff **
 	struct cnq_cobalt_skb_cb *cb = get_cobalt_cb(skb);
 	int len = qdisc_pkt_len(skb);
 	ktime_t now = ktime_get();
-	u32 flow = cnq_hash(q, skb);
+	u32 flow;
 
-	/* TODO: add GSO splitting */
+	/* GSO splitting */
+	if (skb_is_gso(skb)) {
+		struct sk_buff *segs, *nskb;
+		netdev_features_t features = netif_skb_features(skb);
+		unsigned int slen = 0, numsegs = 0;
+
+		segs = skb_gso_segment(skb, features & ~NETIF_F_GSO_MASK);
+		if (IS_ERR_OR_NULL(segs))
+			return qdisc_drop(skb, sch, to_free);
+
+		while(segs) {
+			nskb = segs->next;
+			skb_mark_not_on_list(segs);
+
+			qdisc_skb_cb(segs)->pkt_len = segs->len;
+			slen += segs->len;
+			numsegs++;
+
+			cnq_enqueue(segs, sch, to_free);
+			segs = nskb;
+		}
+
+		qdisc_tree_reduce_backlog(sch, 1-numsegs, len-slen);
+		consume_skb(skb);
+
+		return NET_XMIT_SUCCESS;
+	}
+
+	/* prepare and enqueue */
 	cobalt_set_enqueue_time(skb, now);
-	cb->flow = flow;
+	cb->flow = flow = cnq_hash(q, skb);
 	cb->sparse = false;
 
 	if(q->backlogs[flow])
@@ -780,11 +813,11 @@ static int cnq_init(struct Qdisc *sch, struct nlattr *opt,
 	cobalt_vars_init(&q->cvars);
 	sch->limit = 10240;
 
-	q->cparams.ce_interval  = 100000;
-	q->cparams.sce_interval =      0;  /* off by default, otherwise: 25000; */
-	q->cparams.ce_target    =   5000;
-	q->cparams.sce_target   =   2500;
-	q->cparams.blue_thresh  = 400000;
+	q->cparams.ce_interval  = ms_to_ns( 100);
+	q->cparams.sce_interval =             0 ;  /* off by default, otherwise: 25ms */
+	q->cparams.ce_target    = ms_to_ns(   5);
+	q->cparams.sce_target   = us_to_ns(2500);
+	q->cparams.blue_thresh  = ms_to_ns( 400);
 	q->cparams.p_inc	= 1 << 24;
 	q->cparams.p_dec	= 1 << 20;
 
