@@ -342,6 +342,18 @@ config NET_SCH_CNQ_COBALT
 
 	  If unsure, say N.
 
+config NET_SCH_LFQ_COBALT
+	tristate "Lightweight Fair Queueing (LFQ) with COBALT AQM"
+	help
+	  Say Y here if you want to use the Lightweight Fair Queueing (LFQ)
+          queue management algorithm, with built-in COBALT AQM and CAKE
+          derived shaper.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called sch_lfq_cobalt.
+
+	  If unsure, say N.
+
 config NET_SCH_FQ
 	tristate "Fair Queue"
 	help
