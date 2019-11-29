@@ -47,8 +47,6 @@
 
 #define LFQ_QUEUES (65536)
 
-#define MAX_SIZE 128*1024
-
 struct cobalt_params {
 	u64	ce_interval;
 	u64	ce_target;
@@ -88,7 +86,7 @@ struct lfq_queue {
 	struct sk_buff *head;
 	struct sk_buff *tail;
 	struct sk_buff *scan;
-	u32 size;
+	u32 truesize;
 };
 
 struct lfq_flow_data {
@@ -116,6 +114,9 @@ struct lfq_sched_data {
 	struct cobalt_params	cparams;
 	struct cobalt_vars	cvars;
 
+	/* resource tracking */
+	u32 buffer_limit;
+
 	/* flow tracking */
 	u32	backlog;
 	struct lfq_flow_data flow_data[LFQ_QUEUES];
@@ -141,7 +142,7 @@ static struct sk_buff* lfq_push(struct lfq_queue *q, struct sk_buff *skb)
 	skb->next = NULL;
 	q->tail = skb;
 
-	q->size += qdisc_pkt_len(skb);
+	q->truesize += skb->truesize;
 
 	return skb;
 }
@@ -159,7 +160,7 @@ static struct sk_buff* lfq_pop(struct lfq_queue *q)
 		else
 			q->tail = q->scan = NULL;
 		skb_mark_not_on_list(skb);
-		q->size -= qdisc_pkt_len(skb);
+		q->truesize -= skb->truesize;
 	}
 
 	return skb;
@@ -179,7 +180,7 @@ static struct sk_buff* lfq_pull(struct lfq_queue *q)
 		else
 			q->tail = skb->prev;
 		skb_mark_not_on_list(skb);
-		q->size -= qdisc_pkt_len(skb);
+		q->truesize -= skb->truesize;
 	}
 
 	return skb;
@@ -622,11 +623,13 @@ static s32 lfq_enqueue(struct sk_buff *skb, struct Qdisc *sch, struct sk_buff **
 	}
 
 	flow = lfq_hash(q, skb);
-	while (q->sparse.size + q->bulk.size + len > MAX_SIZE) {
-		if (!(skb = lfq_pop(&q->bulk)))
-			skb = lfq_pop(&q->sparse);
-		flow = lfq_hash(q, skb);
-		q->flow_data[flow].backlog--;
+	if (q->buffer_limit) {
+		while (q->sparse.truesize + q->bulk.truesize + skb->truesize > q->buffer_limit) {
+			if (!(skb = lfq_pop(&q->bulk)))
+				skb = lfq_pop(&q->sparse);
+			flow = lfq_hash(q, skb);
+			q->flow_data[flow].backlog--;
+		}
 	}
 
 	lfq_cb(skb)->flow = flow;
@@ -717,6 +720,7 @@ static const struct nla_policy lfq_policy[TCA_CAKE_MAX + 1] = {
 	[TCA_CAKE_MPU]		 = { .type = NLA_U32 },
 	[TCA_CAKE_RTT]		 = { .type = NLA_U32 },
 	[TCA_CAKE_TARGET]	 = { .type = NLA_U32 },
+	[TCA_CAKE_MEMORY]	 = { .type = NLA_U32 },
 	[TCA_CAKE_SCE]		 = { .type = NLA_U32 },
 };
 
@@ -780,6 +784,9 @@ static int lfq_change(struct Qdisc *sch, struct nlattr *opt,
 
 		q->cparams.sce_target = (q->cparams.ce_target+1)/2;
 	}
+
+	if (tb[TCA_CAKE_MEMORY])
+		q->buffer_limit = nla_get_u32(tb[TCA_CAKE_MEMORY]);
 
 	if (tb[TCA_CAKE_SCE]) {
 		u32 sce = nla_get_u32(tb[TCA_CAKE_SCE]);
@@ -849,6 +856,9 @@ static int lfq_dump(struct Qdisc *sch, struct sk_buff *skb)
 		goto nla_put_failure;
 
 	if (nla_put_u32(skb, TCA_CAKE_MPU, q->rate_mpu))
+		goto nla_put_failure;
+
+	if (nla_put_u32(skb, TCA_CAKE_MEMORY, q->buffer_limit))
 		goto nla_put_failure;
 
 	if (nla_put_u32(skb, TCA_CAKE_SCE, q->cparams.sce_interval ?
