@@ -73,12 +73,8 @@ struct cobalt_vars {
 	bool	sce_marked;
 };
 
-struct cobalt_skb_cb {
-	ktime_t	enqueue_time;
-};
-
 struct lfq_skb_cb {
-	struct cobalt_skb_cb cobalt;
+	ktime_t enqueue_time;
 	u32 flow;
 };
 
@@ -235,16 +231,6 @@ static u64 ms_to_ns(u64 ms)
 	return ms * NSEC_PER_MSEC;
 }
 
-static ktime_t cobalt_get_enqueue_time(const struct sk_buff *skb)
-{
-	return lfq_cb(skb)->cobalt.enqueue_time;
-}
-
-static void cobalt_set_enqueue_time(struct sk_buff *skb, ktime_t t)
-{
-	lfq_cb(skb)->cobalt.enqueue_time = t;
-}
-
 static u32 cobalt_newton_step(u32 count, u32 invsqrt)
 {
 	u32 invsqrt2;
@@ -367,11 +353,12 @@ static bool cobalt_queue_empty(struct cobalt_vars *vars,
 static bool cobalt_should_drop(struct cobalt_vars *vars,
 			       struct cobalt_params *p,
 			       ktime_t now,
-			       struct sk_buff *skb)
+			       struct sk_buff *skb,
+				   ktime_t enqueue_time)
 {
 	bool next_due, over_target, drop = false;
 	ktime_t schedule;
-	u64 sojourn = ktime_to_ns(ktime_sub(now, cobalt_get_enqueue_time(skb)));
+	u64 sojourn = ktime_to_ns(ktime_sub(now, enqueue_time));
 
 	/* Handle SCE marking, but only if enabled */
 	vars->sce_marked = false;
@@ -593,6 +580,7 @@ static s32 lfq_enqueue(struct sk_buff *skb, struct Qdisc *sch, struct sk_buff **
 	u32 len = qdisc_pkt_len(skb);
 	u32 flow;
 	struct lfq_flow_data *d;
+	struct lfq_skb_cb *cb;
 
 	/* GSO splitting */
 	if (skb_is_gso(skb)) {
@@ -632,8 +620,9 @@ static s32 lfq_enqueue(struct sk_buff *skb, struct Qdisc *sch, struct sk_buff **
 		}
 	}
 
-	lfq_cb(skb)->flow = flow;
-	cobalt_set_enqueue_time(skb, now);
+	cb = lfq_cb(skb);
+	cb->flow = flow;
+	cb->enqueue_time = now;
 	d = &q->flow_data[flow];
 
 	if (d->backlog == 0 && d->deficit >= 0 && !d->skip)
@@ -693,7 +682,8 @@ static struct sk_buff* lfq_dequeue(struct Qdisc *sch)
 	// AQM
 	if (!q->backlog) {
 		cobalt_queue_empty(&q->cvars, &q->cparams, now);
-	} else if (cobalt_should_drop(&q->cvars, &q->cparams, now, skb)) {
+	} else if (cobalt_should_drop(&q->cvars, &q->cparams, now, skb,
+				lfq_cb(skb)->enqueue_time)) {
 		// drop packet, and try again with the next one
 		qdisc_tree_reduce_backlog(sch, 1, qdisc_pkt_len(skb));
 		qdisc_qstats_drop(sch);
