@@ -443,7 +443,7 @@ static void cnq_unstale_shaper(struct cnq_sched_data *q, ktime_t now)
 
 /* Flows */
 
-static u32 cnq_hash(struct cnq_sched_data *q, const struct sk_buff *skb)
+static u32 cnq_hash(const struct sk_buff *skb)
 {
 	/* Implements only 5-tuple flow hash, without set association */
 	u32 flow_hash = 0;
@@ -565,7 +565,7 @@ static s32 cnq_enqueue(struct sk_buff *skb, struct Qdisc *sch, struct sk_buff **
 
 	/* prepare and enqueue */
 	cobalt_set_enqueue_time(skb, now);
-	cb->flow = flow = cnq_hash(q, skb);
+	cb->flow = flow = cnq_hash(skb);
 	cb->sparse = false;
 
 	if(q->backlogs[flow])
