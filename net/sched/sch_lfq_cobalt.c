@@ -86,9 +86,15 @@ struct lfq_queue {
 };
 
 struct lfq_flow_data {
-	u16 backlog;
 	s32 deficit;
+	u16 backlog;
 	bool skip;
+	bool dirty;
+};
+
+struct lfq_dirty_flows {
+	u32 flows[LFQ_FLOWS];
+	int len;
 };
 
 struct lfq_sched_data {
@@ -115,6 +121,7 @@ struct lfq_sched_data {
 
 	/* flow tracking */
 	struct lfq_flow_data flow_data[LFQ_FLOWS];
+	struct lfq_dirty_flows dirty_flows;
 	u32	backlog;
 };
 
@@ -190,24 +197,6 @@ static struct sk_buff* lfq_scan_next(struct lfq_queue *q)
 static struct sk_buff* lfq_scan_head(struct lfq_queue *q)
 {
 	return (q->scan = q->head);
-}
-
-static struct sk_buff* lfq_sweep(struct lfq_sched_data *q)
-{
-	struct lfq_flow_data *d;
-	int i;
-
-	for (i = 0; i < LFQ_FLOWS; i++) {
-		d = &q->flow_data[i];
-		if (!d->skip) {
-			if (!d->backlog)
-				d->deficit = 0;
-		} else {
-			d->skip = false;
-		}
-	}
-
-	return lfq_scan_head(&q->bulk);
 }
 
 /* COBALT AQM */
@@ -552,6 +541,40 @@ static u32 lfq_hash(const struct sk_buff *skb)
 	return h % LFQ_FLOWS;
 }
 
+static void lfq_set_dirty(struct lfq_sched_data *q, u32 flow)
+{
+	struct lfq_flow_data *d = &q->flow_data[flow];
+
+	if (!d->dirty) {
+		struct lfq_dirty_flows *r = &q->dirty_flows;
+
+		r->flows[r->len++] = flow;
+		d->dirty = true;
+	}
+}
+
+static struct sk_buff* lfq_sweep(struct lfq_sched_data *q)
+{
+	struct lfq_dirty_flows *r = &q->dirty_flows;
+	struct lfq_flow_data *d;
+	int i;
+
+	for (i = 0; i < r->len; i++) {
+		d = &q->flow_data[r->flows[i]];
+		if (!d->skip) {
+			if (!d->backlog)
+				d->deficit = 0;
+		} else {
+			d->skip = false;
+		}
+		d->dirty = false;
+	}
+
+	r->len = 0;
+
+	return lfq_scan_head(&q->bulk);
+}
+
 /* Core */
 
 static s32 lfq_enqueue(struct sk_buff *skb, struct Qdisc *sch, struct sk_buff **to_free)
@@ -598,6 +621,7 @@ static s32 lfq_enqueue(struct sk_buff *skb, struct Qdisc *sch, struct sk_buff **
 				skb = lfq_pop(&q->sparse);
 			flow = lfq_hash(skb);
 			q->flow_data[flow].backlog--;
+			lfq_set_dirty(q, flow);
 		}
 	}
 
@@ -616,6 +640,7 @@ static s32 lfq_enqueue(struct sk_buff *skb, struct Qdisc *sch, struct sk_buff **
 	sch->q.qlen++;
 	d->backlog++;
 	q->backlog += len;
+	lfq_set_dirty(q, flow);
 
 	return NET_XMIT_SUCCESS;
 }
@@ -636,6 +661,7 @@ static void lfq_send(struct Qdisc *sch, struct sk_buff *skb)
 	}
 	sch->q.qlen--;
 	q->backlog -= len;
+	lfq_set_dirty(q, lfq_cb(skb)->flow);
 }
 
 static struct sk_buff* lfq_dequeue(struct Qdisc *sch)
@@ -901,6 +927,7 @@ static void lfq_reset(struct Qdisc *sch)
 	sch->q.qlen = 0;
 	q->backlog = 0;
 	memset(&q->flow_data, 0, LFQ_FLOWS * sizeof(struct lfq_flow_data));
+	memset(&q->dirty_flows, 0, sizeof(struct lfq_dirty_flows));
 }
 
 static void lfq_destroy(struct Qdisc *sch)
