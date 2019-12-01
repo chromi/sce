@@ -45,7 +45,7 @@
 #include <net/pkt_cls.h>
 #include <net/tcp.h>
 
-#define LFQ_QUEUES (65536)
+#define LFQ_FLOWS (65536)
 
 struct cobalt_params {
 	u64	ce_interval;
@@ -107,15 +107,15 @@ struct lfq_sched_data {
 	struct qdisc_watchdog watchdog;
 
 	/* AQM */
-	struct cobalt_params	cparams;
-	struct cobalt_vars	cvars;
+	struct cobalt_params cparams;
+	struct cobalt_vars cvars;
 
 	/* resource tracking */
 	u32 buffer_limit;
 
 	/* flow tracking */
+	struct lfq_flow_data flow_data[LFQ_FLOWS];
 	u32	backlog;
-	struct lfq_flow_data flow_data[LFQ_QUEUES];
 };
 
 /* Control Block */
@@ -192,13 +192,12 @@ static struct sk_buff* lfq_scan_head(struct lfq_queue *q)
 	return (q->scan = q->head);
 }
 
-static struct sk_buff* lfq_wrap_scan(struct Qdisc *sch)
+static struct sk_buff* lfq_sweep(struct lfq_sched_data *q)
 {
-	struct lfq_sched_data *q = qdisc_priv(sch);
 	struct lfq_flow_data *d;
 	int i;
 
-	for (i = 0; i < LFQ_QUEUES; i++) {
+	for (i = 0; i < LFQ_FLOWS; i++) {
 		d = &q->flow_data[i];
 		if (!d->skip) {
 			if (!d->backlog)
@@ -540,7 +539,7 @@ static void lfq_unstale_shaper(struct lfq_sched_data *q, ktime_t now)
 
 /* Flows */
 
-static u32 lfq_hash(struct lfq_sched_data *q, const struct sk_buff *skb)
+static u32 lfq_hash(const struct sk_buff *skb)
 {
 	/* Implements only 5-tuple flow hash, without set association */
 	u32 h;
@@ -550,28 +549,10 @@ static u32 lfq_hash(struct lfq_sched_data *q, const struct sk_buff *skb)
 				   FLOW_DISSECTOR_F_STOP_AT_FLOW_LABEL);
 	h = flow_hash_from_keys(&keys);
 
-	return h % LFQ_QUEUES;
+	return h % LFQ_FLOWS;
 }
 
 /* Core */
-
-static void lfq_send(struct Qdisc *sch, struct sk_buff *skb)
-{
-	struct lfq_sched_data *q = qdisc_priv(sch);
-	struct lfq_flow_data *d;
-	u32 len = qdisc_pkt_len(skb);
-
-	qdisc_watchdog_schedule_ns(&q->watchdog, q->time_next_packet);
-	d = &q->flow_data[lfq_cb(skb)->flow];
-	d->backlog--;
-	d->deficit -= len;
-	if (d->deficit < 0) {
-		d->skip = true;
-		d->deficit += psched_mtu(qdisc_dev(sch));
-	}
-	sch->q.qlen--;
-	q->backlog -= len;
-}
 
 static s32 lfq_enqueue(struct sk_buff *skb, struct Qdisc *sch, struct sk_buff **to_free)
 {
@@ -610,12 +591,12 @@ static s32 lfq_enqueue(struct sk_buff *skb, struct Qdisc *sch, struct sk_buff **
 		return NET_XMIT_SUCCESS;
 	}
 
-	flow = lfq_hash(q, skb);
+	flow = lfq_hash(skb);
 	if (q->buffer_limit) {
 		while (q->sparse.truesize + q->bulk.truesize + skb->truesize > q->buffer_limit) {
 			if (!(skb = lfq_pop(&q->bulk)))
 				skb = lfq_pop(&q->sparse);
-			flow = lfq_hash(q, skb);
+			flow = lfq_hash(skb);
 			q->flow_data[flow].backlog--;
 		}
 	}
@@ -637,6 +618,24 @@ static s32 lfq_enqueue(struct sk_buff *skb, struct Qdisc *sch, struct sk_buff **
 	q->backlog += len;
 
 	return NET_XMIT_SUCCESS;
+}
+
+static void lfq_send(struct Qdisc *sch, struct sk_buff *skb)
+{
+	struct lfq_sched_data *q = qdisc_priv(sch);
+	struct lfq_flow_data *d;
+	u32 len = qdisc_pkt_len(skb);
+
+	qdisc_watchdog_schedule_ns(&q->watchdog, q->time_next_packet);
+	d = &q->flow_data[lfq_cb(skb)->flow];
+	d->backlog--;
+	d->deficit -= len;
+	if (d->deficit < 0) {
+		d->skip = true;
+		d->deficit += psched_mtu(qdisc_dev(sch));
+	}
+	sch->q.qlen--;
+	q->backlog -= len;
 }
 
 static struct sk_buff* lfq_dequeue(struct Qdisc *sch)
@@ -661,12 +660,12 @@ static struct sk_buff* lfq_dequeue(struct Qdisc *sch)
 	} else {
 		while (q->bulk.head) {
 			if (!(skb = q->bulk.scan))
-				skb = lfq_wrap_scan(sch);
+				skb = lfq_sweep(q);
 
 			d = &q->flow_data[lfq_cb(skb)->flow];
 			if (!d->skip) {
-				lfq_pull(&q->bulk);
 				lfq_send(sch, skb);
+				lfq_pull(&q->bulk);
 				break;
 			}
 
@@ -679,12 +678,12 @@ static struct sk_buff* lfq_dequeue(struct Qdisc *sch)
 		return NULL;
 	}
 
-	// AQM
+	/* AQM */
 	if (!q->backlog) {
 		cobalt_queue_empty(&q->cvars, &q->cparams, now);
 	} else if (cobalt_should_drop(&q->cvars, &q->cparams, now, skb,
 				lfq_cb(skb)->enqueue_time)) {
-		// drop packet, and try again with the next one
+		/* drop packet, and try again with the next one */
 		qdisc_tree_reduce_backlog(sch, 1, qdisc_pkt_len(skb));
 		qdisc_qstats_drop(sch);
 		kfree_skb(skb);
@@ -692,7 +691,7 @@ static struct sk_buff* lfq_dequeue(struct Qdisc *sch)
 	}
 	qdisc_bstats_update(sch, skb);
 
-	// shaper again
+	/* shaper again */
 	lfq_advance_shaper(q, skb, now);
 	if (ktime_after(q->time_next_packet, now) && sch->q.qlen)
 		qdisc_watchdog_schedule_ns(&q->watchdog, q->time_next_packet);
@@ -901,7 +900,7 @@ static void lfq_reset(struct Qdisc *sch)
 		kfree_skb(skb);
 	sch->q.qlen = 0;
 	q->backlog = 0;
-	memset(&q->flow_data, LFQ_QUEUES, sizeof(struct lfq_flow_data));
+	memset(&q->flow_data, 0, LFQ_FLOWS * sizeof(struct lfq_flow_data));
 }
 
 static void lfq_destroy(struct Qdisc *sch)
