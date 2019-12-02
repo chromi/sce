@@ -861,7 +861,7 @@ static void cnq_destroy(struct Qdisc *sch)
 
 
 static struct Qdisc_ops cnq_qdisc_ops __read_mostly = {
-	.id		=	"cnq_cobalt",
+	.id		=	"cnq_codel_af",
 	.priv_size	=	sizeof(struct cnq_sched_data),
 	.enqueue	=	cnq_enqueue,
 	.dequeue	=	cnq_dequeue,
@@ -888,4 +888,4 @@ module_init(cnq_module_init)
 module_exit(cnq_module_exit)
 MODULE_AUTHOR("Jonathan Morton");
 MODULE_LICENSE("Dual BSD/GPL");
-MODULE_DESCRIPTION("Cheap Nasty Queuing with COBALT.");
+MODULE_DESCRIPTION("Cheap Nasty Queuing with Codel and Approximate Fairness.");
