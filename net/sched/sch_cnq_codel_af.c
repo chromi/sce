@@ -343,7 +343,7 @@ static bool cobalt_should_drop(struct cobalt_vars *vars,
 	}
 
 	/* Handle BLUE */
-	if (weighted_sojourn > p->blue_thresh * total_backlog)
+	if (sojourn > p->blue_thresh)
 		cobalt_queue_full(vars, p, now);
 	if (vars->p_drop)
 		drop |= (prandom_u32() < vars->p_drop);
