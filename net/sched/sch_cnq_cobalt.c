@@ -587,6 +587,7 @@ static struct sk_buff* cnq_dequeue(struct Qdisc *sch)
 	ktime_t now = ktime_get();
 	struct sk_buff *skb;
 	u32 len;
+	bool sparse = true;
 
 	if(!sch->q.qlen)
 		return NULL;
@@ -600,8 +601,10 @@ static struct sk_buff* cnq_dequeue(struct Qdisc *sch)
 
 	/* sparse queue has strict priority */
 	skb = dequeue_sparse(q);
-	if (!skb)
+	if (!skb) {
 		skb = dequeue_bulk(q);
+		sparse = false;
+	}
 	if (unlikely(!skb)) {
 		WARN_ON(!skb);
 		return NULL;
@@ -613,7 +616,7 @@ static struct sk_buff* cnq_dequeue(struct Qdisc *sch)
 	/* AQM */
 	if (!q->backlog) {
 		cobalt_queue_empty(&q->cvars, &q->cparams, now);
-	} else if (cobalt_should_drop(&q->cvars, &q->cparams, now, skb)) {
+	} else if (!sparse && cobalt_should_drop(&q->cvars, &q->cparams, now, skb)) {
 		/* drop packet, and try again with the next one */
 		qdisc_tree_reduce_backlog(sch, 1, len);
 		qdisc_qstats_drop(sch);

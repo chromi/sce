@@ -651,7 +651,6 @@ static void lfq_send(struct Qdisc *sch, struct sk_buff *skb)
 	struct lfq_flow_data *d;
 	u32 len = qdisc_pkt_len(skb);
 
-	qdisc_watchdog_schedule_ns(&q->watchdog, q->time_next_packet);
 	d = &q->flow_data[lfq_cb(skb)->flow];
 	d->backlog--;
 	d->deficit -= len;
@@ -697,24 +696,25 @@ static struct sk_buff* lfq_dequeue(struct Qdisc *sch)
 
 			lfq_scan_next(&q->bulk);
 		}
+
+		if (unlikely(!skb)) {
+			WARN_ON(!skb);
+			return NULL;
+		}
+
+		/* AQM */
+		if (!q->backlog) {
+			cobalt_queue_empty(&q->cvars, &q->cparams, now);
+		} else if (cobalt_should_drop(&q->cvars, &q->cparams, now, skb,
+					lfq_cb(skb)->enqueue_time)) {
+			/* drop packet, and try again with the next one */
+			qdisc_tree_reduce_backlog(sch, 1, qdisc_pkt_len(skb));
+			qdisc_qstats_drop(sch);
+			kfree_skb(skb);
+			return lfq_dequeue(sch);
+		}
 	}
 
-	if (unlikely(!skb)) {
-		WARN_ON(!skb);
-		return NULL;
-	}
-
-	/* AQM */
-	if (!q->backlog) {
-		cobalt_queue_empty(&q->cvars, &q->cparams, now);
-	} else if (cobalt_should_drop(&q->cvars, &q->cparams, now, skb,
-				lfq_cb(skb)->enqueue_time)) {
-		/* drop packet, and try again with the next one */
-		qdisc_tree_reduce_backlog(sch, 1, qdisc_pkt_len(skb));
-		qdisc_qstats_drop(sch);
-		kfree_skb(skb);
-		return lfq_dequeue(sch);
-	}
 	qdisc_bstats_update(sch, skb);
 
 	/* shaper again */
