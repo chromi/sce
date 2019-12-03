@@ -476,8 +476,10 @@ static struct sk_buff* dequeue_bulk(struct cnq_sched_data *q)
 
 		WARN_ON(!q->backlogs[get_cobalt_cb(skb)->flow]);
 		q->backlogs[get_cobalt_cb(skb)->flow]--;
-		if(!q->backlogs[get_cobalt_cb(skb)->flow])
+		if(!q->backlogs[get_cobalt_cb(skb)->flow]) {
+			WARN_ON(!q->active_flows);
 			q->active_flows--;
+		}
 
 		if(get_cobalt_cb(skb)->sparse) {
 			/* dummy packet, do not deliver */
@@ -633,7 +635,7 @@ static struct sk_buff* cnq_dequeue(struct Qdisc *sch)
 	if (sparse || !q->backlog) {
 		cobalt_queue_empty(&q->cvars[flow], &q->cparams, now);
 	} else if (cobalt_should_drop(&q->cvars[flow], &q->cparams, now, skb,
-	                              q->backlogs[flow], q->active_flows, q->backlog))
+	                              q->backlogs[flow]+1, q->active_flows, sch->q.qlen+1))
 	{
 		/* drop packet, and try again with the next one */
 		qdisc_tree_reduce_backlog(sch, 1, len);
