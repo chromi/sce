@@ -75,7 +75,7 @@ static void dctcp_handle_ack(struct sock *sk, u32 flags)
 	if (acked_bytes) {
 		ca->prior_snd_una = tp->snd_una;
 
-		if (flags & CA_ACK_ESCE) {
+		if ((flags & (CA_ACK_ECE|CA_ACK_ESCE)) == CA_ACK_ESCE) {
 			/* Respond to SCE feedback - DCTCP style:
 			 * Subtract half of SCE-acked bytes from the cwnd.
 			 */
