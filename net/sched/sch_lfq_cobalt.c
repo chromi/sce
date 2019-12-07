@@ -272,6 +272,12 @@ static ktime_t cobalt_control(ktime_t t, u64 interval, u32 isqrt)
 	return ktime_add_ns(t, reciprocal_scale(interval, isqrt));
 }
 
+static ktime_t cobalt_reflect(ktime_t now, ktime_t t, u64 interval, u32 isqrt)
+{
+	ktime_t then = ktime_sub(ktime_add(now, now), t);
+	return ktime_add_ns(then, reciprocal_scale(interval, isqrt));
+}
+
 static bool cobalt_queue_full(struct cobalt_vars *vars,
 			      struct cobalt_params *p,
 			      ktime_t now)
@@ -359,11 +365,16 @@ static bool cobalt_should_drop(struct cobalt_vars *vars,
 	if (over_target) {
 		if (!vars->sce_dropping) {
 			vars->sce_dropping = true;
-			vars->sce_next = cobalt_control(now, p->sce_interval, vars->sce_isqrt);
+			if (next_due)
+				vars->sce_next = cobalt_control(now, p->sce_interval, vars->sce_isqrt);
+			else
+				vars->sce_next = cobalt_reflect(now, vars->sce_next, p->sce_interval, vars->sce_isqrt);
+			next_due = false;
 		}
 		if(!vars->sce_count)
 			vars->sce_count = 1;
 	} else if (vars->sce_dropping) {
+		vars->sce_next = cobalt_reflect(now, vars->sce_next, p->sce_interval, vars->sce_isqrt);
 		vars->sce_dropping = false;
 	}
 
@@ -394,11 +405,16 @@ static bool cobalt_should_drop(struct cobalt_vars *vars,
 	if (over_target) {
 		if (!vars->ce_dropping) {
 			vars->ce_dropping = true;
-			vars->ce_next = cobalt_control(now, p->ce_interval, vars->ce_isqrt);
+			if (next_due)
+				vars->ce_next = cobalt_control(now, p->ce_interval, vars->ce_isqrt);
+			else
+				vars->ce_next = cobalt_reflect(now, vars->ce_next, p->ce_interval, vars->ce_isqrt);
+			next_due = false;
 		}
 		if(!vars->ce_count)
 			vars->ce_count = 1;
 	} else if (vars->ce_dropping) {
+		vars->ce_next = cobalt_reflect(now, vars->ce_next, p->ce_interval, vars->ce_isqrt);
 		vars->ce_dropping = false;
 	}
 
