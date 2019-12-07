@@ -322,8 +322,6 @@ static bool cobalt_queue_empty(struct cobalt_vars *vars,
 		vars->blue_timer = now;
 		down = !vars->p_drop;
 	}
-	vars->ce_dropping = false;
-	vars->sce_dropping = false;
 
 	while (vars->ce_count && ktime_sub(now, vars->ce_next) >= 0) {
 		vars->ce_count--;
@@ -332,6 +330,9 @@ static bool cobalt_queue_empty(struct cobalt_vars *vars,
 						 p->ce_interval,
 						 vars->ce_isqrt);
 	}
+	if(vars->ce_dropping)
+		vars->ce_next = cobalt_reflect(now, vars->ce_next, p->ce_interval, vars->ce_isqrt);
+	vars->ce_dropping = false;
 
 	while (vars->sce_count && ktime_sub(now, vars->sce_next) >= 0) {
 		vars->sce_count--;
@@ -340,6 +341,9 @@ static bool cobalt_queue_empty(struct cobalt_vars *vars,
 						 p->sce_interval,
 						 vars->sce_isqrt);
 	}
+	if(vars->sce_dropping)
+		vars->sce_next = cobalt_reflect(now, vars->sce_next, p->sce_interval, vars->sce_isqrt);
+	vars->sce_dropping = false;
 
 	return down;
 }
