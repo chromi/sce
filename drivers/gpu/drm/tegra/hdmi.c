@@ -1,17 +1,16 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2012 Avionic Design GmbH
  * Copyright (C) 2012 NVIDIA CORPORATION.  All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/clk.h>
 #include <linux/debugfs.h>
+#include <linux/delay.h>
 #include <linux/gpio.h>
 #include <linux/hdmi.h>
 #include <linux/math64.h>
+#include <linux/module.h>
 #include <linux/of_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
@@ -19,6 +18,9 @@
 
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_crtc.h>
+#include <drm/drm_debugfs.h>
+#include <drm/drm_file.h>
+#include <drm/drm_fourcc.h>
 #include <drm/drm_probe_helper.h>
 
 #include "hda.h"
@@ -1260,9 +1262,15 @@ static void tegra_hdmi_encoder_enable(struct drm_encoder *encoder)
 
 	hdmi->dvi = !tegra_output_is_hdmi(output);
 	if (!hdmi->dvi) {
-		err = tegra_hdmi_setup_audio(hdmi);
-		if (err < 0)
-			hdmi->dvi = true;
+		/*
+		 * Make sure that the audio format has been configured before
+		 * enabling audio, otherwise we may try to divide by zero.
+		*/
+		if (hdmi->format.sample_rate > 0) {
+			err = tegra_hdmi_setup_audio(hdmi);
+			if (err < 0)
+				hdmi->dvi = true;
+		}
 	}
 
 	if (hdmi->config->has_hda)
