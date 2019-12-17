@@ -1858,7 +1858,6 @@ static void ql_update_small_bufq_prod_index(struct ql3_adapter *qdev)
 		wmb();
 		writel_relaxed(qdev->small_buf_q_producer_index,
 			       &port_regs->CommonRegs.rxSmallQProducerIndex);
-		mmiowb();
 	}
 }
 
@@ -2788,6 +2787,7 @@ static int ql_alloc_large_buffers(struct ql3_adapter *qdev)
 				netdev_err(qdev->ndev,
 					   "PCI mapping failed with error: %d\n",
 					   err);
+				dev_kfree_skb_irq(skb);
 				ql_free_large_buffers(qdev);
 				return -ENOMEM;
 			}

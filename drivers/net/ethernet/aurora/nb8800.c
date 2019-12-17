@@ -1,23 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (C) 2015 Mans Rullgard <mans@mansr.com>
  *
  * Mostly rewritten, based on driver from Sigma Designs.  Original
  * copyright notice below.
  *
- *
  * Driver for tangox SMP864x/SMP865x/SMP867x/SMP868x builtin Ethernet Mac.
  *
  * Copyright (C) 2005 Maxime Bizon <mbizon@freebox.fr>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/module.h>
@@ -1361,10 +1351,8 @@ static int nb8800_probe(struct platform_device *pdev)
 		ops = match->data;
 
 	irq = platform_get_irq(pdev, 0);
-	if (irq <= 0) {
-		dev_err(&pdev->dev, "No IRQ\n");
+	if (irq <= 0)
 		return -EINVAL;
-	}
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	base = devm_ioremap_resource(&pdev->dev, res);
@@ -1463,7 +1451,7 @@ static int nb8800_probe(struct platform_device *pdev)
 	dev->irq = irq;
 
 	mac = of_get_mac_address(pdev->dev.of_node);
-	if (mac)
+	if (!IS_ERR(mac))
 		ether_addr_copy(dev->dev_addr, mac);
 
 	if (!is_valid_ether_addr(dev->dev_addr))

@@ -5,15 +5,16 @@
  * Copyright (C) 2013 Philipp Zabel, Pengutronix
  */
 
-#include <drm/drmP.h>
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_fb_cma_helper.h>
+#include <drm/drm_fourcc.h>
 #include <drm/drm_gem_cma_helper.h>
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_plane_helper.h>
 
-#include "video/imx-ipu-v3.h"
+#include <video/imx-ipu-v3.h>
+
 #include "imx-drm.h"
 #include "ipuv3-plane.h"
 
@@ -115,8 +116,8 @@ drm_plane_state_to_ubo(struct drm_plane_state *state)
 	cma_obj = drm_fb_cma_get_gem_obj(fb, 1);
 	BUG_ON(!cma_obj);
 
-	x /= drm_format_horz_chroma_subsampling(fb->format->format);
-	y /= drm_format_vert_chroma_subsampling(fb->format->format);
+	x /= fb->format->hsub;
+	y /= fb->format->vsub;
 
 	return cma_obj->paddr + fb->offsets[1] + fb->pitches[1] * y +
 	       fb->format->cpp[1] * x - eba;
@@ -134,8 +135,8 @@ drm_plane_state_to_vbo(struct drm_plane_state *state)
 	cma_obj = drm_fb_cma_get_gem_obj(fb, 2);
 	BUG_ON(!cma_obj);
 
-	x /= drm_format_horz_chroma_subsampling(fb->format->format);
-	y /= drm_format_vert_chroma_subsampling(fb->format->format);
+	x /= fb->format->hsub;
+	y /= fb->format->vsub;
 
 	return cma_obj->paddr + fb->offsets[2] + fb->pitches[2] * y +
 	       fb->format->cpp[2] * x - eba;
@@ -352,7 +353,6 @@ static int ipu_plane_atomic_check(struct drm_plane *plane,
 	struct drm_framebuffer *old_fb = old_state->fb;
 	unsigned long eba, ubo, vbo, old_ubo, old_vbo, alpha_eba;
 	bool can_position = (plane->type == DRM_PLANE_TYPE_OVERLAY);
-	int hsub, vsub;
 	int ret;
 
 	/* Ok to disable */
@@ -471,10 +471,8 @@ static int ipu_plane_atomic_check(struct drm_plane *plane,
 		 * The x/y offsets must be even in case of horizontal/vertical
 		 * chroma subsampling.
 		 */
-		hsub = drm_format_horz_chroma_subsampling(fb->format->format);
-		vsub = drm_format_vert_chroma_subsampling(fb->format->format);
-		if (((state->src.x1 >> 16) & (hsub - 1)) ||
-		    ((state->src.y1 >> 16) & (vsub - 1)))
+		if (((state->src.x1 >> 16) & (fb->format->hsub - 1)) ||
+		    ((state->src.y1 >> 16) & (fb->format->vsub - 1)))
 			return -EINVAL;
 		break;
 	case DRM_FORMAT_RGB565_A8:
@@ -605,7 +603,6 @@ static void ipu_plane_atomic_update(struct drm_plane *plane,
 		active = ipu_idmac_get_current_buffer(ipu_plane->ipu_ch);
 		ipu_cpmem_set_buffer(ipu_plane->ipu_ch, !active, eba);
 		ipu_idmac_select_buffer(ipu_plane->ipu_ch, !active);
-		ipu_plane->next_buf = !active;
 		if (ipu_plane_separate_alpha(ipu_plane)) {
 			active = ipu_idmac_get_current_buffer(ipu_plane->alpha_ch);
 			ipu_cpmem_set_buffer(ipu_plane->alpha_ch, !active,
@@ -639,6 +636,7 @@ static void ipu_plane_atomic_update(struct drm_plane *plane,
 	ipu_cpmem_set_fmt(ipu_plane->ipu_ch, fb->format->format);
 	ipu_cpmem_set_burstsize(ipu_plane->ipu_ch, burstsize);
 	ipu_cpmem_set_high_priority(ipu_plane->ipu_ch);
+	ipu_idmac_enable_watermark(ipu_plane->ipu_ch, true);
 	ipu_idmac_set_double_buffer(ipu_plane->ipu_ch, 1);
 	ipu_cpmem_set_stride(ipu_plane->ipu_ch, fb->pitches[0]);
 	ipu_cpmem_set_axi_id(ipu_plane->ipu_ch, axi_id);
@@ -710,7 +708,6 @@ static void ipu_plane_atomic_update(struct drm_plane *plane,
 	ipu_cpmem_set_buffer(ipu_plane->ipu_ch, 1, eba);
 	ipu_idmac_lock_enable(ipu_plane->ipu_ch, num_bursts);
 	ipu_plane_enable(ipu_plane);
-	ipu_plane->next_buf = -1;
 }
 
 static const struct drm_plane_helper_funcs ipu_plane_helper_funcs = {
@@ -732,10 +729,15 @@ bool ipu_plane_atomic_update_pending(struct drm_plane *plane)
 
 	if (ipu_state->use_pre)
 		return ipu_prg_channel_configure_pending(ipu_plane->ipu_ch);
-	else if (ipu_plane->next_buf >= 0)
-		return ipu_idmac_get_current_buffer(ipu_plane->ipu_ch) !=
-		       ipu_plane->next_buf;
 
+	/*
+	 * Pretend no update is pending in the non-PRE/PRG case. For this to
+	 * happen, an atomic update would have to be deferred until after the
+	 * start of the next frame and simultaneously interrupt latency would
+	 * have to be high enough to let the atomic update finish and issue an
+	 * event before the previous end of frame interrupt handler can be
+	 * executed.
+	 */
 	return false;
 }
 int ipu_planes_assign_pre(struct drm_device *dev,

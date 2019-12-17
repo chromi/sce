@@ -1,18 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* binder_alloc.c
  *
  * Android IPC Subsystem
  *
  * Copyright (C) 2007-2017 Google, Inc.
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -31,6 +22,7 @@
 #include <asm/cacheflush.h>
 #include <linux/uaccess.h>
 #include <linux/highmem.h>
+#include <linux/sizes.h>
 #include "binder_alloc.h"
 #include "binder_trace.h"
 
@@ -165,7 +157,7 @@ static struct binder_buffer *binder_alloc_prepare_to_free_locked(
 }
 
 /**
- * binder_alloc_buffer_lookup() - get buffer given user ptr
+ * binder_alloc_prepare_to_free() - get buffer given user ptr
  * @alloc:	binder_alloc for this proc
  * @user_ptr:	User pointer to buffer data
  *
@@ -698,7 +690,9 @@ int binder_alloc_mmap_handler(struct binder_alloc *alloc,
 	alloc->buffer = (void __user *)vma->vm_start;
 	mutex_unlock(&binder_alloc_mmap_lock);
 
-	alloc->pages = kcalloc((vma->vm_end - vma->vm_start) / PAGE_SIZE,
+	alloc->buffer_size = min_t(unsigned long, vma->vm_end - vma->vm_start,
+				   SZ_4M);
+	alloc->pages = kcalloc(alloc->buffer_size / PAGE_SIZE,
 			       sizeof(alloc->pages[0]),
 			       GFP_KERNEL);
 	if (alloc->pages == NULL) {
@@ -706,7 +700,6 @@ int binder_alloc_mmap_handler(struct binder_alloc *alloc,
 		failure_string = "alloc page array";
 		goto err_alloc_pages_failed;
 	}
-	alloc->buffer_size = vma->vm_end - vma->vm_start;
 
 	buffer = kzalloc(sizeof(*buffer), GFP_KERNEL);
 	if (!buffer) {
@@ -927,14 +920,13 @@ enum lru_status binder_alloc_free_page(struct list_head *item,
 
 	index = page - alloc->pages;
 	page_addr = (uintptr_t)alloc->buffer + index * PAGE_SIZE;
+
+	mm = alloc->vma_vm_mm;
+	if (!mmget_not_zero(mm))
+		goto err_mmget;
+	if (!down_read_trylock(&mm->mmap_sem))
+		goto err_down_read_mmap_sem_failed;
 	vma = binder_alloc_get_vma(alloc);
-	if (vma) {
-		if (!mmget_not_zero(alloc->vma_vm_mm))
-			goto err_mmget;
-		mm = alloc->vma_vm_mm;
-		if (!down_read_trylock(&mm->mmap_sem))
-			goto err_down_write_mmap_sem_failed;
-	}
 
 	list_lru_isolate(lru, item);
 	spin_unlock(lock);
@@ -945,10 +937,9 @@ enum lru_status binder_alloc_free_page(struct list_head *item,
 		zap_page_range(vma, page_addr, PAGE_SIZE);
 
 		trace_binder_unmap_user_end(alloc, index);
-
-		up_read(&mm->mmap_sem);
-		mmput(mm);
 	}
+	up_read(&mm->mmap_sem);
+	mmput(mm);
 
 	trace_binder_unmap_kernel_start(alloc, index);
 
@@ -961,7 +952,7 @@ enum lru_status binder_alloc_free_page(struct list_head *item,
 	mutex_unlock(&alloc->mutex);
 	return LRU_REMOVED_RETRY;
 
-err_down_write_mmap_sem_failed:
+err_down_read_mmap_sem_failed:
 	mmput_async(mm);
 err_mmget:
 err_page_already_freed:
@@ -1130,15 +1121,16 @@ binder_alloc_copy_user_to_buffer(struct binder_alloc *alloc,
 	return 0;
 }
 
-static void binder_alloc_do_buffer_copy(struct binder_alloc *alloc,
-					bool to_buffer,
-					struct binder_buffer *buffer,
-					binder_size_t buffer_offset,
-					void *ptr,
-					size_t bytes)
+static int binder_alloc_do_buffer_copy(struct binder_alloc *alloc,
+				       bool to_buffer,
+				       struct binder_buffer *buffer,
+				       binder_size_t buffer_offset,
+				       void *ptr,
+				       size_t bytes)
 {
 	/* All copies must be 32-bit aligned and 32-bit size */
-	BUG_ON(!check_buffer(alloc, buffer, buffer_offset, bytes));
+	if (!check_buffer(alloc, buffer, buffer_offset, bytes))
+		return -EINVAL;
 
 	while (bytes) {
 		unsigned long size;
@@ -1166,25 +1158,26 @@ static void binder_alloc_do_buffer_copy(struct binder_alloc *alloc,
 		ptr = ptr + size;
 		buffer_offset += size;
 	}
+	return 0;
 }
 
-void binder_alloc_copy_to_buffer(struct binder_alloc *alloc,
-				 struct binder_buffer *buffer,
-				 binder_size_t buffer_offset,
-				 void *src,
-				 size_t bytes)
+int binder_alloc_copy_to_buffer(struct binder_alloc *alloc,
+				struct binder_buffer *buffer,
+				binder_size_t buffer_offset,
+				void *src,
+				size_t bytes)
 {
-	binder_alloc_do_buffer_copy(alloc, true, buffer, buffer_offset,
-				    src, bytes);
+	return binder_alloc_do_buffer_copy(alloc, true, buffer, buffer_offset,
+					   src, bytes);
 }
 
-void binder_alloc_copy_from_buffer(struct binder_alloc *alloc,
-				   void *dest,
-				   struct binder_buffer *buffer,
-				   binder_size_t buffer_offset,
-				   size_t bytes)
+int binder_alloc_copy_from_buffer(struct binder_alloc *alloc,
+				  void *dest,
+				  struct binder_buffer *buffer,
+				  binder_size_t buffer_offset,
+				  size_t bytes)
 {
-	binder_alloc_do_buffer_copy(alloc, false, buffer, buffer_offset,
-				    dest, bytes);
+	return binder_alloc_do_buffer_copy(alloc, false, buffer, buffer_offset,
+					   dest, bytes);
 }
 

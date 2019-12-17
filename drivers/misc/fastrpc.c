@@ -12,6 +12,7 @@
 #include <linux/module.h>
 #include <linux/of_address.h>
 #include <linux/of.h>
+#include <linux/sort.h>
 #include <linux/of_platform.h>
 #include <linux/rpmsg.h>
 #include <linux/scatterlist.h>
@@ -31,8 +32,7 @@
 #define FASTRPC_CTX_MAX (256)
 #define FASTRPC_INIT_HANDLE	1
 #define FASTRPC_CTXID_MASK (0xFF0)
-#define INIT_FILELEN_MAX (2 * 1024 * 1024)
-#define INIT_MEMLEN_MAX  (8 * 1024 * 1024)
+#define INIT_FILELEN_MAX (64 * 1024 * 1024)
 #define FASTRPC_DEVICE_NAME	"fastrpc"
 
 /* Retrives number of input buffers from the scalars parameter */
@@ -104,6 +104,15 @@ struct fastrpc_invoke_rsp {
 	int retval;		/* invoke return value */
 };
 
+struct fastrpc_buf_overlap {
+	u64 start;
+	u64 end;
+	int raix;
+	u64 mstart;
+	u64 mend;
+	u64 offset;
+};
+
 struct fastrpc_buf {
 	struct fastrpc_user *fl;
 	struct dma_buf *dmabuf;
@@ -149,12 +158,14 @@ struct fastrpc_invoke_ctx {
 	struct kref refcount;
 	struct list_head node; /* list of ctxs */
 	struct completion work;
+	struct work_struct put_work;
 	struct fastrpc_msg msg;
 	struct fastrpc_user *fl;
 	struct fastrpc_remote_arg *rpra;
 	struct fastrpc_map **maps;
 	struct fastrpc_buf *buf;
 	struct fastrpc_invoke_args *args;
+	struct fastrpc_buf_overlap *olaps;
 	struct fastrpc_channel_ctx *cctx;
 };
 
@@ -174,6 +185,7 @@ struct fastrpc_channel_ctx {
 	struct idr ctx_idr;
 	struct list_head users;
 	struct miscdevice miscdev;
+	struct kref refcount;
 };
 
 struct fastrpc_user {
@@ -267,8 +279,11 @@ static int fastrpc_buf_alloc(struct fastrpc_user *fl, struct device *dev,
 
 	buf->virt = dma_alloc_coherent(dev, buf->size, (dma_addr_t *)&buf->phys,
 				       GFP_KERNEL);
-	if (!buf->virt)
+	if (!buf->virt) {
+		mutex_destroy(&buf->lock);
+		kfree(buf);
 		return -ENOMEM;
+	}
 
 	if (fl->sctx && fl->sctx->sid)
 		buf->phys += ((u64)fl->sctx->sid << 32);
@@ -278,10 +293,30 @@ static int fastrpc_buf_alloc(struct fastrpc_user *fl, struct device *dev,
 	return 0;
 }
 
+static void fastrpc_channel_ctx_free(struct kref *ref)
+{
+	struct fastrpc_channel_ctx *cctx;
+
+	cctx = container_of(ref, struct fastrpc_channel_ctx, refcount);
+
+	kfree(cctx);
+}
+
+static void fastrpc_channel_ctx_get(struct fastrpc_channel_ctx *cctx)
+{
+	kref_get(&cctx->refcount);
+}
+
+static void fastrpc_channel_ctx_put(struct fastrpc_channel_ctx *cctx)
+{
+	kref_put(&cctx->refcount, fastrpc_channel_ctx_free);
+}
+
 static void fastrpc_context_free(struct kref *ref)
 {
 	struct fastrpc_invoke_ctx *ctx;
 	struct fastrpc_channel_ctx *cctx;
+	unsigned long flags;
 	int i;
 
 	ctx = container_of(ref, struct fastrpc_invoke_ctx, refcount);
@@ -293,12 +328,15 @@ static void fastrpc_context_free(struct kref *ref)
 	if (ctx->buf)
 		fastrpc_buf_free(ctx->buf);
 
-	spin_lock(&cctx->lock);
+	spin_lock_irqsave(&cctx->lock, flags);
 	idr_remove(&cctx->ctx_idr, ctx->ctxid >> 4);
-	spin_unlock(&cctx->lock);
+	spin_unlock_irqrestore(&cctx->lock, flags);
 
 	kfree(ctx->maps);
+	kfree(ctx->olaps);
 	kfree(ctx);
+
+	fastrpc_channel_ctx_put(cctx);
 }
 
 static void fastrpc_context_get(struct fastrpc_invoke_ctx *ctx)
@@ -311,12 +349,70 @@ static void fastrpc_context_put(struct fastrpc_invoke_ctx *ctx)
 	kref_put(&ctx->refcount, fastrpc_context_free);
 }
 
+static void fastrpc_context_put_wq(struct work_struct *work)
+{
+	struct fastrpc_invoke_ctx *ctx =
+			container_of(work, struct fastrpc_invoke_ctx, put_work);
+
+	fastrpc_context_put(ctx);
+}
+
+#define CMP(aa, bb) ((aa) == (bb) ? 0 : (aa) < (bb) ? -1 : 1)
+static int olaps_cmp(const void *a, const void *b)
+{
+	struct fastrpc_buf_overlap *pa = (struct fastrpc_buf_overlap *)a;
+	struct fastrpc_buf_overlap *pb = (struct fastrpc_buf_overlap *)b;
+	/* sort with lowest starting buffer first */
+	int st = CMP(pa->start, pb->start);
+	/* sort with highest ending buffer first */
+	int ed = CMP(pb->end, pa->end);
+
+	return st == 0 ? ed : st;
+}
+
+static void fastrpc_get_buff_overlaps(struct fastrpc_invoke_ctx *ctx)
+{
+	u64 max_end = 0;
+	int i;
+
+	for (i = 0; i < ctx->nbufs; ++i) {
+		ctx->olaps[i].start = ctx->args[i].ptr;
+		ctx->olaps[i].end = ctx->olaps[i].start + ctx->args[i].length;
+		ctx->olaps[i].raix = i;
+	}
+
+	sort(ctx->olaps, ctx->nbufs, sizeof(*ctx->olaps), olaps_cmp, NULL);
+
+	for (i = 0; i < ctx->nbufs; ++i) {
+		/* Falling inside previous range */
+		if (ctx->olaps[i].start < max_end) {
+			ctx->olaps[i].mstart = max_end;
+			ctx->olaps[i].mend = ctx->olaps[i].end;
+			ctx->olaps[i].offset = max_end - ctx->olaps[i].start;
+
+			if (ctx->olaps[i].end > max_end) {
+				max_end = ctx->olaps[i].end;
+			} else {
+				ctx->olaps[i].mend = 0;
+				ctx->olaps[i].mstart = 0;
+			}
+
+		} else  {
+			ctx->olaps[i].mend = ctx->olaps[i].end;
+			ctx->olaps[i].mstart = ctx->olaps[i].start;
+			ctx->olaps[i].offset = 0;
+			max_end = ctx->olaps[i].end;
+		}
+	}
+}
+
 static struct fastrpc_invoke_ctx *fastrpc_context_alloc(
 			struct fastrpc_user *user, u32 kernel, u32 sc,
 			struct fastrpc_invoke_args *args)
 {
 	struct fastrpc_channel_ctx *cctx = user->cctx;
 	struct fastrpc_invoke_ctx *ctx = NULL;
+	unsigned long flags;
 	int ret;
 
 	ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
@@ -336,8 +432,19 @@ static struct fastrpc_invoke_ctx *fastrpc_context_alloc(
 			kfree(ctx);
 			return ERR_PTR(-ENOMEM);
 		}
+		ctx->olaps = kcalloc(ctx->nscalars,
+				    sizeof(*ctx->olaps), GFP_KERNEL);
+		if (!ctx->olaps) {
+			kfree(ctx->maps);
+			kfree(ctx);
+			return ERR_PTR(-ENOMEM);
+		}
 		ctx->args = args;
+		fastrpc_get_buff_overlaps(ctx);
 	}
+
+	/* Released in fastrpc_context_put() */
+	fastrpc_channel_ctx_get(cctx);
 
 	ctx->sc = sc;
 	ctx->retval = -1;
@@ -345,20 +452,21 @@ static struct fastrpc_invoke_ctx *fastrpc_context_alloc(
 	ctx->tgid = user->tgid;
 	ctx->cctx = cctx;
 	init_completion(&ctx->work);
+	INIT_WORK(&ctx->put_work, fastrpc_context_put_wq);
 
 	spin_lock(&user->lock);
 	list_add_tail(&ctx->node, &user->pending);
 	spin_unlock(&user->lock);
 
-	spin_lock(&cctx->lock);
+	spin_lock_irqsave(&cctx->lock, flags);
 	ret = idr_alloc_cyclic(&cctx->ctx_idr, ctx, 1,
 			       FASTRPC_CTX_MAX, GFP_ATOMIC);
 	if (ret < 0) {
-		spin_unlock(&cctx->lock);
+		spin_unlock_irqrestore(&cctx->lock, flags);
 		goto err_idr;
 	}
 	ctx->ctxid = ret << 4;
-	spin_unlock(&cctx->lock);
+	spin_unlock_irqrestore(&cctx->lock, flags);
 
 	kref_init(&ctx->refcount);
 
@@ -367,7 +475,9 @@ err_idr:
 	spin_lock(&user->lock);
 	list_del(&ctx->node);
 	spin_unlock(&user->lock);
+	fastrpc_channel_ctx_put(cctx);
 	kfree(ctx->maps);
+	kfree(ctx->olaps);
 	kfree(ctx);
 
 	return ERR_PTR(ret);
@@ -417,6 +527,7 @@ static int fastrpc_dma_buf_attach(struct dma_buf *dmabuf,
 			      FASTRPC_PHYS(buffer->phys), buffer->size);
 	if (ret < 0) {
 		dev_err(buffer->dev, "failed to get scatterlist from DMA API\n");
+		kfree(a);
 		return -EINVAL;
 	}
 
@@ -440,6 +551,7 @@ static void fastrpc_dma_buf_detatch(struct dma_buf *dmabuf,
 	mutex_lock(&buffer->lock);
 	list_del(&a->node);
 	mutex_unlock(&buffer->lock);
+	sg_free_table(&a->sgt);
 	kfree(a);
 }
 
@@ -586,8 +698,11 @@ static u64 fastrpc_get_payload_size(struct fastrpc_invoke_ctx *ctx, int metalen)
 	size = ALIGN(metalen, FASTRPC_ALIGN);
 	for (i = 0; i < ctx->nscalars; i++) {
 		if (ctx->args[i].fd == 0 || ctx->args[i].fd == -1) {
-			size = ALIGN(size, FASTRPC_ALIGN);
-			size += ctx->args[i].length;
+
+			if (ctx->olaps[i].offset == 0)
+				size = ALIGN(size, FASTRPC_ALIGN);
+
+			size += (ctx->olaps[i].mend - ctx->olaps[i].mstart);
 		}
 	}
 
@@ -625,11 +740,11 @@ static int fastrpc_get_args(u32 kernel, struct fastrpc_invoke_ctx *ctx)
 	struct fastrpc_remote_arg *rpra;
 	struct fastrpc_invoke_buf *list;
 	struct fastrpc_phy_page *pages;
-	int inbufs, i, err = 0;
-	u64 rlen, pkt_size;
+	int inbufs, i, oix, err = 0;
+	u64 len, rlen, pkt_size;
+	u64 pg_start, pg_end;
 	uintptr_t args;
 	int metalen;
-
 
 	inbufs = REMOTE_SCALARS_INBUFS(ctx->sc);
 	metalen = fastrpc_get_meta_size(ctx);
@@ -653,8 +768,11 @@ static int fastrpc_get_args(u32 kernel, struct fastrpc_invoke_ctx *ctx)
 	rlen = pkt_size - metalen;
 	ctx->rpra = rpra;
 
-	for (i = 0; i < ctx->nbufs; ++i) {
-		u64 len = ctx->args[i].length;
+	for (oix = 0; oix < ctx->nbufs; ++oix) {
+		int mlen;
+
+		i = ctx->olaps[oix].raix;
+		len = ctx->args[i].length;
 
 		rpra[i].pv = 0;
 		rpra[i].len = len;
@@ -664,22 +782,45 @@ static int fastrpc_get_args(u32 kernel, struct fastrpc_invoke_ctx *ctx)
 		if (!len)
 			continue;
 
-		pages[i].size = roundup(len, PAGE_SIZE);
-
 		if (ctx->maps[i]) {
+			struct vm_area_struct *vma = NULL;
+
 			rpra[i].pv = (u64) ctx->args[i].ptr;
 			pages[i].addr = ctx->maps[i]->phys;
+
+			vma = find_vma(current->mm, ctx->args[i].ptr);
+			if (vma)
+				pages[i].addr += ctx->args[i].ptr -
+						 vma->vm_start;
+
+			pg_start = (ctx->args[i].ptr & PAGE_MASK) >> PAGE_SHIFT;
+			pg_end = ((ctx->args[i].ptr + len - 1) & PAGE_MASK) >>
+				  PAGE_SHIFT;
+			pages[i].size = (pg_end - pg_start + 1) * PAGE_SIZE;
+
 		} else {
-			rlen -= ALIGN(args, FASTRPC_ALIGN) - args;
-			args = ALIGN(args, FASTRPC_ALIGN);
-			if (rlen < len)
+
+			if (ctx->olaps[oix].offset == 0) {
+				rlen -= ALIGN(args, FASTRPC_ALIGN) - args;
+				args = ALIGN(args, FASTRPC_ALIGN);
+			}
+
+			mlen = ctx->olaps[oix].mend - ctx->olaps[oix].mstart;
+
+			if (rlen < mlen)
 				goto bail;
 
-			rpra[i].pv = args;
-			pages[i].addr = ctx->buf->phys + (pkt_size - rlen);
+			rpra[i].pv = args - ctx->olaps[oix].offset;
+			pages[i].addr = ctx->buf->phys -
+					ctx->olaps[oix].offset +
+					(pkt_size - rlen);
 			pages[i].addr = pages[i].addr &	PAGE_MASK;
-			args = args + len;
-			rlen -= len;
+
+			pg_start = (args & PAGE_MASK) >> PAGE_SHIFT;
+			pg_end = ((args + len - 1) & PAGE_MASK) >> PAGE_SHIFT;
+			pages[i].size = (pg_end - pg_start + 1) * PAGE_SIZE;
+			args = args + mlen;
+			rlen -= mlen;
 		}
 
 		if (i < inbufs && !ctx->maps[i]) {
@@ -773,6 +914,9 @@ static int fastrpc_internal_invoke(struct fastrpc_user *fl,  u32 kernel,
 	if (!fl->sctx)
 		return -EINVAL;
 
+	if (!fl->cctx->rpdev)
+		return -EPIPE;
+
 	ctx = fastrpc_context_alloc(fl, kernel, sc, args);
 	if (IS_ERR(ctx))
 		return PTR_ERR(ctx);
@@ -782,6 +926,9 @@ static int fastrpc_internal_invoke(struct fastrpc_user *fl,  u32 kernel,
 		if (err)
 			goto bail;
 	}
+
+	/* make sure that all CPU memory writes are seen by DSP */
+	dma_wmb();
 	/* Send invoke buffer to remote dsp */
 	err = fastrpc_invoke_send(fl->sctx, ctx, kernel, handle);
 	if (err)
@@ -798,6 +945,8 @@ static int fastrpc_internal_invoke(struct fastrpc_user *fl,  u32 kernel,
 		goto bail;
 
 	if (ctx->nscalars) {
+		/* make sure that all memory writes by DSP are seen by CPU */
+		dma_rmb();
 		/* populate all the output buffers with results */
 		err = fastrpc_put_args(ctx, kernel);
 		if (err)
@@ -843,12 +992,12 @@ static int fastrpc_init_create_process(struct fastrpc_user *fl,
 
 	if (copy_from_user(&init, argp, sizeof(init))) {
 		err = -EFAULT;
-		goto bail;
+		goto err;
 	}
 
 	if (init.filelen > INIT_FILELEN_MAX) {
 		err = -EINVAL;
-		goto bail;
+		goto err;
 	}
 
 	inbuf.pgid = fl->tgid;
@@ -862,17 +1011,15 @@ static int fastrpc_init_create_process(struct fastrpc_user *fl,
 	if (init.filelen && init.filefd) {
 		err = fastrpc_map_create(fl, init.filefd, init.filelen, &map);
 		if (err)
-			goto bail;
+			goto err;
 	}
 
 	memlen = ALIGN(max(INIT_FILELEN_MAX, (int)init.filelen * 4),
 		       1024 * 1024);
 	err = fastrpc_buf_alloc(fl, fl->sctx->dev, memlen,
 				&imem);
-	if (err) {
-		fastrpc_map_put(map);
-		goto bail;
-	}
+	if (err)
+		goto err_alloc;
 
 	fl->init_mem = imem;
 	args[0].ptr = (u64)(uintptr_t)&inbuf;
@@ -908,13 +1055,24 @@ static int fastrpc_init_create_process(struct fastrpc_user *fl,
 
 	err = fastrpc_internal_invoke(fl, true, FASTRPC_INIT_HANDLE,
 				      sc, args);
+	if (err)
+		goto err_invoke;
 
-	if (err) {
+	kfree(args);
+
+	return 0;
+
+err_invoke:
+	fl->init_mem = NULL;
+	fastrpc_buf_free(imem);
+err_alloc:
+	if (map) {
+		spin_lock(&fl->lock);
+		list_del(&map->node);
+		spin_unlock(&fl->lock);
 		fastrpc_map_put(map);
-		fastrpc_buf_free(imem);
 	}
-
-bail:
+err:
 	kfree(args);
 
 	return err;
@@ -924,9 +1082,10 @@ static struct fastrpc_session_ctx *fastrpc_session_alloc(
 					struct fastrpc_channel_ctx *cctx)
 {
 	struct fastrpc_session_ctx *session = NULL;
+	unsigned long flags;
 	int i;
 
-	spin_lock(&cctx->lock);
+	spin_lock_irqsave(&cctx->lock, flags);
 	for (i = 0; i < cctx->sesscount; i++) {
 		if (!cctx->session[i].used && cctx->session[i].valid) {
 			cctx->session[i].used = true;
@@ -934,7 +1093,7 @@ static struct fastrpc_session_ctx *fastrpc_session_alloc(
 			break;
 		}
 	}
-	spin_unlock(&cctx->lock);
+	spin_unlock_irqrestore(&cctx->lock, flags);
 
 	return session;
 }
@@ -942,9 +1101,11 @@ static struct fastrpc_session_ctx *fastrpc_session_alloc(
 static void fastrpc_session_free(struct fastrpc_channel_ctx *cctx,
 				 struct fastrpc_session_ctx *session)
 {
-	spin_lock(&cctx->lock);
+	unsigned long flags;
+
+	spin_lock_irqsave(&cctx->lock, flags);
 	session->used = false;
-	spin_unlock(&cctx->lock);
+	spin_unlock_irqrestore(&cctx->lock, flags);
 }
 
 static int fastrpc_release_current_dsp_process(struct fastrpc_user *fl)
@@ -970,12 +1131,13 @@ static int fastrpc_device_release(struct inode *inode, struct file *file)
 	struct fastrpc_channel_ctx *cctx = fl->cctx;
 	struct fastrpc_invoke_ctx *ctx, *n;
 	struct fastrpc_map *map, *m;
+	unsigned long flags;
 
 	fastrpc_release_current_dsp_process(fl);
 
-	spin_lock(&cctx->lock);
+	spin_lock_irqsave(&cctx->lock, flags);
 	list_del(&fl->user);
-	spin_unlock(&cctx->lock);
+	spin_unlock_irqrestore(&cctx->lock, flags);
 
 	if (fl->init_mem)
 		fastrpc_buf_free(fl->init_mem);
@@ -991,6 +1153,7 @@ static int fastrpc_device_release(struct inode *inode, struct file *file)
 	}
 
 	fastrpc_session_free(cctx, fl->sctx);
+	fastrpc_channel_ctx_put(cctx);
 
 	mutex_destroy(&fl->mutex);
 	kfree(fl);
@@ -1003,10 +1166,14 @@ static int fastrpc_device_open(struct inode *inode, struct file *filp)
 {
 	struct fastrpc_channel_ctx *cctx = miscdev_to_cctx(filp->private_data);
 	struct fastrpc_user *fl = NULL;
+	unsigned long flags;
 
 	fl = kzalloc(sizeof(*fl), GFP_KERNEL);
 	if (!fl)
 		return -ENOMEM;
+
+	/* Released in fastrpc_device_release() */
+	fastrpc_channel_ctx_get(cctx);
 
 	filp->private_data = fl;
 	spin_lock_init(&fl->lock);
@@ -1026,29 +1193,9 @@ static int fastrpc_device_open(struct inode *inode, struct file *filp)
 		return -EBUSY;
 	}
 
-	spin_lock(&cctx->lock);
+	spin_lock_irqsave(&cctx->lock, flags);
 	list_add_tail(&fl->user, &cctx->users);
-	spin_unlock(&cctx->lock);
-
-	return 0;
-}
-
-static int fastrpc_dmabuf_free(struct fastrpc_user *fl, char __user *argp)
-{
-	struct dma_buf *buf;
-	int info;
-
-	if (copy_from_user(&info, argp, sizeof(info)))
-		return -EFAULT;
-
-	buf = dma_buf_get(info);
-	if (IS_ERR_OR_NULL(buf))
-		return -EINVAL;
-	/*
-	 * one for the last get and other for the ALLOC_DMA_BUFF ioctl
-	 */
-	dma_buf_put(buf);
-	dma_buf_put(buf);
+	spin_unlock_irqrestore(&cctx->lock, flags);
 
 	return 0;
 }
@@ -1087,8 +1234,6 @@ static int fastrpc_dmabuf_alloc(struct fastrpc_user *fl, char __user *argp)
 		dma_buf_put(buf->dmabuf);
 		return -EFAULT;
 	}
-
-	get_dma_buf(buf->dmabuf);
 
 	return 0;
 }
@@ -1157,9 +1302,6 @@ static long fastrpc_device_ioctl(struct file *file, unsigned int cmd,
 	case FASTRPC_IOCTL_INIT_CREATE:
 		err = fastrpc_init_create_process(fl, argp);
 		break;
-	case FASTRPC_IOCTL_FREE_DMA_BUFF:
-		err = fastrpc_dmabuf_free(fl, argp);
-		break;
 	case FASTRPC_IOCTL_ALLOC_DMA_BUFF:
 		err = fastrpc_dmabuf_alloc(fl, argp);
 		break;
@@ -1184,6 +1326,8 @@ static int fastrpc_cb_probe(struct platform_device *pdev)
 	struct fastrpc_session_ctx *sess;
 	struct device *dev = &pdev->dev;
 	int i, sessions = 0;
+	unsigned long flags;
+	int rc;
 
 	cctx = dev_get_drvdata(dev->parent);
 	if (!cctx)
@@ -1191,7 +1335,7 @@ static int fastrpc_cb_probe(struct platform_device *pdev)
 
 	of_property_read_u32(dev->of_node, "qcom,nsessions", &sessions);
 
-	spin_lock(&cctx->lock);
+	spin_lock_irqsave(&cctx->lock, flags);
 	sess = &cctx->session[cctx->sesscount];
 	sess->used = false;
 	sess->valid = true;
@@ -1212,8 +1356,12 @@ static int fastrpc_cb_probe(struct platform_device *pdev)
 		}
 	}
 	cctx->sesscount++;
-	spin_unlock(&cctx->lock);
-	dma_set_mask(dev, DMA_BIT_MASK(32));
+	spin_unlock_irqrestore(&cctx->lock, flags);
+	rc = dma_set_mask(dev, DMA_BIT_MASK(32));
+	if (rc) {
+		dev_err(dev, "32-bit DMA enable failed\n");
+		return rc;
+	}
 
 	return 0;
 }
@@ -1222,16 +1370,17 @@ static int fastrpc_cb_remove(struct platform_device *pdev)
 {
 	struct fastrpc_channel_ctx *cctx = dev_get_drvdata(pdev->dev.parent);
 	struct fastrpc_session_ctx *sess = dev_get_drvdata(&pdev->dev);
+	unsigned long flags;
 	int i;
 
-	spin_lock(&cctx->lock);
+	spin_lock_irqsave(&cctx->lock, flags);
 	for (i = 1; i < FASTRPC_MAX_SESSIONS; i++) {
 		if (cctx->session[i].sid == sess->sid) {
 			cctx->session[i].valid = false;
 			cctx->sesscount--;
 		}
 	}
-	spin_unlock(&cctx->lock);
+	spin_unlock_irqrestore(&cctx->lock, flags);
 
 	return 0;
 }
@@ -1258,10 +1407,6 @@ static int fastrpc_rpmsg_probe(struct rpmsg_device *rpdev)
 	int i, err, domain_id = -1;
 	const char *domain;
 
-	data = devm_kzalloc(rdev, sizeof(*data), GFP_KERNEL);
-	if (!data)
-		return -ENOMEM;
-
 	err = of_property_read_string(rdev->of_node, "label", &domain);
 	if (err) {
 		dev_info(rdev, "FastRPC Domain not specified in DT\n");
@@ -1280,6 +1425,10 @@ static int fastrpc_rpmsg_probe(struct rpmsg_device *rpdev)
 		return -EINVAL;
 	}
 
+	data = kzalloc(sizeof(*data), GFP_KERNEL);
+	if (!data)
+		return -ENOMEM;
+
 	data->miscdev.minor = MISC_DYNAMIC_MINOR;
 	data->miscdev.name = kasprintf(GFP_KERNEL, "fastrpc-%s",
 				domains[domain_id]);
@@ -1287,6 +1436,8 @@ static int fastrpc_rpmsg_probe(struct rpmsg_device *rpdev)
 	err = misc_register(&data->miscdev);
 	if (err)
 		return err;
+
+	kref_init(&data->refcount);
 
 	dev_set_drvdata(&rpdev->dev, data);
 	dma_set_mask_and_coherent(rdev, DMA_BIT_MASK(32));
@@ -1313,15 +1464,18 @@ static void fastrpc_rpmsg_remove(struct rpmsg_device *rpdev)
 {
 	struct fastrpc_channel_ctx *cctx = dev_get_drvdata(&rpdev->dev);
 	struct fastrpc_user *user;
+	unsigned long flags;
 
-	spin_lock(&cctx->lock);
+	spin_lock_irqsave(&cctx->lock, flags);
 	list_for_each_entry(user, &cctx->users, user)
 		fastrpc_notify_users(user);
-	spin_unlock(&cctx->lock);
+	spin_unlock_irqrestore(&cctx->lock, flags);
 
 	misc_deregister(&cctx->miscdev);
 	of_platform_depopulate(&rpdev->dev);
-	kfree(cctx);
+
+	cctx->rpdev = NULL;
+	fastrpc_channel_ctx_put(cctx);
 }
 
 static int fastrpc_rpmsg_callback(struct rpmsg_device *rpdev, void *data,
@@ -1349,7 +1503,13 @@ static int fastrpc_rpmsg_callback(struct rpmsg_device *rpdev, void *data,
 
 	ctx->retval = rsp->retval;
 	complete(&ctx->work);
-	fastrpc_context_put(ctx);
+
+	/*
+	 * The DMA buffer associated with the context cannot be freed in
+	 * interrupt context so schedule it through a worker thread to
+	 * avoid a kernel BUG.
+	 */
+	schedule_work(&ctx->put_work);
 
 	return 0;
 }

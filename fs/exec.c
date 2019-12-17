@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  linux/fs/exec.c
  *
@@ -1032,6 +1033,7 @@ static int exec_mmap(struct mm_struct *mm)
 	}
 	task_lock(tsk);
 	active_mm = tsk->active_mm;
+	membarrier_exec_mmap(mm);
 	tsk->mm = mm;
 	tsk->active_mm = mm;
 	activate_mm(active_mm, mm);
@@ -1652,15 +1654,17 @@ int search_binary_handler(struct linux_binprm *bprm)
 		if (!try_module_get(fmt->module))
 			continue;
 		read_unlock(&binfmt_lock);
+
 		bprm->recursion_depth++;
 		retval = fmt->load_binary(bprm);
+		bprm->recursion_depth--;
+
 		read_lock(&binfmt_lock);
 		put_binfmt(fmt);
-		bprm->recursion_depth--;
 		if (retval < 0 && !bprm->mm) {
 			/* we got to flush_old_exec() and failed after it */
 			read_unlock(&binfmt_lock);
-			force_sigsegv(SIGSEGV, current);
+			force_sigsegv(SIGSEGV);
 			return retval;
 		}
 		if (retval != -ENOEXEC || !bprm->file) {
@@ -1822,10 +1826,9 @@ static int __do_execve_file(int fd, struct filename *filename,
 	/* execve succeeded */
 	current->fs->in_exec = 0;
 	current->in_execve = 0;
-	membarrier_execve(current);
 	rseq_execve(current);
 	acct_update_integrals(current);
-	task_numa_free(current);
+	task_numa_free(current, false);
 	free_bprm(bprm);
 	kfree(pathbuf);
 	if (filename)

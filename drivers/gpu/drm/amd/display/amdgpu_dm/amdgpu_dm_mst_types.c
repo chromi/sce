@@ -84,6 +84,7 @@ static ssize_t dm_dp_aux_transfer(struct drm_dp_aux *aux,
 {
 	ssize_t result = 0;
 	struct aux_payload payload;
+	enum aux_channel_operation_result operation_result;
 
 	if (WARN_ON(msg->size > 16))
 		return -E2BIG;
@@ -97,13 +98,27 @@ static ssize_t dm_dp_aux_transfer(struct drm_dp_aux *aux,
 	payload.mot = (msg->request & DP_AUX_I2C_MOT) != 0;
 	payload.defer_delay = 0;
 
-	result = dc_link_aux_transfer(TO_DM_AUX(aux)->ddc_service, &payload);
+	result = dc_link_aux_transfer_raw(TO_DM_AUX(aux)->ddc_service, &payload,
+				      &operation_result);
 
 	if (payload.write)
 		result = msg->size;
 
-	if (result < 0) /* DC doesn't know about kernel error codes */
-		result = -EIO;
+	if (result < 0)
+		switch (operation_result) {
+		case AUX_CHANNEL_OPERATION_SUCCEEDED:
+			break;
+		case AUX_CHANNEL_OPERATION_FAILED_HPD_DISCON:
+		case AUX_CHANNEL_OPERATION_FAILED_REASON_UNKNOWN:
+			result = -EIO;
+			break;
+		case AUX_CHANNEL_OPERATION_FAILED_INVALID_REPLY:
+			result = -EBUSY;
+			break;
+		case AUX_CHANNEL_OPERATION_FAILED_TIMEOUT:
+			result = -ETIMEDOUT;
+			break;
+		}
 
 	return result;
 }
@@ -141,6 +156,26 @@ dm_dp_mst_connector_destroy(struct drm_connector *connector)
 	kfree(amdgpu_dm_connector);
 }
 
+static int
+amdgpu_dm_mst_connector_late_register(struct drm_connector *connector)
+{
+	struct amdgpu_dm_connector *amdgpu_dm_connector =
+		to_amdgpu_dm_connector(connector);
+	struct drm_dp_mst_port *port = amdgpu_dm_connector->port;
+
+	return drm_dp_mst_connector_late_register(connector, port);
+}
+
+static void
+amdgpu_dm_mst_connector_early_unregister(struct drm_connector *connector)
+{
+	struct amdgpu_dm_connector *amdgpu_dm_connector =
+		to_amdgpu_dm_connector(connector);
+	struct drm_dp_mst_port *port = amdgpu_dm_connector->port;
+
+	drm_dp_mst_connector_early_unregister(connector, port);
+}
+
 static const struct drm_connector_funcs dm_dp_mst_connector_funcs = {
 	.detect = dm_dp_mst_detect,
 	.fill_modes = drm_helper_probe_single_connector_modes,
@@ -149,7 +184,9 @@ static const struct drm_connector_funcs dm_dp_mst_connector_funcs = {
 	.atomic_duplicate_state = amdgpu_dm_connector_atomic_duplicate_state,
 	.atomic_destroy_state = drm_atomic_helper_connector_destroy_state,
 	.atomic_set_property = amdgpu_dm_connector_atomic_set_property,
-	.atomic_get_property = amdgpu_dm_connector_atomic_get_property
+	.atomic_get_property = amdgpu_dm_connector_atomic_get_property,
+	.late_register = amdgpu_dm_mst_connector_late_register,
+	.early_unregister = amdgpu_dm_mst_connector_early_unregister,
 };
 
 static int dm_dp_mst_get_modes(struct drm_connector *connector)
@@ -373,7 +410,7 @@ void amdgpu_dm_initialize_dp_connector(struct amdgpu_display_manager *dm,
 				       struct amdgpu_dm_connector *aconnector)
 {
 	aconnector->dm_dp_aux.aux.name = "dmdc";
-	aconnector->dm_dp_aux.aux.dev = dm->adev->dev;
+	aconnector->dm_dp_aux.aux.dev = aconnector->base.kdev;
 	aconnector->dm_dp_aux.aux.transfer = dm_dp_aux_transfer;
 	aconnector->dm_dp_aux.ddc_service = aconnector->dc_link->ddc;
 

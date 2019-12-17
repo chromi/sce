@@ -288,10 +288,13 @@ struct fanotify_event *fanotify_alloc_event(struct fsnotify_group *group,
 	/*
 	 * For queues with unlimited length lost events are not expected and
 	 * can possibly have security implications. Avoid losing events when
-	 * memory is short.
+	 * memory is short. For the limited size queues, avoid OOM killer in the
+	 * target monitoring memcg as it may have security repercussion.
 	 */
 	if (group->max_events == UINT_MAX)
 		gfp |= __GFP_NOFAIL;
+	else
+		gfp |= __GFP_RETRY_MAYFAIL;
 
 	/* Whoever is interested in the event, pays for the allocation. */
 	memalloc_use_memcg(group->memcg);
@@ -346,10 +349,20 @@ static __kernel_fsid_t fanotify_get_fsid(struct fsnotify_iter_info *iter_info)
 	__kernel_fsid_t fsid = {};
 
 	fsnotify_foreach_obj_type(type) {
+		struct fsnotify_mark_connector *conn;
+
 		if (!fsnotify_iter_should_report_type(iter_info, type))
 			continue;
 
-		fsid = iter_info->marks[type]->connector->fsid;
+		conn = READ_ONCE(iter_info->marks[type]->connector);
+		/* Mark is just getting destroyed or created? */
+		if (!conn)
+			continue;
+		if (!(conn->flags & FSNOTIFY_CONN_FLAG_HAS_FSID))
+			continue;
+		/* Pairs with smp_wmb() in fsnotify_add_mark_list() */
+		smp_rmb();
+		fsid = conn->fsid;
 		if (WARN_ON_ONCE(!fsid.val[0] && !fsid.val[1]))
 			continue;
 		return fsid;
@@ -361,7 +374,7 @@ static __kernel_fsid_t fanotify_get_fsid(struct fsnotify_iter_info *iter_info)
 static int fanotify_handle_event(struct fsnotify_group *group,
 				 struct inode *inode,
 				 u32 mask, const void *data, int data_type,
-				 const unsigned char *file_name, u32 cookie,
+				 const struct qstr *file_name, u32 cookie,
 				 struct fsnotify_iter_info *iter_info)
 {
 	int ret = 0;
@@ -408,8 +421,12 @@ static int fanotify_handle_event(struct fsnotify_group *group,
 			return 0;
 	}
 
-	if (FAN_GROUP_FLAG(group, FAN_REPORT_FID))
+	if (FAN_GROUP_FLAG(group, FAN_REPORT_FID)) {
 		fsid = fanotify_get_fsid(iter_info);
+		/* Racing with mark destruction or creation? */
+		if (!fsid.val[0] && !fsid.val[1])
+			return 0;
+	}
 
 	event = fanotify_alloc_event(group, inode, mask, data, data_type,
 				     &fsid);

@@ -1,11 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * drivers/net/team/team.c - Network team device driver
  * Copyright (c) 2011 Jiri Pirko <jpirko@redhat.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 #include <linux/kernel.h>
@@ -1008,6 +1004,8 @@ static void __team_compute_features(struct team *team)
 
 	team->dev->vlan_features = vlan_features;
 	team->dev->hw_enc_features = enc_features | NETIF_F_GSO_ENCAP_ALL |
+				     NETIF_F_HW_VLAN_CTAG_TX |
+				     NETIF_F_HW_VLAN_STAG_TX |
 				     NETIF_F_GSO_UDP_L4;
 	team->dev->hard_header_len = max_hard_header_len;
 
@@ -1154,6 +1152,13 @@ static int team_port_add(struct team *team, struct net_device *port_dev,
 		return -EINVAL;
 	}
 
+	if (netdev_has_upper_dev(dev, port_dev)) {
+		NL_SET_ERR_MSG(extack, "Device is already an upper device of the team interface");
+		netdev_err(dev, "Device %s is already an upper device of the team interface\n",
+			   portname);
+		return -EBUSY;
+	}
+
 	if (port_dev->features & NETIF_F_VLAN_CHALLENGED &&
 	    vlan_uses_dev(dev)) {
 		NL_SET_ERR_MSG(extack, "Device is VLAN challenged and team device has VLAN set up");
@@ -1244,6 +1249,23 @@ static int team_port_add(struct team *team, struct net_device *port_dev,
 		goto err_option_port_add;
 	}
 
+	/* set promiscuity level to new slave */
+	if (dev->flags & IFF_PROMISC) {
+		err = dev_set_promiscuity(port_dev, 1);
+		if (err)
+			goto err_set_slave_promisc;
+	}
+
+	/* set allmulti level to new slave */
+	if (dev->flags & IFF_ALLMULTI) {
+		err = dev_set_allmulti(port_dev, 1);
+		if (err) {
+			if (dev->flags & IFF_PROMISC)
+				dev_set_promiscuity(port_dev, -1);
+			goto err_set_slave_promisc;
+		}
+	}
+
 	netif_addr_lock_bh(dev);
 	dev_uc_sync_multiple(port_dev, dev);
 	dev_mc_sync_multiple(port_dev, dev);
@@ -1259,6 +1281,9 @@ static int team_port_add(struct team *team, struct net_device *port_dev,
 	netdev_info(dev, "Port device %s added\n", portname);
 
 	return 0;
+
+err_set_slave_promisc:
+	__team_option_inst_del_port(team, port);
 
 err_option_port_add:
 	team_upper_dev_unlink(team, port);
@@ -1305,6 +1330,12 @@ static int team_port_del(struct team *team, struct net_device *port_dev)
 
 	team_port_disable(team, port);
 	list_del_rcu(&port->list);
+
+	if (dev->flags & IFF_PROMISC)
+		dev_set_promiscuity(port_dev, -1);
+	if (dev->flags & IFF_ALLMULTI)
+		dev_set_allmulti(port_dev, -1);
+
 	team_upper_dev_unlink(team, port);
 	netdev_rx_handler_unregister(port_dev);
 	team_port_disable_netpoll(port);
@@ -1584,7 +1615,6 @@ static int team_init(struct net_device *dev)
 	int err;
 
 	team->dev = dev;
-	mutex_init(&team->lock);
 	team_set_no_mode(team);
 
 	team->pcpu_stats = netdev_alloc_pcpu_stats(struct team_pcpu_stats);
@@ -1611,7 +1641,8 @@ static int team_init(struct net_device *dev)
 		goto err_options_register;
 	netif_carrier_off(dev);
 
-	netdev_lockdep_set_classes(dev);
+	lockdep_register_key(&team->team_lock_key);
+	__mutex_init(&team->lock, "team->team_lock_key", &team->team_lock_key);
 
 	return 0;
 
@@ -1642,6 +1673,7 @@ static void team_uninit(struct net_device *dev)
 	team_queue_override_fini(team);
 	mutex_unlock(&team->lock);
 	netdev_change_features(dev);
+	lockdep_unregister_key(&team->team_lock_key);
 }
 
 static void team_destructor(struct net_device *dev)
@@ -1945,8 +1977,15 @@ static int team_del_slave(struct net_device *dev, struct net_device *port_dev)
 	err = team_port_del(team, port_dev);
 	mutex_unlock(&team->lock);
 
-	if (!err)
-		netdev_change_features(dev);
+	if (err)
+		return err;
+
+	if (netif_is_team_master(port_dev)) {
+		lockdep_unregister_key(&team->team_lock_key);
+		lockdep_register_key(&team->team_lock_key);
+		lockdep_set_class(&team->lock, &team->team_lock_key);
+	}
+	netdev_change_features(dev);
 
 	return err;
 }
@@ -2025,9 +2064,34 @@ static void team_ethtool_get_drvinfo(struct net_device *dev,
 	strlcpy(drvinfo->version, UTS_RELEASE, sizeof(drvinfo->version));
 }
 
+static int team_ethtool_get_link_ksettings(struct net_device *dev,
+					   struct ethtool_link_ksettings *cmd)
+{
+	struct team *team= netdev_priv(dev);
+	unsigned long speed = 0;
+	struct team_port *port;
+
+	cmd->base.duplex = DUPLEX_UNKNOWN;
+	cmd->base.port = PORT_OTHER;
+
+	list_for_each_entry(port, &team->port_list, list) {
+		if (team_port_txable(port)) {
+			if (port->state.speed != SPEED_UNKNOWN)
+				speed += port->state.speed;
+			if (cmd->base.duplex == DUPLEX_UNKNOWN &&
+			    port->state.duplex != DUPLEX_UNKNOWN)
+				cmd->base.duplex = port->state.duplex;
+		}
+	}
+	cmd->base.speed = speed ? : SPEED_UNKNOWN;
+
+	return 0;
+}
+
 static const struct ethtool_ops team_ethtool_ops = {
 	.get_drvinfo		= team_ethtool_get_drvinfo,
 	.get_link		= ethtool_op_get_link,
+	.get_link_ksettings	= team_ethtool_get_link_ksettings,
 };
 
 /***********************
@@ -2099,12 +2163,12 @@ static void team_setup(struct net_device *dev)
 	dev->features |= NETIF_F_NETNS_LOCAL;
 
 	dev->hw_features = TEAM_VLAN_FEATURES |
-			   NETIF_F_HW_VLAN_CTAG_TX |
 			   NETIF_F_HW_VLAN_CTAG_RX |
 			   NETIF_F_HW_VLAN_CTAG_FILTER;
 
 	dev->hw_features |= NETIF_F_GSO_ENCAP_ALL | NETIF_F_GSO_UDP_L4;
 	dev->features |= dev->hw_features;
+	dev->features |= NETIF_F_HW_VLAN_CTAG_TX | NETIF_F_HW_VLAN_STAG_TX;
 }
 
 static int team_newlink(struct net *src_net, struct net_device *dev,
@@ -2257,7 +2321,7 @@ static int team_nl_fill_one_option_get(struct sk_buff *skb, struct team *team,
 	if (err)
 		return err;
 
-	option_item = nla_nest_start(skb, TEAM_ATTR_ITEM_OPTION);
+	option_item = nla_nest_start_noflag(skb, TEAM_ATTR_ITEM_OPTION);
 	if (!option_item)
 		return -EMSGSIZE;
 
@@ -2371,7 +2435,7 @@ start_again:
 
 	if (nla_put_u32(skb, TEAM_ATTR_TEAM_IFINDEX, team->dev->ifindex))
 		goto nla_put_failure;
-	option_list = nla_nest_start(skb, TEAM_ATTR_LIST_OPTION);
+	option_list = nla_nest_start_noflag(skb, TEAM_ATTR_LIST_OPTION);
 	if (!option_list)
 		goto nla_put_failure;
 
@@ -2477,9 +2541,11 @@ static int team_nl_cmd_options_set(struct sk_buff *skb, struct genl_info *info)
 			err = -EINVAL;
 			goto team_put;
 		}
-		err = nla_parse_nested(opt_attrs, TEAM_ATTR_OPTION_MAX,
-				       nl_option, team_nl_option_policy,
-				       info->extack);
+		err = nla_parse_nested_deprecated(opt_attrs,
+						  TEAM_ATTR_OPTION_MAX,
+						  nl_option,
+						  team_nl_option_policy,
+						  info->extack);
 		if (err)
 			goto team_put;
 		if (!opt_attrs[TEAM_ATTR_OPTION_NAME] ||
@@ -2593,7 +2659,7 @@ static int team_nl_fill_one_port_get(struct sk_buff *skb,
 {
 	struct nlattr *port_item;
 
-	port_item = nla_nest_start(skb, TEAM_ATTR_ITEM_PORT);
+	port_item = nla_nest_start_noflag(skb, TEAM_ATTR_ITEM_PORT);
 	if (!port_item)
 		goto nest_cancel;
 	if (nla_put_u32(skb, TEAM_ATTR_PORT_IFINDEX, port->dev->ifindex))
@@ -2648,7 +2714,7 @@ start_again:
 
 	if (nla_put_u32(skb, TEAM_ATTR_TEAM_IFINDEX, team->dev->ifindex))
 		goto nla_put_failure;
-	port_list = nla_nest_start(skb, TEAM_ATTR_LIST_PORT);
+	port_list = nla_nest_start_noflag(skb, TEAM_ATTR_LIST_PORT);
 	if (!port_list)
 		goto nla_put_failure;
 
@@ -2722,20 +2788,24 @@ static int team_nl_cmd_port_list_get(struct sk_buff *skb,
 static const struct genl_ops team_nl_ops[] = {
 	{
 		.cmd = TEAM_CMD_NOOP,
+		.validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
 		.doit = team_nl_cmd_noop,
 	},
 	{
 		.cmd = TEAM_CMD_OPTIONS_SET,
+		.validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
 		.doit = team_nl_cmd_options_set,
 		.flags = GENL_ADMIN_PERM,
 	},
 	{
 		.cmd = TEAM_CMD_OPTIONS_GET,
+		.validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
 		.doit = team_nl_cmd_options_get,
 		.flags = GENL_ADMIN_PERM,
 	},
 	{
 		.cmd = TEAM_CMD_PORT_LIST_GET,
+		.validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
 		.doit = team_nl_cmd_port_list_get,
 		.flags = GENL_ADMIN_PERM,
 	},

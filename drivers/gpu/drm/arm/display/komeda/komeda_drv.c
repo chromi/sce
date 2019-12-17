@@ -17,6 +17,13 @@ struct komeda_drv {
 	struct komeda_kms_dev *kms;
 };
 
+struct komeda_dev *dev_to_mdev(struct device *dev)
+{
+	struct komeda_drv *mdrv = dev_get_drvdata(dev);
+
+	return mdrv ? mdrv->mdev : NULL;
+}
+
 static void komeda_unbind(struct device *dev)
 {
 	struct komeda_drv *mdrv = dev_get_drvdata(dev);
@@ -76,11 +83,12 @@ static int compare_of(struct device *dev, void *data)
 
 static void komeda_add_slave(struct device *master,
 			     struct component_match **match,
-			     struct device_node *np, int port)
+			     struct device_node *np,
+			     u32 port, u32 endpoint)
 {
 	struct device_node *remote;
 
-	remote = of_graph_get_remote_node(np, port, 0);
+	remote = of_graph_get_remote_node(np, port, endpoint);
 	if (remote) {
 		drm_of_component_match_add(master, match, compare_of, remote);
 		of_node_put(remote);
@@ -101,7 +109,8 @@ static int komeda_platform_probe(struct platform_device *pdev)
 			continue;
 
 		/* add connector */
-		komeda_add_slave(dev, &match, child, KOMEDA_OF_PORT_OUTPUT);
+		komeda_add_slave(dev, &match, child, KOMEDA_OF_PORT_OUTPUT, 0);
+		komeda_add_slave(dev, &match, child, KOMEDA_OF_PORT_OUTPUT, 1);
 	}
 
 	return component_master_add_with_match(dev, &komeda_master_ops, match);
@@ -120,7 +129,7 @@ static const struct komeda_product_data komeda_products[] = {
 	},
 };
 
-const struct of_device_id komeda_of_match[] = {
+static const struct of_device_id komeda_of_match[] = {
 	{ .compatible = "arm,mali-d71", .data = &komeda_products[MALI_D71], },
 	{},
 };

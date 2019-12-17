@@ -18,6 +18,7 @@
 #include <linux/kernel.h>
 #include <linux/kobject.h>
 #include <linux/kref.h>
+#include <linux/limits.h>
 #include <linux/netdevice.h>
 #include <linux/printk.h>
 #include <linux/rculist.h>
@@ -1069,7 +1070,7 @@ static ssize_t batadv_store_mesh_iface(struct kobject *kobj,
 	dev_hold(net_dev);
 	INIT_WORK(&store_work->work, batadv_store_mesh_iface_work);
 	store_work->net_dev = net_dev;
-	strlcpy(store_work->soft_iface_name, buff,
+	strscpy(store_work->soft_iface_name, buff,
 		sizeof(store_work->soft_iface_name));
 
 	queue_work(batadv_event_workqueue, &store_work->work);
@@ -1130,9 +1131,9 @@ static ssize_t batadv_store_throughput_override(struct kobject *kobj,
 						struct attribute *attr,
 						char *buff, size_t count)
 {
-	struct batadv_priv *bat_priv = batadv_kobj_to_batpriv(kobj);
 	struct net_device *net_dev = batadv_kobj_to_netdev(kobj);
 	struct batadv_hard_iface *hard_iface;
+	struct batadv_priv *bat_priv;
 	u32 tp_override;
 	u32 old_tp_override;
 	bool ret;
@@ -1163,7 +1164,10 @@ static ssize_t batadv_store_throughput_override(struct kobject *kobj,
 
 	atomic_set(&hard_iface->bat_v.throughput_override, tp_override);
 
-	batadv_netlink_notify_hardif(bat_priv, hard_iface);
+	if (hard_iface->soft_iface) {
+		bat_priv = netdev_priv(hard_iface->soft_iface);
+		batadv_netlink_notify_hardif(bat_priv, hard_iface);
+	}
 
 out:
 	batadv_hardif_put(hard_iface);
