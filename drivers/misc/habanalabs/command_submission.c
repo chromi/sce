@@ -93,7 +93,6 @@ static int cs_parser(struct hl_fpriv *hpriv, struct hl_cs_job *job)
 	parser.user_cb_size = job->user_cb_size;
 	parser.ext_queue = job->ext_queue;
 	job->patched_cb = NULL;
-	parser.use_virt_addr = hdev->mmu_enable;
 
 	rc = hdev->asic_funcs->cs_parser(hdev, &parser);
 	if (job->ext_queue) {
@@ -179,6 +178,24 @@ static void cs_do_release(struct kref *ref)
 
 	/* We also need to update CI for internal queues */
 	if (cs->submitted) {
+		hdev->asic_funcs->hw_queues_lock(hdev);
+
+		hdev->cs_active_cnt--;
+		if (!hdev->cs_active_cnt) {
+			struct hl_device_idle_busy_ts *ts;
+
+			ts = &hdev->idle_busy_ts_arr[hdev->idle_busy_ts_idx++];
+			ts->busy_to_idle_ts = ktime_get();
+
+			if (hdev->idle_busy_ts_idx == HL_IDLE_BUSY_TS_ARR_SIZE)
+				hdev->idle_busy_ts_idx = 0;
+		} else if (hdev->cs_active_cnt < 0) {
+			dev_crit(hdev->dev, "CS active cnt %d is negative\n",
+				hdev->cs_active_cnt);
+		}
+
+		hdev->asic_funcs->hw_queues_unlock(hdev);
+
 		hl_int_hw_queue_update_ci(cs);
 
 		spin_lock(&hdev->hw_queues_mirror_lock);
@@ -255,7 +272,8 @@ static void cs_timedout(struct work_struct *work)
 	ctx_asid = cs->ctx->asid;
 
 	/* TODO: add information about last signaled seq and last emitted seq */
-	dev_err(hdev->dev, "CS %d.%llu got stuck!\n", ctx_asid, cs->sequence);
+	dev_err(hdev->dev, "User %d command submission %llu got stuck!\n",
+		ctx_asid, cs->sequence);
 
 	cs_put(cs);
 
@@ -299,6 +317,8 @@ static int allocate_cs(struct hl_device *hdev, struct hl_ctx *ctx,
 	other = ctx->cs_pending[fence->cs_seq & (HL_MAX_PENDING_CS - 1)];
 	if ((other) && (!dma_fence_is_signaled(other))) {
 		spin_unlock(&ctx->cs_lock);
+		dev_dbg(hdev->dev,
+			"Rejecting CS because of too many in-flights CS\n");
 		rc = -EAGAIN;
 		goto free_fence;
 	}
@@ -389,8 +409,9 @@ static struct hl_cb *validate_queue_index(struct hl_device *hdev,
 		return NULL;
 	}
 
-	if (hw_queue_prop->kmd_only) {
-		dev_err(hdev->dev, "Queue index %d is restricted for KMD\n",
+	if (hw_queue_prop->driver_only) {
+		dev_err(hdev->dev,
+			"Queue index %d is restricted for the kernel driver\n",
 			chunk->queue_index);
 		return NULL;
 	} else if (hw_queue_prop->type == QUEUE_TYPE_INT) {
@@ -594,20 +615,20 @@ int hl_cs_ioctl(struct hl_fpriv *hpriv, void *data)
 	void __user *chunks;
 	u32 num_chunks;
 	u64 cs_seq = ULONG_MAX;
-	int rc, do_restore;
+	int rc, do_ctx_switch;
 	bool need_soft_reset = false;
 
 	if (hl_device_disabled_or_in_reset(hdev)) {
-		dev_warn(hdev->dev,
+		dev_warn_ratelimited(hdev->dev,
 			"Device is %s. Can't submit new CS\n",
 			atomic_read(&hdev->in_reset) ? "in_reset" : "disabled");
 		rc = -EBUSY;
 		goto out;
 	}
 
-	do_restore = atomic_cmpxchg(&ctx->thread_restore_token, 1, 0);
+	do_ctx_switch = atomic_cmpxchg(&ctx->thread_ctx_switch_token, 1, 0);
 
-	if (do_restore || (args->in.cs_flags & HL_CS_FLAGS_FORCE_RESTORE)) {
+	if (do_ctx_switch || (args->in.cs_flags & HL_CS_FLAGS_FORCE_RESTORE)) {
 		long ret;
 
 		chunks = (void __user *)(uintptr_t)args->in.chunks_restore;
@@ -615,7 +636,7 @@ int hl_cs_ioctl(struct hl_fpriv *hpriv, void *data)
 
 		mutex_lock(&hpriv->restore_phase_mutex);
 
-		if (do_restore) {
+		if (do_ctx_switch) {
 			rc = hdev->asic_funcs->context_switch(hdev, ctx->asid);
 			if (rc) {
 				dev_err_ratelimited(hdev->dev,
@@ -671,19 +692,17 @@ int hl_cs_ioctl(struct hl_fpriv *hpriv, void *data)
 			}
 		}
 
-		ctx->thread_restore_wait_token = 1;
-	} else if (!ctx->thread_restore_wait_token) {
+		ctx->thread_ctx_switch_wait_token = 1;
+	} else if (!ctx->thread_ctx_switch_wait_token) {
 		u32 tmp;
 
 		rc = hl_poll_timeout_memory(hdev,
-			(u64) (uintptr_t) &ctx->thread_restore_wait_token,
-			jiffies_to_usecs(hdev->timeout_jiffies),
-			&tmp);
+			&ctx->thread_ctx_switch_wait_token, tmp, (tmp == 1),
+			100, jiffies_to_usecs(hdev->timeout_jiffies), false);
 
-		if (rc || !tmp) {
+		if (rc == -ETIMEDOUT) {
 			dev_err(hdev->dev,
-				"restore phase hasn't finished in time\n");
-			rc = -ETIMEDOUT;
+				"context switch phase timeout (%d)\n", tmp);
 			goto out;
 		}
 	}

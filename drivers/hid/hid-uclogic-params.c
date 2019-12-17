@@ -735,10 +735,6 @@ static int uclogic_params_huion_init(struct uclogic_params *params,
 		goto cleanup;
 	}
 	rc = usb_string(udev, 201, ver_ptr, ver_len);
-	if (ver_ptr == NULL) {
-		rc = -ENOMEM;
-		goto cleanup;
-	}
 	if (rc == -EPIPE) {
 		*ver_ptr = '\0';
 	} else if (rc < 0) {
@@ -981,6 +977,8 @@ int uclogic_params_init(struct uclogic_params *params,
 		/* FALL THROUGH */
 	case VID_PID(USB_VENDOR_ID_HUION,
 		     USB_DEVICE_ID_HUION_TABLET):
+	case VID_PID(USB_VENDOR_ID_HUION,
+		     USB_DEVICE_ID_HUION_HS64):
 	case VID_PID(USB_VENDOR_ID_UCLOGIC,
 		     USB_DEVICE_ID_HUION_TABLET):
 	case VID_PID(USB_VENDOR_ID_UCLOGIC,
@@ -1003,6 +1001,8 @@ int uclogic_params_init(struct uclogic_params *params,
 		     USB_DEVICE_ID_UGEE_XPPEN_TABLET_G540):
 	case VID_PID(USB_VENDOR_ID_UGEE,
 		     USB_DEVICE_ID_UGEE_XPPEN_TABLET_G640):
+	case VID_PID(USB_VENDOR_ID_UGEE,
+		     USB_DEVICE_ID_UGEE_TABLET_RAINBOW_CV720):
 		/* If this is the pen interface */
 		if (bInterfaceNumber == 1) {
 			/* Probe v1 pen parameters */

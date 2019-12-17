@@ -1,20 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Based on arch/arm/include/asm/assembler.h, arch/arm/mm/proc-macros.S
  *
  * Copyright (C) 1996-2000 Russell King
  * Copyright (C) 2012 ARM Ltd.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 #ifndef __ASSEMBLY__
 #error "Only include this from assembly code"
@@ -107,7 +96,11 @@
  * RAS Error Synchronization barrier
  */
 	.macro  esb
+#ifdef CONFIG_ARM64_RAS_EXTN
 	hint    #16
+#else
+	nop
+#endif
 	.endm
 
 /*
@@ -128,17 +121,6 @@ alternative_else
 	SB_BARRIER_INSN
 	nop
 alternative_endif
-	.endm
-
-/*
- * Sanitise a 64-bit bounded index wrt speculation, returning zero if out
- * of bounds.
- */
-	.macro	mask_nospec64, idx, limit, tmp
-	sub	\tmp, \idx, \limit
-	bic	\tmp, \tmp, \idx
-	and	\idx, \idx, \tmp, asr #63
-	csdb
 	.endm
 
 /*
@@ -357,6 +339,13 @@ alternative_endif
 	.endm
 
 /*
+ * tcr_set_t1sz - update TCR.T1SZ
+ */
+	.macro	tcr_set_t1sz, valreg, t1sz
+	bfi	\valreg, \t1sz, #TCR_T1SZ_OFFSET, #TCR_TxSZ_WIDTH
+	.endm
+
+/*
  * tcr_compute_pa_size - set TCR.(I)PS to the highest supported
  * ID_AA64MMFR0_EL1.PARange value
  *
@@ -407,7 +396,11 @@ alternative_endif
 	.ifc	\op, cvap
 	sys	3, c7, c12, 1, \kaddr	// dc cvap
 	.else
+	.ifc	\op, cvadp
+	sys	3, c7, c13, 1, \kaddr	// dc cvadp
+	.else
 	dc	\op, \kaddr
+	.endif
 	.endif
 	.endif
 	.endif
@@ -442,8 +435,8 @@ USER(\label, ic	ivau, \tmp2)			// invalidate I line PoU
  * reset_pmuserenr_el0 - reset PMUSERENR_EL0 if PMUv3 present
  */
 	.macro	reset_pmuserenr_el0, tmpreg
-	mrs	\tmpreg, id_aa64dfr0_el1	// Check ID_AA64DFR0_EL1 PMUVer
-	sbfx	\tmpreg, \tmpreg, #8, #4
+	mrs	\tmpreg, id_aa64dfr0_el1
+	sbfx	\tmpreg, \tmpreg, #ID_AA64DFR0_PMUVER_SHIFT, #4
 	cmp	\tmpreg, #1			// Skip if no PMU present
 	b.lt	9000f
 	msr	pmuserenr_el0, xzr		// Disable PMU access from EL0
@@ -541,9 +534,13 @@ USER(\label, ic	ivau, \tmp2)			// invalidate I line PoU
  * In future this may be nop'ed out when dealing with 52-bit kernel VAs.
  * 	ttbr: Value of ttbr to set, modified.
  */
-	.macro	offset_ttbr1, ttbr
-#ifdef CONFIG_ARM64_USER_VA_BITS_52
+	.macro	offset_ttbr1, ttbr, tmp
+#ifdef CONFIG_ARM64_VA_BITS_52
+	mrs_s	\tmp, SYS_ID_AA64MMFR2_EL1
+	and	\tmp, \tmp, #(0xf << ID_AA64MMFR2_LVA_SHIFT)
+	cbnz	\tmp, .Lskipoffs_\@
 	orr	\ttbr, \ttbr, #TTBR1_BADDR_4852_OFFSET
+.Lskipoffs_\@ :
 #endif
 	.endm
 
@@ -553,7 +550,7 @@ USER(\label, ic	ivau, \tmp2)			// invalidate I line PoU
  * to be nop'ed out when dealing with 52-bit kernel VAs.
  */
 	.macro	restore_ttbr1, ttbr
-#ifdef CONFIG_ARM64_USER_VA_BITS_52
+#ifdef CONFIG_ARM64_VA_BITS_52
 	bic	\ttbr, \ttbr, #TTBR1_BADDR_4852_OFFSET
 #endif
 	.endm
@@ -714,12 +711,11 @@ USER(\label, ic	ivau, \tmp2)			// invalidate I line PoU
  * the output section, any use of such directives is undefined.
  *
  * The yield itself consists of the following:
- * - Check whether the preempt count is exactly 1, in which case disabling
- *   preemption once will make the task preemptible. If this is not the case,
- *   yielding is pointless.
- * - Check whether TIF_NEED_RESCHED is set, and if so, disable and re-enable
- *   kernel mode NEON (which will trigger a reschedule), and branch to the
- *   yield fixup code.
+ * - Check whether the preempt count is exactly 1 and a reschedule is also
+ *   needed. If so, calling of preempt_enable() in kernel_neon_end() will
+ *   trigger a reschedule. If it is not the case, yielding is pointless.
+ * - Disable and re-enable kernel mode NEON, and branch to the yield fixup
+ *   code.
  *
  * This macro sequence may clobber all CPU state that is not guaranteed by the
  * AAPCS to be preserved across an ordinary function call.

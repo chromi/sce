@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include <linux/export.h>
 #include <linux/bvec.h>
 #include <linux/uio.h>
@@ -877,7 +878,7 @@ static inline bool page_copy_sane(struct page *page, size_t offset, size_t n)
 	head = compound_head(page);
 	v += (page - head) << PAGE_SHIFT;
 
-	if (likely(n <= v && v <= (PAGE_SIZE << compound_order(head))))
+	if (likely(n <= v && v <= (page_size(head))))
 		return true;
 	WARN_ON(1);
 	return false;
@@ -1293,7 +1294,9 @@ ssize_t iov_iter_get_pages(struct iov_iter *i,
 			len = maxpages * PAGE_SIZE;
 		addr &= ~(PAGE_SIZE - 1);
 		n = DIV_ROUND_UP(len, PAGE_SIZE);
-		res = get_user_pages_fast(addr, n, iov_iter_rw(i) != WRITE, pages);
+		res = get_user_pages_fast(addr, n,
+				iov_iter_rw(i) != WRITE ?  FOLL_WRITE : 0,
+				pages);
 		if (unlikely(res < 0))
 			return res;
 		return (res == n ? len : res * PAGE_SIZE) - *start;
@@ -1374,7 +1377,8 @@ ssize_t iov_iter_get_pages_alloc(struct iov_iter *i,
 		p = get_pages_array(n);
 		if (!p)
 			return -ENOMEM;
-		res = get_user_pages_fast(addr, n, iov_iter_rw(i) != WRITE, p);
+		res = get_user_pages_fast(addr, n,
+				iov_iter_rw(i) != WRITE ?  FOLL_WRITE : 0, p);
 		if (unlikely(res < 0)) {
 			kvfree(p);
 			return res;
@@ -1528,6 +1532,7 @@ EXPORT_SYMBOL(csum_and_copy_to_iter);
 size_t hash_and_copy_to_iter(const void *addr, size_t bytes, void *hashp,
 		struct iov_iter *i)
 {
+#ifdef CONFIG_CRYPTO
 	struct ahash_request *hash = hashp;
 	struct scatterlist sg;
 	size_t copied;
@@ -1537,6 +1542,9 @@ size_t hash_and_copy_to_iter(const void *addr, size_t bytes, void *hashp,
 	ahash_request_set_crypt(hash, &sg, NULL, copied);
 	crypto_ahash_update(hash);
 	return copied;
+#else
+	return 0;
+#endif
 }
 EXPORT_SYMBOL(hash_and_copy_to_iter);
 
@@ -1626,9 +1634,9 @@ EXPORT_SYMBOL(dup_iter);
  * on-stack array was used or not (and regardless of whether this function
  * returns an error or not).
  *
- * Return: 0 on success or negative error code on error.
+ * Return: Negative error code on error, bytes imported on success
  */
-int import_iovec(int type, const struct iovec __user * uvector,
+ssize_t import_iovec(int type, const struct iovec __user * uvector,
 		 unsigned nr_segs, unsigned fast_segs,
 		 struct iovec **iov, struct iov_iter *i)
 {
@@ -1644,16 +1652,17 @@ int import_iovec(int type, const struct iovec __user * uvector,
 	}
 	iov_iter_init(i, type, p, nr_segs, n);
 	*iov = p == *iov ? NULL : p;
-	return 0;
+	return n;
 }
 EXPORT_SYMBOL(import_iovec);
 
 #ifdef CONFIG_COMPAT
 #include <linux/compat.h>
 
-int compat_import_iovec(int type, const struct compat_iovec __user * uvector,
-		 unsigned nr_segs, unsigned fast_segs,
-		 struct iovec **iov, struct iov_iter *i)
+ssize_t compat_import_iovec(int type,
+		const struct compat_iovec __user * uvector,
+		unsigned nr_segs, unsigned fast_segs,
+		struct iovec **iov, struct iov_iter *i)
 {
 	ssize_t n;
 	struct iovec *p;
@@ -1667,7 +1676,7 @@ int compat_import_iovec(int type, const struct compat_iovec __user * uvector,
 	}
 	iov_iter_init(i, type, p, nr_segs, n);
 	*iov = p == *iov ? NULL : p;
-	return 0;
+	return n;
 }
 #endif
 

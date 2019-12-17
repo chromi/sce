@@ -187,8 +187,8 @@ static int make_exe(const uint8_t *payload, size_t len)
 	ph.p_offset = 0;
 	ph.p_vaddr = VADDR;
 	ph.p_paddr = 0;
-	ph.p_filesz = sizeof(struct elf64_hdr) + sizeof(struct elf64_phdr) + sizeof(payload);
-	ph.p_memsz = sizeof(struct elf64_hdr) + sizeof(struct elf64_phdr) + sizeof(payload);
+	ph.p_filesz = sizeof(struct elf64_hdr) + sizeof(struct elf64_phdr) + len;
+	ph.p_memsz = sizeof(struct elf64_hdr) + sizeof(struct elf64_phdr) + len;
 	ph.p_align = 4096;
 
 	fd = openat(AT_FDCWD, "/tmp", O_WRONLY|O_EXCL|O_TMPFILE, 0700);
@@ -215,6 +215,11 @@ static const char str_vsyscall[] =
 "ffffffffff600000-ffffffffff601000 r-xp 00000000 00:00 0                  [vsyscall]\n";
 
 #ifdef __x86_64__
+static void sigaction_SIGSEGV(int _, siginfo_t *__, void *___)
+{
+	_exit(1);
+}
+
 /*
  * vsyscall page can't be unmapped, probe it with memory load.
  */
@@ -231,11 +236,19 @@ static void vsyscall(void)
 	if (pid == 0) {
 		struct rlimit rlim = {0, 0};
 		(void)setrlimit(RLIMIT_CORE, &rlim);
+
+		/* Hide "segfault at ffffffffff600000" messages. */
+		struct sigaction act;
+		memset(&act, 0, sizeof(struct sigaction));
+		act.sa_flags = SA_SIGINFO;
+		act.sa_sigaction = sigaction_SIGSEGV;
+		(void)sigaction(SIGSEGV, &act, NULL);
+
 		*(volatile int *)0xffffffffff600000UL;
 		exit(0);
 	}
-	wait(&wstatus);
-	if (WIFEXITED(wstatus)) {
+	waitpid(pid, &wstatus, 0);
+	if (WIFEXITED(wstatus) && WEXITSTATUS(wstatus) == 0) {
 		g_vsyscall = true;
 	}
 }

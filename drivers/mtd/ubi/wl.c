@@ -1,19 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (c) International Business Machines Corp., 2006
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See
- * the GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  *
  * Authors: Artem Bityutskiy (Битюцкий Артём), Thomas Gleixner
  */
@@ -721,6 +708,12 @@ static int wear_leveling_worker(struct ubi_device *ubi, struct ubi_work *wrk,
 			goto out_cancel;
 		e2 = get_peb_for_wl(ubi);
 		if (!e2)
+			goto out_cancel;
+
+		/*
+		 * Anchor move within the anchor area is useless.
+		 */
+		if (e2->pnum < UBI_FM_MAX_START)
 			goto out_cancel;
 
 		self_check_in_wl_tree(ubi, e1, &ubi->used);
@@ -1475,7 +1468,7 @@ static bool scrub_possible(struct ubi_device *ubi, struct ubi_wl_entry *e)
  */
 int ubi_bitflip_check(struct ubi_device *ubi, int pnum, int force)
 {
-	int err;
+	int err = 0;
 	struct ubi_wl_entry *e;
 
 	if (pnum < 0 || pnum >= ubi->peb_count) {

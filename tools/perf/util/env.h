@@ -4,11 +4,13 @@
 
 #include <linux/types.h>
 #include <linux/rbtree.h>
-#include "cpumap.h"
 #include "rwsem.h"
+
+struct perf_cpu_map;
 
 struct cpu_topology_map {
 	int	socket_id;
+	int	die_id;
 	int	core_id;
 };
 
@@ -26,7 +28,7 @@ struct numa_node {
 	u32		 node;
 	u64		 mem_total;
 	u64		 mem_free;
-	struct cpu_map	*map;
+	struct perf_cpu_map	*map;
 };
 
 struct memory_node {
@@ -49,6 +51,7 @@ struct perf_env {
 
 	int			nr_cmdline;
 	int			nr_sibling_cores;
+	int			nr_sibling_dies;
 	int			nr_sibling_threads;
 	int			nr_numa_nodes;
 	int			nr_memory_nodes;
@@ -57,11 +60,17 @@ struct perf_env {
 	char			*cmdline;
 	const char		**cmdline_argv;
 	char			*sibling_cores;
+	char			*sibling_dies;
 	char			*sibling_threads;
 	char			*pmu_mappings;
 	struct cpu_topology_map	*cpu;
 	struct cpu_cache_level	*caches;
 	int			 caches_cnt;
+	u32			comp_ratio;
+	u32			comp_ver;
+	u32			comp_type;
+	u32			comp_level;
+	u32			comp_mmap_len;
 	struct numa_node	*numa_nodes;
 	struct memory_node	*memory_nodes;
 	unsigned long long	 memory_bsize;
@@ -78,6 +87,12 @@ struct perf_env {
 		struct rb_root		btfs;
 		u32			btfs_cnt;
 	} bpf_progs;
+};
+
+enum perf_compress_type {
+	PERF_COMP_NONE = 0,
+	PERF_COMP_ZSTD,
+	PERF_COMP_MAX
 };
 
 struct bpf_prog_info_node;

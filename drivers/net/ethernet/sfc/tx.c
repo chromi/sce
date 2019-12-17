@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /****************************************************************************
  * Driver for Solarflare network controllers and boards
  * Copyright 2005-2006 Fen Systems Ltd.
  * Copyright 2005-2013 Solarflare Communications Inc.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation, incorporated herein by reference.
  */
 
 #include <linux/pci.h>
@@ -277,7 +274,7 @@ static void efx_skb_copy_bits_to_pio(struct efx_nic *efx, struct sk_buff *skb,
 
 		vaddr = kmap_atomic(skb_frag_page(f));
 
-		efx_memcpy_toio_aligned_cb(efx, piobuf, vaddr + f->page_offset,
+		efx_memcpy_toio_aligned_cb(efx, piobuf, vaddr + skb_frag_off(f),
 					   skb_frag_size(f), copy_buf);
 		kunmap_atomic(vaddr);
 	}

@@ -1,12 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Generic PPP layer for Linux.
  *
  * Copyright 1999-2002 Paul Mackerras.
- *
- *  This program is free software; you can redistribute it and/or
- *  modify it under the terms of the GNU General Public License
- *  as published by the Free Software Foundation; either version
- *  2 of the License, or (at your option) any later version.
  *
  * The generic PPP layer handles the PPP network interfaces, the
  * /dev/ppp device, packet and VJ compression, and multilink.
@@ -1328,8 +1324,6 @@ static int ppp_dev_init(struct net_device *dev)
 {
 	struct ppp *ppp;
 
-	netdev_lockdep_set_classes(dev);
-
 	ppp = netdev_priv(dev);
 	/* Let the netdevice take a reference on the ppp file. This ensures
 	 * that ppp_destroy_interface() won't run before the device gets
@@ -1419,6 +1413,8 @@ static void __ppp_xmit_process(struct ppp *ppp, struct sk_buff *skb)
 			netif_wake_queue(ppp->dev);
 		else
 			netif_stop_queue(ppp->dev);
+	} else {
+		kfree_skb(skb);
 	}
 	ppp_xmit_unlock(ppp);
 }

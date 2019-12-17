@@ -1,11 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 #ifndef _ASM_POWERPC_PCI_BRIDGE_H
 #define _ASM_POWERPC_PCI_BRIDGE_H
 #ifdef __KERNEL__
 /*
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
  */
 #include <linux/pci.h>
 #include <linux/list.h>
@@ -186,6 +183,7 @@ struct iommu_table;
 struct pci_dn {
 	int     flags;
 #define PCI_DN_FLAG_IOV_VF	0x01
+#define PCI_DN_FLAG_DEAD	0x02    /* Device has been hot-removed */
 
 	int	busno;			/* pci bus number */
 	int	devfn;			/* pci device and function number */

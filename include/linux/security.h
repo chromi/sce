@@ -51,6 +51,7 @@ struct fown_struct;
 struct file_operations;
 struct msg_msg;
 struct xattr;
+struct kernfs_node;
 struct xfrm_sec_ctx;
 struct mm_struct;
 struct fs_context;
@@ -74,6 +75,55 @@ struct timezone;
 
 enum lsm_event {
 	LSM_POLICY_CHANGE,
+};
+
+/*
+ * These are reasons that can be passed to the security_locked_down()
+ * LSM hook. Lockdown reasons that protect kernel integrity (ie, the
+ * ability for userland to modify kernel code) are placed before
+ * LOCKDOWN_INTEGRITY_MAX.  Lockdown reasons that protect kernel
+ * confidentiality (ie, the ability for userland to extract
+ * information from the running kernel that would otherwise be
+ * restricted) are placed before LOCKDOWN_CONFIDENTIALITY_MAX.
+ *
+ * LSM authors should note that the semantics of any given lockdown
+ * reason are not guaranteed to be stable - the same reason may block
+ * one set of features in one kernel release, and a slightly different
+ * set of features in a later kernel release. LSMs that seek to expose
+ * lockdown policy at any level of granularity other than "none",
+ * "integrity" or "confidentiality" are responsible for either
+ * ensuring that they expose a consistent level of functionality to
+ * userland, or ensuring that userland is aware that this is
+ * potentially a moving target. It is easy to misuse this information
+ * in a way that could break userspace. Please be careful not to do
+ * so.
+ *
+ * If you add to this, remember to extend lockdown_reasons in
+ * security/lockdown/lockdown.c.
+ */
+enum lockdown_reason {
+	LOCKDOWN_NONE,
+	LOCKDOWN_MODULE_SIGNATURE,
+	LOCKDOWN_DEV_MEM,
+	LOCKDOWN_EFI_TEST,
+	LOCKDOWN_KEXEC,
+	LOCKDOWN_HIBERNATION,
+	LOCKDOWN_PCI_ACCESS,
+	LOCKDOWN_IOPORT,
+	LOCKDOWN_MSR,
+	LOCKDOWN_ACPI_TABLES,
+	LOCKDOWN_PCMCIA_CIS,
+	LOCKDOWN_TIOCSSERIAL,
+	LOCKDOWN_MODULE_PARAMETERS,
+	LOCKDOWN_MMIOTRACE,
+	LOCKDOWN_DEBUGFS,
+	LOCKDOWN_INTEGRITY_MAX,
+	LOCKDOWN_KCORE,
+	LOCKDOWN_KPROBES,
+	LOCKDOWN_BPF_READ,
+	LOCKDOWN_PERF,
+	LOCKDOWN_TRACEFS,
+	LOCKDOWN_CONFIDENTIALITY_MAX,
 };
 
 /* These functions are in security/commoncap.c */
@@ -188,12 +238,13 @@ static inline const char *kernel_load_data_id_str(enum kernel_load_data_id id)
 
 #ifdef CONFIG_SECURITY
 
-int call_lsm_notifier(enum lsm_event event, void *data);
-int register_lsm_notifier(struct notifier_block *nb);
-int unregister_lsm_notifier(struct notifier_block *nb);
+int call_blocking_lsm_notifier(enum lsm_event event, void *data);
+int register_blocking_lsm_notifier(struct notifier_block *nb);
+int unregister_blocking_lsm_notifier(struct notifier_block *nb);
 
 /* prototypes */
 extern int security_init(void);
+extern int early_security_init(void);
 
 /* Security operations */
 int security_binder_set_context_mgr(struct task_struct *mgr);
@@ -250,6 +301,7 @@ int security_sb_clone_mnt_opts(const struct super_block *oldsb,
 				unsigned long *set_kern_flags);
 int security_add_mnt_opt(const char *option, const char *val,
 				int len, void **mnt_opts);
+int security_move_mount(const struct path *from_path, const struct path *to_path);
 int security_dentry_init_security(struct dentry *dentry, int mode,
 					const struct qstr *name, void **ctx,
 					u32 *ctxlen);
@@ -257,7 +309,8 @@ int security_dentry_create_files_as(struct dentry *dentry, int mode,
 					struct qstr *name,
 					const struct cred *old,
 					struct cred *new);
-
+int security_path_notify(const struct path *path, u64 mask,
+					unsigned int obj_type);
 int security_inode_alloc(struct inode *inode);
 void security_inode_free(struct inode *inode);
 int security_inode_init_security(struct inode *inode, struct inode *dir,
@@ -299,6 +352,8 @@ int security_inode_listsecurity(struct inode *inode, char *buffer, size_t buffer
 void security_inode_getsecid(struct inode *inode, u32 *secid);
 int security_inode_copy_up(struct dentry *src, struct cred **new);
 int security_inode_copy_up_xattr(const char *name);
+int security_kernfs_init_security(struct kernfs_node *kn_dir,
+				  struct kernfs_node *kn);
 int security_file_permission(struct file *file, int mask);
 int security_file_alloc(struct file *file);
 void security_file_free(struct file *file);
@@ -383,24 +438,24 @@ int security_ismaclabel(const char *name);
 int security_secid_to_secctx(u32 secid, char **secdata, u32 *seclen);
 int security_secctx_to_secid(const char *secdata, u32 seclen, u32 *secid);
 void security_release_secctx(char *secdata, u32 seclen);
-
 void security_inode_invalidate_secctx(struct inode *inode);
 int security_inode_notifysecctx(struct inode *inode, void *ctx, u32 ctxlen);
 int security_inode_setsecctx(struct dentry *dentry, void *ctx, u32 ctxlen);
 int security_inode_getsecctx(struct inode *inode, void **ctx, u32 *ctxlen);
+int security_locked_down(enum lockdown_reason what);
 #else /* CONFIG_SECURITY */
 
-static inline int call_lsm_notifier(enum lsm_event event, void *data)
+static inline int call_blocking_lsm_notifier(enum lsm_event event, void *data)
 {
 	return 0;
 }
 
-static inline int register_lsm_notifier(struct notifier_block *nb)
+static inline int register_blocking_lsm_notifier(struct notifier_block *nb)
 {
 	return 0;
 }
 
-static inline  int unregister_lsm_notifier(struct notifier_block *nb)
+static inline  int unregister_blocking_lsm_notifier(struct notifier_block *nb)
 {
 	return 0;
 }
@@ -415,6 +470,11 @@ static inline void security_free_mnt_opts(void **mnt_opts)
  */
 
 static inline int security_init(void)
+{
+	return 0;
+}
+
+static inline int early_security_init(void)
 {
 	return 0;
 }
@@ -611,6 +671,18 @@ static inline int security_add_mnt_opt(const char *option, const char *val,
 	return 0;
 }
 
+static inline int security_move_mount(const struct path *from_path,
+				      const struct path *to_path)
+{
+	return 0;
+}
+
+static inline int security_path_notify(const struct path *path, u64 mask,
+				unsigned int obj_type)
+{
+	return 0;
+}
+
 static inline int security_inode_alloc(struct inode *inode)
 {
 	return 0;
@@ -797,6 +869,12 @@ static inline void security_inode_getsecid(struct inode *inode, u32 *secid)
 }
 
 static inline int security_inode_copy_up(struct dentry *src, struct cred **new)
+{
+	return 0;
+}
+
+static inline int security_kernfs_init_security(struct kernfs_node *kn_dir,
+						struct kernfs_node *kn)
 {
 	return 0;
 }
@@ -1187,6 +1265,10 @@ static inline int security_inode_setsecctx(struct dentry *dentry, void *ctx, u32
 static inline int security_inode_getsecctx(struct inode *inode, void **ctx, u32 *ctxlen)
 {
 	return -EOPNOTSUPP;
+}
+static inline int security_locked_down(enum lockdown_reason what)
+{
+	return 0;
 }
 #endif	/* CONFIG_SECURITY */
 

@@ -22,7 +22,6 @@ dbc_dma_alloc_coherent(struct xhci_hcd *xhci, size_t size,
 
 	vaddr = dma_alloc_coherent(xhci_to_hcd(xhci)->self.sysdev,
 				   size, dma_handle, flags);
-	memset(vaddr, 0, size);
 	return vaddr;
 }
 
@@ -421,8 +420,6 @@ static int xhci_dbc_mem_init(struct xhci_hcd *xhci, gfp_t flags)
 	string_length = xhci_dbc_populate_strings(dbc->string);
 	xhci_dbc_init_contexts(xhci, string_length);
 
-	mmiowb();
-
 	xhci_dbc_eps_init(xhci);
 	dbc->state = DS_INITIALIZED;
 
@@ -516,7 +513,6 @@ static int xhci_do_dbc_stop(struct xhci_hcd *xhci)
 		return -1;
 
 	writel(0, &dbc->regs->control);
-	xhci_dbc_mem_cleanup(xhci);
 	dbc->state = DS_DISABLED;
 
 	return 0;
@@ -562,8 +558,10 @@ static void xhci_dbc_stop(struct xhci_hcd *xhci)
 	ret = xhci_do_dbc_stop(xhci);
 	spin_unlock_irqrestore(&dbc->lock, flags);
 
-	if (!ret)
+	if (!ret) {
+		xhci_dbc_mem_cleanup(xhci);
 		pm_runtime_put_sync(xhci_to_hcd(xhci)->self.controller);
+	}
 }
 
 static void
