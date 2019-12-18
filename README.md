@@ -6,6 +6,7 @@ This is the [SCE](https://datatracker.ietf.org/doc/draft-morton-tsvwg-sce/)
 - the new TCP CC algorithms reno-sce, dctcp-sce and cubic-sce
 - changes to the Cake qdisc for SCE signaling
 - changes to TCP input for SCE to ESCE feedback
+- additional qdiscs under testing
 
 ## Status
 
@@ -33,20 +34,18 @@ sudo make install
 sudo reboot
 ```
 
-## Compiling tc-adv
+## Compiling iproute2
 
-New parameters are added to the Cake qdisc which require changes to the tc
-binary. Here are commands that may be used to compile and install the updated
-tc:
+New qdiscs and parameters are added which require changes to the tc binary.
+Below are the commands that may be used to compile and install the updated tc.
 
 ```
 sudo apt-get install pkg-config bison flex libcap-dev libmnl-dev libelf-dev libdb-dev
-git clone https://github.com/dtaht/tc-adv # tc-adv repo
-cd tc-adv
+git clone https://github.com/heistp/iproute2-sce
+cd iproute2-sce
 ./configure
 make
-cp /sbin/tc tc_orig # back up original tc
-sudo cp tc/tc /sbin
+# use the resulting tc/tc binary when working with SCE qdiscs
 ```
 
 ## Sysctls
