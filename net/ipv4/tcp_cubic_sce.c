@@ -368,7 +368,7 @@ static void bictcp_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 
 	while(ca->sqrt_cnt * ca->sqrt_cnt < tp->snd_cwnd)
 		ca->sqrt_cnt++;
-	while(ca->sqrt_cnt * ca->sqrt_cnt >= tp->snd_cwnd)
+	while(ca->sqrt_cnt * ca->sqrt_cnt >= tp->snd_cwnd && ca->sqrt_cnt)
 		ca->sqrt_cnt--;
 }
 
