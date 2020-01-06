@@ -494,7 +494,7 @@ static void bictcp_handle_ack(struct sock *sk, u32 flags)
 
 		if (flags & CA_ACK_ESCE && !ca->epoch_start) {
 			/* drop out of slow-start */
-			tp->snd_ssthresh = tp->snd_cwnd / 2;
+			tp->snd_ssthresh = tp->snd_cwnd;
 		} else if ((flags & (CA_ACK_ECE|CA_ACK_ESCE)) == CA_ACK_ESCE) {
 			/* We have a block of SCE feedback */
 			u32 now = tcp_jiffies32;
@@ -559,7 +559,7 @@ static void bictcp_handle_ack(struct sock *sk, u32 flags)
 			}
 
 			/* drop out of slow-start */
-			tp->snd_ssthresh = tp->snd_cwnd / 2;
+			tp->snd_ssthresh = tp->snd_cwnd;
 		}
 
 		if(ca->recent_sce)
