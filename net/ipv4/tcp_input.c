@@ -391,7 +391,7 @@ static void __tcp_ecn_check_ce(struct sock *sk, const struct sk_buff *skb)
 			tp->ecn_flags |= TCP_ECN_QUEUE_ESCE | TCP_ECN_PRIOR_ESCE | TCP_ECN_SEEN;
 			break;
 		}
-		/* fallthrough, since ECT(1) == ECT(0) in RFC-3168 */
+		/* fallthrough - since ECT(1) == ECT(0) in RFC-3168 */
 	default: /* INET_ECN_ECT */
 		if (sock_net(sk)->ipv4.sysctl_tcp_sce) {
 			if ((tp->ecn_flags & TCP_ECN_PRIOR_ESCE) &&
