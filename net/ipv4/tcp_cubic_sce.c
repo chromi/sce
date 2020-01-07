@@ -368,8 +368,17 @@ static void bictcp_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 
 	while(ca->sqrt_cnt * ca->sqrt_cnt < tp->snd_cwnd)
 		ca->sqrt_cnt++;
-	while(ca->sqrt_cnt * ca->sqrt_cnt >= tp->snd_cwnd && ca->sqrt_cnt)
+	while(ca->sqrt_cnt * ca->sqrt_cnt >= tp->snd_cwnd)
 		ca->sqrt_cnt--;
+}
+
+static void bictcp_drop_slow_start(struct sock *sk)
+{
+	struct tcp_sock *tp = tcp_sk(sk);
+
+	if (tp->snd_cwnd < tp->snd_ssthresh) {
+		tp->snd_ssthresh = max(1U, tp->snd_cwnd / 2);
+	}
 }
 
 static u32 bictcp_recalc_ssthresh(struct sock *sk)
@@ -386,8 +395,8 @@ static u32 bictcp_recalc_ssthresh(struct sock *sk)
 	else
 		ca->last_max_cwnd = tp->snd_cwnd;
 
-//	if(ca->recent_sce)
-//		return max(tp->snd_cwnd - (tp->snd_cwnd >> 3), 2U);
+	if(ca->recent_sce)
+		return max(tp->snd_cwnd - (tp->snd_cwnd >> 3), 2U);
 	return max((tp->snd_cwnd * beta) / BICTCP_BETA_SCALE, 2U);
 }
 
@@ -493,8 +502,7 @@ static void bictcp_handle_ack(struct sock *sk, u32 flags)
 		ca->prior_snd_una = tp->snd_una;
 
 		if (flags & CA_ACK_ESCE && !ca->epoch_start) {
-			/* drop out of slow-start */
-			tp->snd_ssthresh = tp->snd_cwnd;
+			bictcp_drop_slow_start(sk);
 		} else if ((flags & (CA_ACK_ECE|CA_ACK_ESCE)) == CA_ACK_ESCE) {
 			/* We have a block of SCE feedback */
 			u32 now = tcp_jiffies32;
@@ -558,8 +566,7 @@ static void bictcp_handle_ack(struct sock *sk, u32 flags)
 					ca->bic_origin_point--;
 			}
 
-			/* drop out of slow-start */
-			tp->snd_ssthresh = tp->snd_cwnd;
+			bictcp_drop_slow_start(sk);
 		}
 
 		if(ca->recent_sce)
