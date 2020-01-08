@@ -49,6 +49,10 @@ static void dctcp_init(struct sock *sk)
 	ca->snd_cwnd_cnt = 0;
 	ca->loss_cwnd = 0;
 	ca->recent_sce = 0;
+
+	/* enable pacing per sysctl */
+	if (sock_net(sk)->ipv4.sysctl_tcp_sce_pacing)
+		cmpxchg(&sk->sk_pacing_status, SK_PACING_NONE, SK_PACING_NEEDED);
 }
 
 static u32 dctcp_ssthresh(struct sock *sk)
