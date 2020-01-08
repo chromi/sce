@@ -40,6 +40,10 @@ static void reno_sce_init(struct sock *sk)
 	ca->loss_cwnd = 0;
 	ca->recent_sce = 0;
 	ca->sqrt_cwnd = 1;
+
+	/* enable pacing per sysctl */
+	if (sock_net(sk)->ipv4.sysctl_tcp_sce_pacing)
+		cmpxchg(&sk->sk_pacing_status, SK_PACING_NONE, SK_PACING_NEEDED);
 }
 
 static u32 reno_sce_ssthresh(struct sock *sk)

@@ -165,6 +165,10 @@ static void bictcp_init(struct sock *sk)
 	ca->prior_snd_una = tp->snd_una;
 	ca->prior_rcv_nxt = tp->rcv_nxt;
 	ca->next_seq = tp->snd_nxt;
+
+	/* enable pacing per sysctl */
+	if (sock_net(sk)->ipv4.sysctl_tcp_sce_pacing)
+		cmpxchg(&sk->sk_pacing_status, SK_PACING_NONE, SK_PACING_NEEDED);
 }
 
 static void bictcp_cwnd_event(struct sock *sk, enum tcp_ca_event event)
