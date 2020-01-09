@@ -2543,6 +2543,10 @@ static bool tcp_pacing_check(struct sock *sk)
 			      HRTIMER_MODE_ABS_PINNED_SOFT);
 		sock_hold(sk);
 	}
+	if (sk->sk_pacing_rate < sk->sk_max_pacing_rate) {
+		/* pacing is a product of cwnd, ergo we are cwnd limited */
+		tcp_cwnd_validate(sk, true);
+	}
 	return true;
 }
 
