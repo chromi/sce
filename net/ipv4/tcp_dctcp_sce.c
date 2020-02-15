@@ -125,7 +125,7 @@ static void dctcp_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 
 	if (tcp_in_slow_start(tp)) {
 		acked = tcp_slow_start(tp, acked);
-		ca->snd_cwnd_cnt += acked * inet_csk(sk)->icsk_ack.rcv_mss;
+		ca->snd_cwnd_cnt += acked * inet_csk(sk)->icsk_ack.rcv_mss / 5;
 	}
 
 	/* if not in slow-start, cwnd evolution governed by ack handler */

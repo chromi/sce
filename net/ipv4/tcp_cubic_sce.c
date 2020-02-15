@@ -366,13 +366,13 @@ static void bictcp_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 		if (!acked)
 			return;
 	}
-	ca->ack_cnt += acked * ca->mss;
+	ca->ack_cnt += acked * ca->mss / 5;
 	bictcp_update(ca, tp->snd_cwnd, acked);
 	tcp_cong_avoid_ai(tp, ca->cnt, acked);
 
 	while(ca->sqrt_cnt * ca->sqrt_cnt < tp->snd_cwnd)
 		ca->sqrt_cnt++;
-	while(ca->sqrt_cnt * ca->sqrt_cnt >= tp->snd_cwnd)
+	while(ca->sqrt_cnt * ca->sqrt_cnt > tp->snd_cwnd)
 		ca->sqrt_cnt--;
 }
 
@@ -524,8 +524,8 @@ static void bictcp_handle_ack(struct sock *sk, u32 flags)
 				/* below inflection point, bring it back towards us */
 				ca->epoch_start = now;
 				ca->bic_K -= t;
-				if(acked_bytes < ca->sqrt_cnt) {
-					ca->bic_K = ca->bic_K * (ca->sqrt_cnt - acked_bytes) / ca->sqrt_cnt;
+				if(acked_bytes < mss * ca->sqrt_cnt) {
+					ca->bic_K = ca->bic_K * (mss * ca->sqrt_cnt - acked_bytes) / (mss * ca->sqrt_cnt);
 				} else {
 					ca->bic_K = 0;
 				}
@@ -542,8 +542,8 @@ static void bictcp_handle_ack(struct sock *sk, u32 flags)
 				/* above inflection point, advance it towards us */
 				ca->epoch_start += (ca->bic_K * HZ) >> BICTCP_HZ;
 				t = offs;
-				if(acked_bytes < ca->sqrt_cnt) {
-					ca->bic_K = ((u32) t) * acked_bytes / ca->sqrt_cnt;
+				if(acked_bytes < mss * ca->sqrt_cnt) {
+					ca->bic_K = ((u32) t) * acked_bytes / (mss * ca->sqrt_cnt);
 				} else {
 					ca->bic_K = t;
 				}
