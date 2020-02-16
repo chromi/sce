@@ -793,7 +793,7 @@ static int cnq_dump(struct Qdisc *sch, struct sk_buff *skb)
 	struct cnq_sched_data *q = qdisc_priv(sch);
 	struct nlattr *opts;
 
-	opts = nla_nest_start(skb, TCA_OPTIONS);
+	opts = nla_nest_start_noflag(skb, TCA_OPTIONS);
 	if (!opts)
 		goto nla_put_failure;
 
