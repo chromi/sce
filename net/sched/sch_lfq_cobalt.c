@@ -114,7 +114,8 @@ struct lfq_sched_data {
 
 	/* AQM */
 	struct cobalt_params cparams;
-	struct cobalt_vars cvars;
+	struct cobalt_vars cvars[LFQ_FLOWS];
+	u16 decay_index;
 
 	/* resource tracking */
 	u32 buffer_limit;
@@ -703,11 +704,14 @@ static struct sk_buff* lfq_dequeue(struct Qdisc *sch)
 	if (!!(skb = lfq_pop(&q->sparse))) {
 		lfq_send(sch, skb);
 	} else {
+		u16 flow = 0;
+
 		while (q->bulk.head) {
 			if (!(skb = q->bulk.scan))
 				skb = lfq_sweep(q);
 
-			d = &q->flow_data[lfq_cb(skb)->flow];
+			flow = lfq_cb(skb)->flow;
+			d = &q->flow_data[flow];
 			if (!d->skip) {
 				lfq_send(sch, skb);
 				lfq_pull(&q->bulk);
@@ -724,8 +728,8 @@ static struct sk_buff* lfq_dequeue(struct Qdisc *sch)
 
 		/* AQM */
 		if (!q->backlog) {
-			cobalt_queue_empty(&q->cvars, &q->cparams, now);
-		} else if (cobalt_should_drop(&q->cvars, &q->cparams, now, skb,
+			cobalt_queue_empty(&q->cvars[flow], &q->cparams, now);
+		} else if (cobalt_should_drop(&q->cvars[flow], &q->cparams, now, skb,
 					lfq_cb(skb)->enqueue_time)) {
 			/* drop packet, and try again with the next one */
 			qdisc_tree_reduce_backlog(sch, 1, qdisc_pkt_len(skb));
@@ -741,6 +745,11 @@ static struct sk_buff* lfq_dequeue(struct Qdisc *sch)
 	lfq_advance_shaper(q, skb, now);
 	if (ktime_after(q->time_next_packet, now) && sch->q.qlen)
 		qdisc_watchdog_schedule_ns(&q->watchdog, q->time_next_packet);
+
+	/* decay idle AQMs */
+	if(!q->flow_data[q->decay_index].backlog)
+		cobalt_queue_empty(&q->cvars[q->decay_index], &q->cparams, now);
+	q->decay_index = (q->decay_index + 1) % LFQ_FLOWS;
 
 	return skb;
 }
@@ -911,9 +920,11 @@ static int lfq_init(struct Qdisc *sch, struct nlattr *opt,
 		    struct netlink_ext_ack *extack)
 {
 	struct lfq_sched_data *q = qdisc_priv(sch);
+	u32 i;
 
 	memset(q, 0, sizeof(*q));
-	cobalt_vars_init(&q->cvars);
+	for(i=0; i < LFQ_FLOWS; i++)
+		cobalt_vars_init(&q->cvars[i]);
 	sch->limit = 10240;
 
 	q->cparams.ce_interval  = ms_to_ns( 100);
