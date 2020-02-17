@@ -362,11 +362,19 @@ static void bictcp_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 	if (tcp_in_slow_start(tp)) {
 		if (hystart && after(ack, ca->end_seq))
 			bictcp_hystart_reset(sk);
-		acked = tcp_slow_start(tp, acked);
+		/* acked = tcp_slow_start(tp, acked); */
+		do {
+			acked--;
+			ca->ack_cnt += (ca->mss * ca->mss) / 5;
+			if (ca->ack_cnt >= ca->mss * ca->mss) {
+				tp->snd_cwnd = min(tp->snd_cwnd + 1, tp->snd_cwnd_clamp);
+				ca->ack_cnt -= ca->mss * ca->mss;
+			}
+		} while(acked && tp->snd_cwnd < tp->snd_ssthresh);
 		if (!acked)
 			return;
 	}
-	ca->ack_cnt += acked * ca->mss / 5;
+	ca->ack_cnt += acked * ca->mss;
 	bictcp_update(ca, tp->snd_cwnd, acked);
 	tcp_cong_avoid_ai(tp, ca->cnt, acked);
 
