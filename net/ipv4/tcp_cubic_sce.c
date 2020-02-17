@@ -407,7 +407,7 @@ static u32 bictcp_recalc_ssthresh(struct sock *sk)
 	else
 		ca->last_max_cwnd = tp->snd_cwnd;
 
-	if(ca->recent_sce)
+	if(0 && ca->recent_sce)
 		return max(tp->snd_cwnd - (tp->snd_cwnd >> 3), 2U);
 	return max((tp->snd_cwnd * beta) / BICTCP_BETA_SCALE, 2U);
 }
