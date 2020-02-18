@@ -365,10 +365,10 @@ static void bictcp_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 		/* acked = tcp_slow_start(tp, acked); */
 		do {
 			acked--;
-			ca->ack_cnt += (ca->mss * ca->mss) / 5;
-			if (ca->ack_cnt >= ca->mss * ca->mss) {
+			ca->ack_cnt += ca->mss / 5;
+			if (ca->ack_cnt >= ca->mss) {
 				tp->snd_cwnd = min(tp->snd_cwnd + 1, tp->snd_cwnd_clamp);
-				ca->ack_cnt -= ca->mss * ca->mss;
+				ca->ack_cnt -= ca->mss;
 			}
 		} while(acked && tp->snd_cwnd < tp->snd_ssthresh);
 		if (!acked)
@@ -388,9 +388,7 @@ static void bictcp_drop_slow_start(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
-	if (tp->snd_cwnd < tp->snd_ssthresh) {
-		tp->snd_ssthresh = max(1U, tp->snd_cwnd / 2);
-	}
+	tp->snd_ssthresh = max(2U, min(tp->snd_ssthresh, tp->snd_cwnd / 2));
 }
 
 static u32 bictcp_recalc_ssthresh(struct sock *sk)
@@ -532,13 +530,14 @@ static void bictcp_handle_ack(struct sock *sk, u32 flags)
 				/* below inflection point, bring it back towards us */
 				ca->epoch_start = now;
 				ca->bic_K -= t;
+				t = 0;
 				if(0 && acked_bytes < mss * ca->sqrt_cnt) {
 					ca->bic_K = ca->bic_K * (mss * ca->sqrt_cnt - acked_bytes) / (mss * ca->sqrt_cnt);
 				} else {
 					ca->bic_K = 0;
 				}
 
-				/* calculate adjustment to inflection point level */
+				/* calculate adjustment to inflection point level, keeping snd_cwnd constant */
 				offs = ca->bic_K - t;
 				delta2 = (cube_rtt_scale * offs * offs * offs) >> (10+3*BICTCP_HZ);
 				ca->bic_origin_point -= delta2 - delta1;
@@ -556,14 +555,14 @@ static void bictcp_handle_ack(struct sock *sk, u32 flags)
 					ca->bic_K = t;
 				}
 
-				/* calculate adjustment to inflection point level */
+				/* calculate adjustment to inflection point level, keeping snd_cwnd constant */
 				offs = t - ca->bic_K;
 				delta2 = (cube_rtt_scale * offs * offs * offs) >> (10+3*BICTCP_HZ);
 				ca->bic_origin_point += delta1 - delta2;
 			}
 
 			/* Also step down both the inflection point and the current cwnd. */
-			/* A full cwnd of ESCE results in sqrt(cwnd) reduction. */
+			/* A full cwnd of ESCE nominally results in sqrt(cwnd) reduction. */
 			ca->ack_cnt   -= acked_bytes * ca->sqrt_cnt;
 			ca->recent_sce = tp->snd_cwnd + 1;
 
