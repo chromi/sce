@@ -625,7 +625,7 @@ static struct sk_buff* cnq_dequeue(struct Qdisc *sch)
 	ktime_t now = ktime_get();
 	struct sk_buff *skb;
 	u32 len;
-	u16 flow;
+	u32 flow;
 	bool sparse = true;
 
 	if(!sch->q.qlen)
@@ -653,11 +653,12 @@ static struct sk_buff* cnq_dequeue(struct Qdisc *sch)
 	sch->q.qlen--;
 	q->backlog -= (len = qdisc_pkt_len(skb));
 
-	/* AQM */
-	if (sparse || !q->backlog) {
+	/* AQM; avoid dropping last packet in queue from this flow */
+	if (sparse) {
 		cobalt_queue_empty(&q->cvars[flow], &q->cparams, now);
 	} else if (cobalt_should_drop(&q->cvars[flow], &q->cparams, now, skb,
-	                              q->backlogs[flow]+1, q->active_flows, sch->q.qlen+1))
+	                              q->backlogs[flow]+1, q->active_flows, sch->q.qlen+1)
+	           && q->backlogs[flow])
 	{
 		/* drop packet, and try again with the next one */
 		qdisc_tree_reduce_backlog(sch, 1, len);
