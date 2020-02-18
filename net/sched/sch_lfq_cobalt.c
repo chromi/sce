@@ -730,7 +730,7 @@ static struct sk_buff* lfq_dequeue(struct Qdisc *sch)
 		if (!q->backlog) {
 			cobalt_queue_empty(&q->cvars[flow], &q->cparams, now);
 		} else if (cobalt_should_drop(&q->cvars[flow], &q->cparams, now, skb,
-					lfq_cb(skb)->enqueue_time)) {
+					lfq_cb(skb)->enqueue_time) && d->backlog) {
 			/* drop packet, and try again with the next one */
 			qdisc_tree_reduce_backlog(sch, 1, qdisc_pkt_len(skb));
 			qdisc_qstats_drop(sch);
