@@ -95,6 +95,7 @@ struct cnq_sched_data {
 
 	/* resource tracking */
 	u32 active_flows;
+	u32 sparse_dummies;
 	u32	backlog;
 	u16	backlogs[CNQ_QUEUES];
 };
@@ -499,15 +500,16 @@ static struct sk_buff* dequeue_bulk(struct cnq_sched_data *q)
 		WARN_ON(!q->backlogs[get_cobalt_cb(skb)->flow]);
 		q->backlogs[get_cobalt_cb(skb)->flow]--;
 
+		if(!q->backlogs[get_cobalt_cb(skb)->flow]) {
+			WARN_ON(!q->active_flows);
+			q->active_flows--;
+		}
+
 		if(get_cobalt_cb(skb)->sparse) {
 			/* dummy packet, do not deliver */
+			q->sparse_dummies--;
 			kfree_skb(skb);
 			return dequeue_bulk(q);
-		} else {
-			if(!q->backlogs[get_cobalt_cb(skb)->flow]) {
-				WARN_ON(!q->active_flows);
-				q->active_flows--;
-			}
 		}
 	}
 
@@ -521,11 +523,6 @@ static struct sk_buff* dequeue_sparse(struct cnq_sched_data *q)
 	if(skb) {
 		q->sprs_head = skb->next;
 		skb_mark_not_on_list(skb);
-
-		if(q->backlogs[get_cobalt_cb(skb)->flow] == 1) {
-			WARN_ON(!q->active_flows);
-			q->active_flows--;
-		}
 	}
 	return skb;
 }
@@ -553,6 +550,7 @@ static void enqueue_sparse(struct cnq_sched_data *q, struct sk_buff *skb)
 	cskb = skb_clone(skb, GFP_ATOMIC);
 	if (likely(cskb)) {
 		enqueue_bulk(q, cskb);
+		q->sparse_dummies++;
 	} else {
 		/* allocation failure */
 		get_cobalt_cb(skb)->sparse = false;
@@ -663,7 +661,9 @@ static struct sk_buff* cnq_dequeue(struct Qdisc *sch)
 	if (sparse) {
 		cobalt_queue_empty(&q->cvars[flow], &q->cparams, now);
 	} else if (cobalt_should_drop(&q->cvars[flow], &q->cparams, now, skb,
-	                              q->backlogs[flow]+1, q->active_flows, sch->q.qlen+1)
+	                              q->backlogs[flow]+1,
+	                              q->active_flows - q->sparse_dummies,
+	                              sch->q.qlen+1)
 	           && q->backlogs[flow])
 	{
 		/* drop packet, and try again with the next one */
