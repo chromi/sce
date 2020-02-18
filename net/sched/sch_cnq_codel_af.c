@@ -496,14 +496,14 @@ static struct sk_buff* dequeue_bulk(struct cnq_sched_data *q)
 		q->bulk_head = skb->next;
 		skb_mark_not_on_list(skb);
 
+		WARN_ON(!q->backlogs[get_cobalt_cb(skb)->flow]);
+		q->backlogs[get_cobalt_cb(skb)->flow]--;
+
 		if(get_cobalt_cb(skb)->sparse) {
 			/* dummy packet, do not deliver */
 			kfree_skb(skb);
 			return dequeue_bulk(q);
 		} else {
-			WARN_ON(!q->backlogs[get_cobalt_cb(skb)->flow]);
-			q->backlogs[get_cobalt_cb(skb)->flow]--;
-
 			if(!q->backlogs[get_cobalt_cb(skb)->flow]) {
 				WARN_ON(!q->active_flows);
 				q->active_flows--;
@@ -522,10 +522,7 @@ static struct sk_buff* dequeue_sparse(struct cnq_sched_data *q)
 		q->sprs_head = skb->next;
 		skb_mark_not_on_list(skb);
 
-		WARN_ON(!q->backlogs[get_cobalt_cb(skb)->flow]);
-		q->backlogs[get_cobalt_cb(skb)->flow]--;
-
-		if(!q->backlogs[get_cobalt_cb(skb)->flow]) {
+		if(q->backlogs[get_cobalt_cb(skb)->flow] == 1) {
 			WARN_ON(!q->active_flows);
 			q->active_flows--;
 		}
