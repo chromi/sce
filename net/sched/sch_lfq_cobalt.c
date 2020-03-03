@@ -47,6 +47,9 @@
 
 #define LFQ_FLOWS (65536)
 
+/* low-latency DSCP value is from TOS normal precedence, minimize delay */
+#define DSCP_LL 0b000100
+
 struct cobalt_params {
 	u64	ce_interval;
 	u64	ce_target;
@@ -114,6 +117,7 @@ struct lfq_sched_data {
 
 	/* AQM */
 	struct cobalt_params cparams;
+	struct cobalt_params cparams_ll;
 	struct cobalt_vars cvars[LFQ_FLOWS];
 	u16 decay_index;
 
@@ -124,6 +128,10 @@ struct lfq_sched_data {
 	struct lfq_flow_data flow_data[LFQ_FLOWS];
 	struct lfq_dirty_flows dirty_flows;
 	u32	backlog;
+
+	/* low latency dscp */
+	u8 dscp;
+	u8 divisor;
 };
 
 /* Control Block */
@@ -132,6 +140,20 @@ static struct lfq_skb_cb *lfq_cb(const struct sk_buff *skb)
 {
 	qdisc_cb_private_validate(skb, sizeof(struct lfq_skb_cb));
 	return (struct lfq_skb_cb *)qdisc_skb_cb(skb)->data;
+}
+
+/* DSCP */
+
+static u8 lfq_get_dscp(struct sk_buff *skb)
+{
+	switch (tc_skb_protocol(skb)) {
+	case htons(ETH_P_IP):
+		return ipv4_get_dsfield(ip_hdr(skb)) >> 2;
+	case htons(ETH_P_IPV6):
+		return ipv6_get_dsfield(ipv6_hdr(skb)) >> 2;
+	default:
+		return 0;
+	}
 }
 
 /* Queue */
@@ -693,6 +715,7 @@ static struct sk_buff* lfq_dequeue(struct Qdisc *sch)
 	ktime_t now = ktime_get();
 	struct sk_buff *skb;
 	struct lfq_flow_data *d;
+	struct cobalt_params *p;
 
 	if (!sch->q.qlen)
 		return NULL;
@@ -732,13 +755,16 @@ static struct sk_buff* lfq_dequeue(struct Qdisc *sch)
 		/* AQM */
 		if (!q->backlog) {
 			cobalt_queue_empty(&q->cvars[flow], &q->cparams, now);
-		} else if (cobalt_should_drop(&q->cvars[flow], &q->cparams, now, skb,
+		} else {
+			p = (lfq_get_dscp(skb) == DSCP_LL) ? &q->cparams_ll : &q->cparams;
+			if (cobalt_should_drop(&q->cvars[flow], p, now, skb,
 					lfq_cb(skb)->enqueue_time) && d->backlog) {
-			/* drop packet, and try again with the next one */
-			qdisc_tree_reduce_backlog(sch, 1, qdisc_pkt_len(skb));
-			qdisc_qstats_drop(sch);
-			kfree_skb(skb);
-			return lfq_dequeue(sch);
+				/* drop packet, and try again with the next one */
+				qdisc_tree_reduce_backlog(sch, 1, qdisc_pkt_len(skb));
+				qdisc_qstats_drop(sch);
+				kfree_skb(skb);
+				return lfq_dequeue(sch);
+			}
 		}
 	}
 
@@ -756,6 +782,7 @@ static struct sk_buff* lfq_dequeue(struct Qdisc *sch)
 
 	return skb;
 }
+
 
 /* Configuration */
 
@@ -919,6 +946,17 @@ nla_put_failure:
 	return -1;
 }
 
+static void lfq_init_cparams(struct cobalt_params *p)
+{
+	p->ce_interval  = ms_to_ns( 100);
+	p->sce_interval =             0 ;  /* off by default, otherwise: 25ms */
+	p->ce_target    = ms_to_ns(   5);
+	p->sce_target   = us_to_ns(2500);
+	p->blue_thresh  = ms_to_ns( 400);
+	p->p_inc	= 1 << 24;
+	p->p_dec	= 1 << 20;
+}
+
 static int lfq_init(struct Qdisc *sch, struct nlattr *opt,
 		    struct netlink_ext_ack *extack)
 {
@@ -930,13 +968,20 @@ static int lfq_init(struct Qdisc *sch, struct nlattr *opt,
 		cobalt_vars_init(&q->cvars[i]);
 	sch->limit = 10240;
 
-	q->cparams.ce_interval  = ms_to_ns( 100);
-	q->cparams.sce_interval =             0 ;  /* off by default, otherwise: 25ms */
-	q->cparams.ce_target    = ms_to_ns(   5);
-	q->cparams.sce_target   = us_to_ns(2500);
-	q->cparams.blue_thresh  = ms_to_ns( 400);
-	q->cparams.p_inc	= 1 << 24;
-	q->cparams.p_dec	= 1 << 20;
+	/* COBALT params */
+	lfq_init_cparams(&q->cparams);
+	lfq_init_cparams(&q->cparams_ll);
+
+	/* we'll probably take divisor from netlink attrs, but default for now */
+	q->divisor = 5;
+
+	if (q->divisor) {
+		q->cparams_ll.ce_interval /= q->divisor;
+		q->cparams_ll.ce_target /= q->divisor;
+		q->cparams_ll.sce_interval /= q->divisor;
+		q->cparams_ll.sce_target /= q->divisor;
+		q->cparams_ll.blue_thresh /= q->divisor;
+	}
 
 	qdisc_watchdog_init(&q->watchdog, sch);
 
