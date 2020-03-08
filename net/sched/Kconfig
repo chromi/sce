@@ -355,6 +355,18 @@ config NET_SCH_CNQ_CODEL_AF
 
 	  If unsure, say N.
 
+config NET_SCH_TWIN_CODEL_AF
+	tristate "Twinned Controlled Delay Approximate Fairness (CodelAF) AQM"
+	help
+	  Say Y here if you want to use the Cheap Nasty Queuing (CNQ)
+          queue management algorithm, with built-in CodelAF AQM and CAKE
+          derived shaper, in a twin configuration for Diffserv capability.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called sch_twin_codel_af.
+
+	  If unsure, say N.
+
 config NET_SCH_LFQ_COBALT
 	tristate "Lightweight Fair Queueing (LFQ) with COBALT AQM"
 	help
