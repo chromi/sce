@@ -80,6 +80,7 @@ struct cnq_class_data {
 
 	/* resource tracking */
 	u32 active_flows;
+	u32 active_sparse;
 	u32 sparse_dummies;
 	u32	backlog;
 	s32 deficit;
@@ -536,6 +537,7 @@ static struct sk_buff* dequeue_sparse(struct cnq_class_data *cls)
 	if(skb) {
 		cls->sprs_head = skb->next;
 		skb_mark_not_on_list(skb);
+		cls->active_sparse--;
 	}
 	return skb;
 }
@@ -577,6 +579,8 @@ static void enqueue_sparse(struct cnq_class_data *cls, struct sk_buff *skb)
 		cls->sprs_tail->next = skb;
 	cls->sprs_tail = skb;
 	skb->next = NULL;
+
+	cls->active_sparse++;
 }
 
 static u8 cnq_get_diffserv(struct sk_buff *skb)
@@ -667,7 +671,8 @@ static struct sk_buff* cnq_dequeue(struct Qdisc *sch)
 	u32 len;
 	u32 flow;
 	bool sparse = true;
-	struct cnq_class_data *cls = NULL;
+	struct cnq_class_data *cls = NULL, *other_cls = NULL;
+	s32 c = 0;
 
 	if(!sch->q.qlen)
 		return NULL;
@@ -680,7 +685,9 @@ static struct sk_buff* cnq_dequeue(struct Qdisc *sch)
 	}
 
 	/* choose class to service */
-	cls = &q->classes[q->classes[1].backlog && q->classes[0].deficit > q->classes[1].deficit];
+	c = q->classes[1].backlog && q->classes[0].deficit >= q->classes[1].deficit;
+	cls = &q->classes[c];
+	other_cls = &q->classes[!c];
 
 	/* sparse queue has strict priority */
 	skb = dequeue_sparse(cls);
@@ -713,6 +720,12 @@ static struct sk_buff* cnq_dequeue(struct Qdisc *sch)
 		return cnq_dequeue(sch);
 	}
 	qdisc_bstats_update(sch, skb);
+
+	/* update class deficits for flow-fair delivery */
+	cls->deficit += other_cls->active_flows + other_cls->active_sparse - other_cls->sparse_dummies;
+	c = min(cls->deficit, other_cls->deficit);
+	cls->deficit -= c;
+	other_cls->deficit -= c;
 
 	/* shaper again */
 	cnq_advance_shaper(q, skb, now);
