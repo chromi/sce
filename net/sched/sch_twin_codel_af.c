@@ -590,13 +590,13 @@ static u8 cnq_get_diffserv(struct sk_buff *skb)
 	switch (tc_skb_protocol(skb)) {
 	case htons(ETH_P_IP):
 		wlen += sizeof(struct iphdr);
-		if (pskb_may_pull(skb, wlen))
+		if (!pskb_may_pull(skb, wlen))
 			return 0;
 		return ipv4_get_dsfield(ip_hdr(skb)) >> 2;
 
 	case htons(ETH_P_IPV6):
 		wlen += sizeof(struct ipv6hdr);
-		if (pskb_may_pull(skb, wlen))
+		if (!pskb_may_pull(skb, wlen))
 			return 0;
 		return ipv6_get_dsfield(ipv6_hdr(skb)) >> 2;
 
