@@ -57,6 +57,7 @@ obj-$(CONFIG_NET_SCH_FQ_CODEL)	+= sch_fq_codel.o
 obj-$(CONFIG_NET_SCH_CAKE)	+= sch_cake.o
 obj-$(CONFIG_NET_SCH_CNQ_COBALT) += sch_cnq_cobalt.o
 obj-$(CONFIG_NET_SCH_CNQ_CODEL_AF) += sch_cnq_codel_af.o
+obj-$(CONFIG_NET_SCH_TWIN_CODEL_AF) += sch_twin_codel_af.o
 obj-$(CONFIG_NET_SCH_LFQ_COBALT) += sch_lfq_cobalt.o
 obj-$(CONFIG_NET_SCH_FQ)	+= sch_fq.o
 obj-$(CONFIG_NET_SCH_HHF)	+= sch_hhf.o
