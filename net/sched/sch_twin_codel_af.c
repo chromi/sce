@@ -685,9 +685,20 @@ static struct sk_buff* cnq_dequeue(struct Qdisc *sch)
 	}
 
 	/* choose class to service */
-	c = q->classes[1].backlog && q->classes[0].deficit >= q->classes[1].deficit;
+	if (!q->classes[1].backlog)
+		c = 0;
+	else if (!q->classes[0].backlog)
+		c = 1;
+	else
+		c = q->classes[0].deficit >= q->classes[1].deficit;
 	cls = &q->classes[c];
 	other_cls = &q->classes[!c];
+
+	/* update class deficits for flow-fair delivery */
+	cls->deficit += other_cls->active_flows + other_cls->active_sparse - other_cls->sparse_dummies;
+	c = min(cls->deficit, other_cls->deficit);
+	cls->deficit -= c;
+	other_cls->deficit -= c;
 
 	/* sparse queue has strict priority */
 	skb = dequeue_sparse(cls);
@@ -721,12 +732,6 @@ static struct sk_buff* cnq_dequeue(struct Qdisc *sch)
 	}
 	qdisc_bstats_update(sch, skb);
 
-	/* update class deficits for flow-fair delivery */
-	cls->deficit += other_cls->active_flows + other_cls->active_sparse - other_cls->sparse_dummies;
-	c = min(cls->deficit, other_cls->deficit);
-	cls->deficit -= c;
-	other_cls->deficit -= c;
-
 	/* shaper again */
 	cnq_advance_shaper(q, skb, now);
 	if (ktime_after(q->time_next_packet, now) && sch->q.qlen)
@@ -736,6 +741,30 @@ static struct sk_buff* cnq_dequeue(struct Qdisc *sch)
 	if(!q->classes[0].backlogs[q->decay_index] && !q->classes[1].backlogs[q->decay_index])
 		cobalt_queue_empty(&q->cvars[q->decay_index], &q->classes[0].cparams, now);
 	q->decay_index = (q->decay_index + 1) % CNQ_QUEUES;
+
+	/* try to drain the queue of dummy packets */
+	for (c = 0; c < 2; c++) {
+		cls = &q->classes[c];
+		while(cls->sparse_dummies && !cls->active_sparse) {
+			struct sk_buff *sskb = cls->bulk_head;
+			if(unlikely(!sskb) || likely(!get_cobalt_cb(sskb)->sparse))
+				break;
+
+			cls->bulk_head = sskb->next;
+			skb_mark_not_on_list(sskb);
+
+			WARN_ON(!cls->backlogs[get_cobalt_cb(sskb)->flow]);
+			cls->backlogs[get_cobalt_cb(sskb)->flow]--;
+
+			if(!cls->backlogs[get_cobalt_cb(sskb)->flow]) {
+				WARN_ON(!cls->active_flows);
+				cls->active_flows--;
+			}
+
+			cls->sparse_dummies--;
+			kfree_skb(sskb);
+		}
+	}
 
 	return skb;
 }
