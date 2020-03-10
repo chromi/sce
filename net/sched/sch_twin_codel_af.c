@@ -275,7 +275,8 @@ static bool cobalt_queue_empty(struct cobalt_vars *vars,
 						 vars->sce_isqrt);
 	}
 	if(vars->sce_dropping) {
-		vars->sce_next = cobalt_reflect(now, vars->sce_next, p->sce_interval, vars->sce_isqrt);
+	/*	vars->sce_next = cobalt_reflect(now, vars->sce_next, p->sce_interval, vars->sce_isqrt); */
+		vars->sce_next = cobalt_control(now, p->sce_interval, vars->sce_isqrt);
 		vars->sce_dropping = false;
 	}
 
@@ -310,19 +311,13 @@ static bool cobalt_should_drop(struct cobalt_vars *vars,
 	if (over_target) {
 		if (!vars->sce_dropping) {
 			vars->sce_dropping = true;
-			if (next_due)
-				vars->sce_next = cobalt_control(now, p->sce_interval, vars->sce_isqrt);
-			else
-				vars->sce_next = cobalt_reflect(now, vars->sce_next, p->sce_interval, vars->sce_isqrt);
+			vars->sce_next = cobalt_control(now, p->sce_interval, vars->sce_isqrt);
 			next_due = false;
 		}
 		if(!vars->sce_count)
 			vars->sce_count = 1;
 	} else if (vars->sce_dropping) {
-		if (next_due)
-			vars->sce_next = cobalt_control(now, p->sce_interval, vars->sce_isqrt);
-		else
-			vars->sce_next = cobalt_reflect(now, vars->sce_next, p->sce_interval, vars->sce_isqrt);
+		vars->sce_next = cobalt_control(now, p->sce_interval, vars->sce_isqrt);
 		vars->sce_dropping = false;
 	}
 
