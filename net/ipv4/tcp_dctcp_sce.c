@@ -40,29 +40,27 @@ struct dctcp {
 static void dctcp_init(struct sock *sk)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
+	struct dctcp *ca = inet_csk_ca(sk);
 
-	if ((tp->ecn_flags & TCP_ECN_OK) ||
-	    (sk->sk_state == TCP_LISTEN ||
-	     sk->sk_state == TCP_CLOSE)) {
-		struct dctcp *ca = inet_csk_ca(sk);
+	ca->prior_snd_una = tp->snd_una;
+	ca->prior_rcv_nxt = tp->rcv_nxt;
+	ca->next_seq = tp->snd_nxt;
 
-		ca->prior_snd_una = tp->snd_una;
-		ca->prior_rcv_nxt = tp->rcv_nxt;
-		ca->next_seq = tp->snd_nxt;
+	ca->snd_cwnd_cnt = 0;
+	ca->loss_cwnd = 0;
+	ca->recent_sce = 0;
 
-		ca->snd_cwnd_cnt = 0;
-		ca->loss_cwnd = 0;
-		ca->recent_sce = 0;
-
-		return;
-	}
+	/* enable pacing per sysctl */
+	if (sock_net(sk)->ipv4.sysctl_tcp_sce_pacing)
+		cmpxchg(&sk->sk_pacing_status, SK_PACING_NONE, SK_PACING_NEEDED);
 }
 
 static u32 dctcp_ssthresh(struct sock *sk)
 {
+	const struct tcp_sock *tp = tcp_sk(sk);
 	struct dctcp *ca = inet_csk_ca(sk);
 
-	return max(ca->loss_cwnd >> 1U, 2U);
+	return max(tp->snd_ssthresh, max(ca->loss_cwnd >> 1U, 2U));
 }
 
 static void dctcp_handle_ack(struct sock *sk, u32 flags)
@@ -81,7 +79,7 @@ static void dctcp_handle_ack(struct sock *sk, u32 flags)
 	if (acked_bytes) {
 		ca->prior_snd_una = tp->snd_una;
 
-		if (flags & CA_ACK_ESCE) {
+		if ((flags & (CA_ACK_ECE|CA_ACK_ESCE)) == CA_ACK_ESCE) {
 			/* Respond to SCE feedback - DCTCP style:
 			 * Subtract half of SCE-acked bytes from the cwnd.
 			 */
@@ -127,7 +125,7 @@ static void dctcp_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 
 	if (tcp_in_slow_start(tp)) {
 		acked = tcp_slow_start(tp, acked);
-		ca->snd_cwnd_cnt += acked * inet_csk(sk)->icsk_ack.rcv_mss;
+		ca->snd_cwnd_cnt += acked * inet_csk(sk)->icsk_ack.rcv_mss / 5;
 	}
 
 	/* if not in slow-start, cwnd evolution governed by ack handler */
@@ -141,6 +139,7 @@ static void dctcp_react_to_loss(struct sock *sk, u32 logdiv)
 	ca->loss_cwnd    = tp->snd_cwnd;
 	ca->snd_cwnd_cnt = 0;
 	tp->snd_cwnd     = max(tp->snd_cwnd - max(tp->snd_cwnd >> logdiv, 1U), 2U);
+	tp->snd_ssthresh = ca->loss_cwnd >> 1;
 }
 
 static void dctcp_cwnd_event(struct sock *sk, enum tcp_ca_event ev)

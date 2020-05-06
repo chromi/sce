@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0
 #include "cpumap.h"
+#include "debug.h"
 #include "env.h"
-#include "sane_ctype.h"
-#include "util.h"
+#include <linux/ctype.h>
+#include <linux/zalloc.h>
 #include "bpf-event.h"
 #include <errno.h>
 #include <sys/utsname.h>
 #include <bpf/libbpf.h>
+#include <stdlib.h>
+#include <string.h>
 
 struct perf_env perf_env;
 
@@ -57,9 +60,11 @@ struct bpf_prog_info_node *perf_env__find_bpf_prog_info(struct perf_env *env,
 		else if (prog_id > node->info_linear->info.id)
 			n = n->rb_right;
 		else
-			break;
+			goto out;
 	}
+	node = NULL;
 
+out:
 	up_read(&env->bpf_progs.lock);
 	return node;
 }
@@ -109,9 +114,11 @@ struct btf_node *perf_env__find_btf(struct perf_env *env, __u32 btf_id)
 		else if (btf_id > node->id)
 			n = n->rb_right;
 		else
-			break;
+			goto out;
 	}
+	node = NULL;
 
+out:
 	up_read(&env->bpf_progs.lock);
 	return node;
 }
@@ -174,7 +181,7 @@ void perf_env__exit(struct perf_env *env)
 	zfree(&env->cpu);
 
 	for (i = 0; i < env->nr_numa_nodes; i++)
-		cpu_map__put(env->numa_nodes[i].map);
+		perf_cpu_map__put(env->numa_nodes[i].map);
 	zfree(&env->numa_nodes);
 
 	for (i = 0; i < env->caches_cnt; i++)
@@ -182,7 +189,7 @@ void perf_env__exit(struct perf_env *env)
 	zfree(&env->caches);
 
 	for (i = 0; i < env->nr_memory_nodes; i++)
-		free(env->memory_nodes[i].set);
+		zfree(&env->memory_nodes[i].set);
 	zfree(&env->memory_nodes);
 }
 
@@ -242,6 +249,7 @@ int perf_env__read_cpu_topology_map(struct perf_env *env)
 	for (cpu = 0; cpu < nr_cpus; ++cpu) {
 		env->cpu[cpu].core_id	= cpu_map__get_core_id(cpu);
 		env->cpu[cpu].socket_id	= cpu_map__get_socket_id(cpu);
+		env->cpu[cpu].die_id	= cpu_map__get_die_id(cpu);
 	}
 
 	env->nr_cpus_avail = nr_cpus;
@@ -281,9 +289,9 @@ int perf_env__nr_cpus_avail(struct perf_env *env)
 
 void cpu_cache_level__free(struct cpu_cache_level *cache)
 {
-	free(cache->type);
-	free(cache->map);
-	free(cache->size);
+	zfree(&cache->type);
+	zfree(&cache->map);
+	zfree(&cache->size);
 }
 
 /*

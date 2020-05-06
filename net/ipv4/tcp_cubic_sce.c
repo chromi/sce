@@ -165,6 +165,10 @@ static void bictcp_init(struct sock *sk)
 	ca->prior_snd_una = tp->snd_una;
 	ca->prior_rcv_nxt = tp->rcv_nxt;
 	ca->next_seq = tp->snd_nxt;
+
+	/* enable pacing per sysctl */
+	if (sock_net(sk)->ipv4.sysctl_tcp_sce_pacing)
+		cmpxchg(&sk->sk_pacing_status, SK_PACING_NONE, SK_PACING_NEEDED);
 }
 
 static void bictcp_cwnd_event(struct sock *sk, enum tcp_ca_event event)
@@ -326,9 +330,9 @@ tcp_friendliness:
 	/* TCP Friendly */
 	if (tcp_friendliness) {
 		u32 scale = beta_scale * ca->mss;
-		s32 delta = (cwnd * scale) / 8;
+		u32 delta = (cwnd * scale) / 8;
 
-		while (ca->ack_cnt > delta) {		/* update tcp cwnd */
+		while (ca->ack_cnt > (s32) delta) {	/* update tcp cwnd */
 			ca->ack_cnt -= delta;
 			ca->tcp_cwnd++;
 		}
@@ -358,7 +362,15 @@ static void bictcp_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 	if (tcp_in_slow_start(tp)) {
 		if (hystart && after(ack, ca->end_seq))
 			bictcp_hystart_reset(sk);
-		acked = tcp_slow_start(tp, acked);
+		/* acked = tcp_slow_start(tp, acked); */
+		do {
+			acked--;
+			ca->ack_cnt += ca->mss / 5;
+			if (ca->ack_cnt >= ca->mss) {
+				tp->snd_cwnd = min(tp->snd_cwnd + 1, tp->snd_cwnd_clamp);
+				ca->ack_cnt -= ca->mss;
+			}
+		} while(acked && tp->snd_cwnd < tp->snd_ssthresh);
 		if (!acked)
 			return;
 	}
@@ -368,8 +380,15 @@ static void bictcp_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 
 	while(ca->sqrt_cnt * ca->sqrt_cnt < tp->snd_cwnd)
 		ca->sqrt_cnt++;
-	while(ca->sqrt_cnt * ca->sqrt_cnt >= tp->snd_cwnd)
+	while(ca->sqrt_cnt * ca->sqrt_cnt > tp->snd_cwnd)
 		ca->sqrt_cnt--;
+}
+
+static void bictcp_drop_slow_start(struct sock *sk)
+{
+	struct tcp_sock *tp = tcp_sk(sk);
+
+	tp->snd_ssthresh = max(2U, min(tp->snd_ssthresh, tp->snd_cwnd / 2));
 }
 
 static u32 bictcp_recalc_ssthresh(struct sock *sk)
@@ -386,8 +405,8 @@ static u32 bictcp_recalc_ssthresh(struct sock *sk)
 	else
 		ca->last_max_cwnd = tp->snd_cwnd;
 
-	if(ca->recent_sce)
-		return max((tp->snd_cwnd * 7U) / 8U, 2U);
+	if(0 && ca->recent_sce)
+		return max(tp->snd_cwnd - (tp->snd_cwnd >> 3), 2U);
 	return max((tp->snd_cwnd * beta) / BICTCP_BETA_SCALE, 2U);
 }
 
@@ -493,15 +512,23 @@ static void bictcp_handle_ack(struct sock *sk, u32 flags)
 		ca->prior_snd_una = tp->snd_una;
 
 		if (flags & CA_ACK_ESCE && !ca->epoch_start) {
-			/* drop out of slow-start */
-			tp->snd_ssthresh = tp->snd_cwnd / 2;
-		} else if (flags & CA_ACK_ESCE) {
+			bictcp_drop_slow_start(sk);
+		} else if ((flags & (CA_ACK_ECE|CA_ACK_ESCE)) == CA_ACK_ESCE) {
 			/* We have a block of SCE feedback */
 			u32 now = tcp_jiffies32;
-			s64 t = now - ca->epoch_start;
+
+#if 1 // Simplify to just halting polynomial growth on ESCE
+			ca->epoch_start = now;
+			ca->bic_K = 0;
+			ca->bic_origin_point = ca->last_max_cwnd = ca->tcp_cwnd = tp->snd_cwnd;
+			tp->snd_ssthresh = tp->snd_cwnd / 2;
+#else
+			u64 t = now - ca->epoch_start;
 
 			/* Reduce gradient of CUBIC function */
-			t = (t << BICTCP_HZ) / HZ;
+			t <<= BICTCP_HZ;
+			do_div(t, HZ);
+
 			if (t < ca->bic_K) {
 				u64 offs = ca->bic_K - t;
 				u32 delta1 = (cube_rtt_scale * offs * offs * offs) >> (10+3*BICTCP_HZ);
@@ -510,14 +537,14 @@ static void bictcp_handle_ack(struct sock *sk, u32 flags)
 				/* below inflection point, bring it back towards us */
 				ca->epoch_start = now;
 				ca->bic_K -= t;
-				if(acked_bytes < ca->sqrt_cnt) {
-					ca->bic_K = ca->bic_K * (ca->sqrt_cnt - acked_bytes);
-					do_div(ca->bic_K, ca->sqrt_cnt);
+				t = 0;
+				if(0 && acked_bytes < mss * ca->sqrt_cnt) {
+					ca->bic_K = ca->bic_K * (mss * ca->sqrt_cnt - acked_bytes) / (mss * ca->sqrt_cnt);
 				} else {
 					ca->bic_K = 0;
 				}
 
-				/* calculate adjustment to inflection point level */
+				/* calculate adjustment to inflection point level, keeping snd_cwnd constant */
 				offs = ca->bic_K - t;
 				delta2 = (cube_rtt_scale * offs * offs * offs) >> (10+3*BICTCP_HZ);
 				ca->bic_origin_point -= delta2 - delta1;
@@ -528,22 +555,24 @@ static void bictcp_handle_ack(struct sock *sk, u32 flags)
 
 				/* above inflection point, advance it towards us */
 				ca->epoch_start += (ca->bic_K * HZ) >> BICTCP_HZ;
-				t -= ca->bic_K;
-				if(acked_bytes < ca->sqrt_cnt) {
-					ca->bic_K = t * acked_bytes;
-					do_div(ca->bic_K, ca->sqrt_cnt);
+				t = offs;
+				if(0 && acked_bytes < mss * ca->sqrt_cnt) {
+					ca->bic_K = ((u32) t) * acked_bytes / (mss * ca->sqrt_cnt);
 				} else {
 					ca->bic_K = t;
 				}
 
-				/* calculate adjustment to inflection point level */
+				/* calculate adjustment to inflection point level, keeping snd_cwnd constant */
 				offs = t - ca->bic_K;
 				delta2 = (cube_rtt_scale * offs * offs * offs) >> (10+3*BICTCP_HZ);
 				ca->bic_origin_point += delta1 - delta2;
 			}
 
+			bictcp_drop_slow_start(sk);
+#endif
+
 			/* Also step down both the inflection point and the current cwnd. */
-			/* A full cwnd of ESCE results in sqrt(cwnd) reduction. */
+			/* A full cwnd of ESCE nominally results in sqrt(cwnd) reduction. */
 			ca->ack_cnt   -= acked_bytes * ca->sqrt_cnt;
 			ca->recent_sce = tp->snd_cwnd + 1;
 
@@ -557,9 +586,6 @@ static void bictcp_handle_ack(struct sock *sk, u32 flags)
 				if(ca->bic_origin_point > 0)
 					ca->bic_origin_point--;
 			}
-
-			/* drop out of slow-start */
-			tp->snd_ssthresh = tp->snd_cwnd / 2;
 		}
 
 		if(ca->recent_sce)

@@ -254,12 +254,7 @@ static int dp83822_config_intr(struct phy_device *phydev)
 
 static int dp83822_config_init(struct phy_device *phydev)
 {
-	int err;
 	int value;
-
-	err = genphy_config_init(phydev);
-	if (err < 0)
-		return err;
 
 	value = DP83822_WOL_MAGIC_EN | DP83822_WOL_SECURE_ON | DP83822_WOL_EN;
 
@@ -310,7 +305,7 @@ static int dp83822_resume(struct phy_device *phydev)
 	{							\
 		PHY_ID_MATCH_MODEL(_id),			\
 		.name		= (_name),			\
-		.features	= PHY_BASIC_FEATURES,		\
+		/* PHY_BASIC_FEATURES */			\
 		.soft_reset	= dp83822_phy_reset,		\
 		.config_init	= dp83822_config_init,		\
 		.get_wol = dp83822_get_wol,			\

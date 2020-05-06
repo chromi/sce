@@ -8,6 +8,7 @@
 #ifndef __NETNS_IPV6_H__
 #define __NETNS_IPV6_H__
 #include <net/dst_ops.h>
+#include <uapi/linux/icmpv6.h>
 
 struct ctl_table_header;
 
@@ -35,6 +36,8 @@ struct netns_sysctl_ipv6 {
 	int icmpv6_echo_ignore_all;
 	int icmpv6_echo_ignore_multicast;
 	int icmpv6_echo_ignore_anycast;
+	DECLARE_BITMAP(icmpv6_ratemask, ICMPV6_MSG_MAX + 1);
+	unsigned long *icmpv6_ratemask_ptr;
 	int anycast_src_echo_reply;
 	int ip_nonlocal_bind;
 	int fwmark_reflect;
@@ -55,7 +58,7 @@ struct netns_ipv6 {
 	struct ipv6_devconf	*devconf_all;
 	struct ipv6_devconf	*devconf_dflt;
 	struct inet_peer_base	*peers;
-	struct netns_frags	frags;
+	struct fqdir		*fqdir;
 #ifdef CONFIG_NETFILTER
 	struct xt_table		*ip6table_filter;
 	struct xt_table		*ip6table_mangle;
@@ -113,7 +116,7 @@ struct netns_ipv6 {
 
 #if IS_ENABLED(CONFIG_NF_DEFRAG_IPV6)
 struct netns_nf_frag {
-	struct netns_frags	frags;
+	struct fqdir	*fqdir;
 };
 #endif
 

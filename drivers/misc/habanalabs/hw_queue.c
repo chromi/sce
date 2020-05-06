@@ -80,9 +80,9 @@ static void ext_queue_submit_bd(struct hl_device *hdev, struct hl_hw_queue *q,
 
 	bd = (struct hl_bd *) (uintptr_t) q->kernel_address;
 	bd += hl_pi_2_offset(q->pi);
-	bd->ctl = __cpu_to_le32(ctl);
-	bd->len = __cpu_to_le32(len);
-	bd->ptr = __cpu_to_le64(ptr + hdev->asic_prop.host_phys_base_address);
+	bd->ctl = cpu_to_le32(ctl);
+	bd->len = cpu_to_le32(len);
+	bd->ptr = cpu_to_le64(ptr);
 
 	q->pi = hl_queue_inc_ptr(q->pi);
 	hdev->asic_funcs->ring_doorbell(hdev, q->hw_queue_id, q->pi);
@@ -249,7 +249,7 @@ static void ext_hw_queue_schedule_job(struct hl_cs_job *job)
 	len = job->job_cb_size;
 	ptr = cb->bus_address;
 
-	cq_pkt.data = __cpu_to_le32(
+	cq_pkt.data = cpu_to_le32(
 				((q->pi << CQ_ENTRY_SHADOW_INDEX_SHIFT)
 					& CQ_ENTRY_SHADOW_INDEX_MASK) |
 				(1 << CQ_ENTRY_SHADOW_INDEX_VALID_SHIFT) |
@@ -263,13 +263,11 @@ static void ext_hw_queue_schedule_job(struct hl_cs_job *job)
 	 * checked in hl_queue_sanity_checks
 	 */
 	cq = &hdev->completion_queue[q->hw_queue_id];
-	cq_addr = cq->bus_address +
-			hdev->asic_prop.host_phys_base_address;
-	cq_addr += cq->pi * sizeof(struct hl_cq_entry);
+	cq_addr = cq->bus_address + cq->pi * sizeof(struct hl_cq_entry);
 
-	hdev->asic_funcs->add_end_of_cb_packets(cb->kernel_address, len,
+	hdev->asic_funcs->add_end_of_cb_packets(hdev, cb->kernel_address, len,
 						cq_addr,
-						__le32_to_cpu(cq_pkt.data),
+						le32_to_cpu(cq_pkt.data),
 						q->hw_queue_id);
 
 	q->shadow_queue[hl_pi_2_offset(q->pi)] = job;
@@ -292,23 +290,19 @@ static void int_hw_queue_schedule_job(struct hl_cs_job *job)
 	struct hl_device *hdev = job->cs->ctx->hdev;
 	struct hl_hw_queue *q = &hdev->kernel_queues[job->hw_queue_id];
 	struct hl_bd bd;
-	u64 *pi, *pbd = (u64 *) &bd;
+	__le64 *pi;
 
 	bd.ctl = 0;
-	bd.len = __cpu_to_le32(job->job_cb_size);
-	bd.ptr = __cpu_to_le64((u64) (uintptr_t) job->user_cb);
+	bd.len = cpu_to_le32(job->job_cb_size);
+	bd.ptr = cpu_to_le64((u64) (uintptr_t) job->user_cb);
 
-	pi = (u64 *) (uintptr_t) (q->kernel_address +
+	pi = (__le64 *) (uintptr_t) (q->kernel_address +
 		((q->pi & (q->int_queue_len - 1)) * sizeof(bd)));
-
-	pi[0] = pbd[0];
-	pi[1] = pbd[1];
 
 	q->pi++;
 	q->pi &= ((q->int_queue_len << 1) - 1);
 
-	/* Flush PQ entry write. Relevant only for specific ASICs */
-	hdev->asic_funcs->flush_pq_write(hdev, pi, pbd[0]);
+	hdev->asic_funcs->pqe_write(hdev, pi, &bd);
 
 	hdev->asic_funcs->ring_doorbell(hdev, q->hw_queue_id, q->pi);
 }
@@ -370,12 +364,19 @@ int hl_hw_queue_schedule_cs(struct hl_cs *cs)
 		spin_unlock(&hdev->hw_queues_mirror_lock);
 	}
 
-	list_for_each_entry_safe(job, tmp, &cs->job_list, cs_node) {
+	if (!hdev->cs_active_cnt++) {
+		struct hl_device_idle_busy_ts *ts;
+
+		ts = &hdev->idle_busy_ts_arr[hdev->idle_busy_ts_idx];
+		ts->busy_to_idle_ts = ktime_set(0, 0);
+		ts->idle_to_busy_ts = ktime_get();
+	}
+
+	list_for_each_entry_safe(job, tmp, &cs->job_list, cs_node)
 		if (job->ext_queue)
 			ext_hw_queue_schedule_job(job);
 		else
 			int_hw_queue_schedule_job(job);
-	}
 
 	cs->submitted = true;
 
@@ -414,14 +415,20 @@ void hl_hw_queue_inc_ci_kernel(struct hl_device *hdev, u32 hw_queue_id)
 }
 
 static int ext_and_cpu_hw_queue_init(struct hl_device *hdev,
-					struct hl_hw_queue *q)
+				struct hl_hw_queue *q, bool is_cpu_queue)
 {
 	void *p;
 	int rc;
 
-	p = hdev->asic_funcs->dma_alloc_coherent(hdev,
-				HL_QUEUE_SIZE_IN_BYTES,
-				&q->bus_address, GFP_KERNEL | __GFP_ZERO);
+	if (is_cpu_queue)
+		p = hdev->asic_funcs->cpu_accessible_dma_pool_alloc(hdev,
+							HL_QUEUE_SIZE_IN_BYTES,
+							&q->bus_address);
+	else
+		p = hdev->asic_funcs->asic_dma_alloc_coherent(hdev,
+						HL_QUEUE_SIZE_IN_BYTES,
+						&q->bus_address,
+						GFP_KERNEL | __GFP_ZERO);
 	if (!p)
 		return -ENOMEM;
 
@@ -445,8 +452,15 @@ static int ext_and_cpu_hw_queue_init(struct hl_device *hdev,
 	return 0;
 
 free_queue:
-	hdev->asic_funcs->dma_free_coherent(hdev, HL_QUEUE_SIZE_IN_BYTES,
-			(void *) (uintptr_t) q->kernel_address, q->bus_address);
+	if (is_cpu_queue)
+		hdev->asic_funcs->cpu_accessible_dma_pool_free(hdev,
+					HL_QUEUE_SIZE_IN_BYTES,
+					(void *) (uintptr_t) q->kernel_address);
+	else
+		hdev->asic_funcs->asic_dma_free_coherent(hdev,
+					HL_QUEUE_SIZE_IN_BYTES,
+					(void *) (uintptr_t) q->kernel_address,
+					q->bus_address);
 
 	return rc;
 }
@@ -473,12 +487,12 @@ static int int_hw_queue_init(struct hl_device *hdev, struct hl_hw_queue *q)
 
 static int cpu_hw_queue_init(struct hl_device *hdev, struct hl_hw_queue *q)
 {
-	return ext_and_cpu_hw_queue_init(hdev, q);
+	return ext_and_cpu_hw_queue_init(hdev, q, true);
 }
 
 static int ext_hw_queue_init(struct hl_device *hdev, struct hl_hw_queue *q)
 {
-	return ext_and_cpu_hw_queue_init(hdev, q);
+	return ext_and_cpu_hw_queue_init(hdev, q, false);
 }
 
 /*
@@ -568,8 +582,15 @@ static void hw_queue_fini(struct hl_device *hdev, struct hl_hw_queue *q)
 
 	kfree(q->shadow_queue);
 
-	hdev->asic_funcs->dma_free_coherent(hdev, HL_QUEUE_SIZE_IN_BYTES,
-			(void *) (uintptr_t) q->kernel_address, q->bus_address);
+	if (q->queue_type == QUEUE_TYPE_CPU)
+		hdev->asic_funcs->cpu_accessible_dma_pool_free(hdev,
+					HL_QUEUE_SIZE_IN_BYTES,
+					(void *) (uintptr_t) q->kernel_address);
+	else
+		hdev->asic_funcs->asic_dma_free_coherent(hdev,
+					HL_QUEUE_SIZE_IN_BYTES,
+					(void *) (uintptr_t) q->kernel_address,
+					q->bus_address);
 }
 
 int hl_hw_queues_create(struct hl_device *hdev)
