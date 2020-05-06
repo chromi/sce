@@ -29,6 +29,16 @@
 #include "i2caux_interface.h"
 #include "inc/hw/aux_engine.h"
 
+#ifdef CONFIG_DRM_AMD_DC_DCN2_0
+#define AUX_COMMON_REG_LIST0(id)\
+	SRI(AUX_CONTROL, DP_AUX, id), \
+	SRI(AUX_ARB_CONTROL, DP_AUX, id), \
+	SRI(AUX_SW_DATA, DP_AUX, id), \
+	SRI(AUX_SW_CONTROL, DP_AUX, id), \
+	SRI(AUX_INTERRUPT_CONTROL, DP_AUX, id), \
+	SRI(AUX_SW_STATUS, DP_AUX, id)
+#endif
+
 #define AUX_COMMON_REG_LIST(id)\
 	SRI(AUX_CONTROL, DP_AUX, id), \
 	SRI(AUX_ARB_CONTROL, DP_AUX, id), \
@@ -71,11 +81,11 @@ enum {	/* This is the timeout as defined in DP 1.2a,
 	 * at most within ~240usec. That means,
 	 * increasing this timeout will not affect normal operation,
 	 * and we'll timeout after
-	 * SW_AUX_TIMEOUT_PERIOD_MULTIPLIER * AUX_TIMEOUT_PERIOD = 1600usec.
+	 * SW_AUX_TIMEOUT_PERIOD_MULTIPLIER * AUX_TIMEOUT_PERIOD = 2400usec.
 	 * This timeout is especially important for
-	 * resume from S3 and CTS.
+	 * converters, resume from S3, and CTS.
 	 */
-	SW_AUX_TIMEOUT_PERIOD_MULTIPLIER = 4
+	SW_AUX_TIMEOUT_PERIOD_MULTIPLIER = 6
 };
 
 struct dce_aux {
@@ -123,8 +133,9 @@ bool dce110_aux_engine_acquire(
 	struct dce_aux *aux_engine,
 	struct ddc *ddc);
 
-int dce_aux_transfer(struct ddc_service *ddc,
-		struct aux_payload *cmd);
+int dce_aux_transfer_raw(struct ddc_service *ddc,
+		struct aux_payload *cmd,
+		enum aux_channel_operation_result *operation_result);
 
 bool dce_aux_transfer_with_retries(struct ddc_service *ddc,
 		struct aux_payload *cmd);

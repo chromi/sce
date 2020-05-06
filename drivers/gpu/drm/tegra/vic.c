@@ -1,12 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2015, NVIDIA Corporation.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/clk.h>
+#include <linux/delay.h>
 #include <linux/host1x.h>
 #include <linux/iommu.h>
 #include <linux/module.h>
@@ -106,6 +104,7 @@ static int vic_boot(struct vic *vic)
 	if (vic->booted)
 		return 0;
 
+#ifdef CONFIG_IOMMU_API
 	if (vic->config->supports_sid) {
 		struct iommu_fwspec *spec = dev_iommu_fwspec_get(vic->dev);
 		u32 value;
@@ -121,6 +120,7 @@ static int vic_boot(struct vic *vic)
 			vic_writel(vic, value, VIC_THI_STREAMID1);
 		}
 	}
+#endif
 
 	/* setup clockgating registers */
 	vic_writel(vic, CG_IDLE_CG_DLY_CNT(4) |

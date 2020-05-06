@@ -1,18 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * vimc-capture.c Virtual Media Controller Driver
  *
  * Copyright (C) 2015-2017 Helen Koike <helen.fornazier@gmail.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
  */
 
 #include <linux/component.h>
@@ -130,12 +120,15 @@ static int vimc_cap_s_fmt_vid_cap(struct file *file, void *priv,
 				  struct v4l2_format *f)
 {
 	struct vimc_cap_device *vcap = video_drvdata(file);
+	int ret;
 
 	/* Do not change the format while stream is on */
 	if (vb2_is_busy(&vcap->queue))
 		return -EBUSY;
 
-	vimc_cap_try_fmt_vid_cap(file, priv, f);
+	ret = vimc_cap_try_fmt_vid_cap(file, priv, f);
+	if (ret)
+		return ret;
 
 	dev_dbg(vcap->dev, "%s: format update: "
 		"old:%dx%d (0x%x, %d, %d, %d, %d) "
@@ -187,8 +180,8 @@ static int vimc_cap_enum_framesizes(struct file *file, void *fh,
 	fsize->stepwise.max_width = VIMC_FRAME_MAX_WIDTH;
 	fsize->stepwise.min_height = VIMC_FRAME_MIN_HEIGHT;
 	fsize->stepwise.max_height = VIMC_FRAME_MAX_HEIGHT;
-	fsize->stepwise.step_width = 2;
-	fsize->stepwise.step_height = 2;
+	fsize->stepwise.step_width = 1;
+	fsize->stepwise.step_height = 1;
 
 	return 0;
 }
@@ -338,6 +331,15 @@ static const struct media_entity_operations vimc_cap_mops = {
 	.link_validate		= vimc_link_validate,
 };
 
+static void vimc_cap_release(struct video_device *vdev)
+{
+	struct vimc_cap_device *vcap =
+		container_of(vdev, struct vimc_cap_device, vdev);
+
+	vimc_pads_cleanup(vcap->ved.pads);
+	kfree(vcap);
+}
+
 static void vimc_cap_comp_unbind(struct device *comp, struct device *master,
 				 void *master_data)
 {
@@ -348,8 +350,6 @@ static void vimc_cap_comp_unbind(struct device *comp, struct device *master,
 	vb2_queue_release(&vcap->queue);
 	media_entity_cleanup(ved->ent);
 	video_unregister_device(&vcap->vdev);
-	vimc_pads_cleanup(vcap->ved.pads);
-	kfree(vcap);
 }
 
 static void *vimc_cap_process_frame(struct vimc_ent_device *ved,
@@ -467,7 +467,7 @@ static int vimc_cap_comp_bind(struct device *comp, struct device *master,
 	vdev = &vcap->vdev;
 	vdev->device_caps = V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_STREAMING;
 	vdev->entity.ops = &vimc_cap_mops;
-	vdev->release = video_device_release_empty;
+	vdev->release = vimc_cap_release;
 	vdev->fops = &vimc_cap_fops;
 	vdev->ioctl_ops = &vimc_cap_ioctl_ops;
 	vdev->lock = &vcap->lock;

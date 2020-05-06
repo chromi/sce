@@ -1,10 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * aQuantia Corporation Network Driver
  * Copyright (C) 2014-2017 aQuantia Corporation. All rights reserved
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
  */
 
 /* File hw_atl_llh.c: Definitions of bitfield and register access functions for
@@ -49,11 +46,6 @@ u32 hw_atl_glb_soft_res_get(struct aq_hw_s *aq_hw)
 				  HW_ATL_GLB_SOFT_RES_SHIFT);
 }
 
-u32 hw_atl_reg_rx_dma_stat_counter7get(struct aq_hw_s *aq_hw)
-{
-	return aq_hw_read_reg(aq_hw, HW_ATL_RX_DMA_STAT_COUNTER7_ADR);
-}
-
 u32 hw_atl_reg_glb_mif_id_get(struct aq_hw_s *aq_hw)
 {
 	return aq_hw_read_reg(aq_hw, HW_ATL_GLB_MIF_ID_ADR);
@@ -65,44 +57,24 @@ u32 hw_atl_rpb_rx_dma_drop_pkt_cnt_get(struct aq_hw_s *aq_hw)
 	return aq_hw_read_reg(aq_hw, HW_ATL_RPB_RX_DMA_DROP_PKT_CNT_ADR);
 }
 
-u32 hw_atl_stats_rx_dma_good_octet_counterlsw_get(struct aq_hw_s *aq_hw)
+u64 hw_atl_stats_rx_dma_good_octet_counter_get(struct aq_hw_s *aq_hw)
 {
-	return aq_hw_read_reg(aq_hw, HW_ATL_STATS_RX_DMA_GOOD_OCTET_COUNTERLSW);
+	return aq_hw_read_reg64(aq_hw, HW_ATL_STATS_RX_DMA_GOOD_OCTET_COUNTERLSW);
 }
 
-u32 hw_atl_stats_rx_dma_good_pkt_counterlsw_get(struct aq_hw_s *aq_hw)
+u64 hw_atl_stats_rx_dma_good_pkt_counter_get(struct aq_hw_s *aq_hw)
 {
-	return aq_hw_read_reg(aq_hw, HW_ATL_STATS_RX_DMA_GOOD_PKT_COUNTERLSW);
+	return aq_hw_read_reg64(aq_hw, HW_ATL_STATS_RX_DMA_GOOD_PKT_COUNTERLSW);
 }
 
-u32 hw_atl_stats_tx_dma_good_octet_counterlsw_get(struct aq_hw_s *aq_hw)
+u64 hw_atl_stats_tx_dma_good_octet_counter_get(struct aq_hw_s *aq_hw)
 {
-	return aq_hw_read_reg(aq_hw, HW_ATL_STATS_TX_DMA_GOOD_OCTET_COUNTERLSW);
+	return aq_hw_read_reg64(aq_hw, HW_ATL_STATS_TX_DMA_GOOD_OCTET_COUNTERLSW);
 }
 
-u32 hw_atl_stats_tx_dma_good_pkt_counterlsw_get(struct aq_hw_s *aq_hw)
+u64 hw_atl_stats_tx_dma_good_pkt_counter_get(struct aq_hw_s *aq_hw)
 {
-	return aq_hw_read_reg(aq_hw, HW_ATL_STATS_TX_DMA_GOOD_PKT_COUNTERLSW);
-}
-
-u32 hw_atl_stats_rx_dma_good_octet_countermsw_get(struct aq_hw_s *aq_hw)
-{
-	return aq_hw_read_reg(aq_hw, HW_ATL_STATS_RX_DMA_GOOD_OCTET_COUNTERMSW);
-}
-
-u32 hw_atl_stats_rx_dma_good_pkt_countermsw_get(struct aq_hw_s *aq_hw)
-{
-	return aq_hw_read_reg(aq_hw, HW_ATL_STATS_RX_DMA_GOOD_PKT_COUNTERMSW);
-}
-
-u32 hw_atl_stats_tx_dma_good_octet_countermsw_get(struct aq_hw_s *aq_hw)
-{
-	return aq_hw_read_reg(aq_hw, HW_ATL_STATS_TX_DMA_GOOD_OCTET_COUNTERMSW);
-}
-
-u32 hw_atl_stats_tx_dma_good_pkt_countermsw_get(struct aq_hw_s *aq_hw)
-{
-	return aq_hw_read_reg(aq_hw, HW_ATL_STATS_TX_DMA_GOOD_PKT_COUNTERMSW);
+	return aq_hw_read_reg64(aq_hw, HW_ATL_STATS_TX_DMA_GOOD_PKT_COUNTERLSW);
 }
 
 /* interrupt */
@@ -634,12 +606,25 @@ void hw_atl_rpb_rx_flow_ctl_mode_set(struct aq_hw_s *aq_hw, u32 rx_flow_ctl_mode
 			    HW_ATL_RPB_RX_FC_MODE_SHIFT, rx_flow_ctl_mode);
 }
 
-void hw_atl_rdm_rx_dma_desc_cache_init_set(struct aq_hw_s *aq_hw, u32 init)
+void hw_atl_rdm_rx_dma_desc_cache_init_tgl(struct aq_hw_s *aq_hw)
 {
+	u32 val;
+
+	val = aq_hw_read_reg_bit(aq_hw, HW_ATL_RDM_RX_DMA_DESC_CACHE_INIT_ADR,
+				 HW_ATL_RDM_RX_DMA_DESC_CACHE_INIT_MSK,
+				 HW_ATL_RDM_RX_DMA_DESC_CACHE_INIT_SHIFT);
+
 	aq_hw_write_reg_bit(aq_hw, HW_ATL_RDM_RX_DMA_DESC_CACHE_INIT_ADR,
 			    HW_ATL_RDM_RX_DMA_DESC_CACHE_INIT_MSK,
 			    HW_ATL_RDM_RX_DMA_DESC_CACHE_INIT_SHIFT,
-			    init);
+			    val ^ 1);
+}
+
+u32 hw_atl_rdm_rx_dma_desc_cache_init_done_get(struct aq_hw_s *aq_hw)
+{
+	return aq_hw_read_reg_bit(aq_hw, RDM_RX_DMA_DESC_CACHE_INIT_DONE_ADR,
+				  RDM_RX_DMA_DESC_CACHE_INIT_DONE_MSK,
+				  RDM_RX_DMA_DESC_CACHE_INIT_DONE_SHIFT);
 }
 
 void hw_atl_rpb_rx_pkt_buff_size_per_tc_set(struct aq_hw_s *aq_hw,
@@ -1030,6 +1015,22 @@ void hw_atl_rpo_rx_desc_vlan_stripping_set(struct aq_hw_s *aq_hw,
 			    HW_ATL_RPO_DESCDVL_STRIP_MSK,
 			    HW_ATL_RPO_DESCDVL_STRIP_SHIFT,
 			    rx_desc_vlan_stripping);
+}
+
+void hw_atl_rpo_outer_vlan_tag_mode_set(void *context,
+					u32 outervlantagmode)
+{
+	aq_hw_write_reg_bit(context, HW_ATL_RPO_OUTER_VL_INS_MODE_ADR,
+			    HW_ATL_RPO_OUTER_VL_INS_MODE_MSK,
+			    HW_ATL_RPO_OUTER_VL_INS_MODE_SHIFT,
+			    outervlantagmode);
+}
+
+u32 hw_atl_rpo_outer_vlan_tag_mode_get(void *context)
+{
+	return aq_hw_read_reg_bit(context, HW_ATL_RPO_OUTER_VL_INS_MODE_ADR,
+				  HW_ATL_RPO_OUTER_VL_INS_MODE_MSK,
+				  HW_ATL_RPO_OUTER_VL_INS_MODE_SHIFT);
 }
 
 void hw_atl_rpo_tcp_udp_crc_offload_en_set(struct aq_hw_s *aq_hw,

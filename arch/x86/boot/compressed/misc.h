@@ -23,7 +23,6 @@
 #include <asm/page.h>
 #include <asm/boot.h>
 #include <asm/bootparam.h>
-#include <asm/bootparam_utils.h>
 
 #define BOOT_CTYPE_H
 #include <linux/acpi.h>
@@ -120,8 +119,6 @@ static inline void console_init(void)
 
 void set_sev_encryption_mask(void);
 
-#endif
-
 /* acpi.c */
 #ifdef CONFIG_ACPI
 acpi_physical_address get_rsdp_addr(void);
@@ -135,3 +132,5 @@ int count_immovable_mem_regions(void);
 #else
 static inline int count_immovable_mem_regions(void) { return 0; }
 #endif
+
+#endif /* BOOT_COMPRESSED_MISC_H */

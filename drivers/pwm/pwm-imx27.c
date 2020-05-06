@@ -3,6 +3,10 @@
  * simple driver for PWM (Pulse Width Modulator) controller
  *
  * Derived from pxa PWM driver by eric miao <eric.miao@marvell.com>
+ *
+ * Limitations:
+ * - When disabled the output is driven to 0 independent of the configured
+ *   polarity.
  */
 
 #include <linux/bitfield.h>
@@ -205,7 +209,7 @@ static void pwm_imx27_wait_fifo_slot(struct pwm_chip *chip,
 }
 
 static int pwm_imx27_apply(struct pwm_chip *chip, struct pwm_device *pwm,
-			   struct pwm_state *state)
+			   const struct pwm_state *state)
 {
 	unsigned long period_cycles, duty_cycles, prescale;
 	struct pwm_imx27_chip *imx = to_pwm_imx27_chip(chip);
@@ -291,7 +295,6 @@ MODULE_DEVICE_TABLE(of, pwm_imx27_dt_ids);
 static int pwm_imx27_probe(struct platform_device *pdev)
 {
 	struct pwm_imx27_chip *imx;
-	struct resource *r;
 
 	imx = devm_kzalloc(&pdev->dev, sizeof(*imx), GFP_KERNEL);
 	if (imx == NULL)
@@ -326,8 +329,7 @@ static int pwm_imx27_probe(struct platform_device *pdev)
 	imx->chip.of_xlate = of_pwm_xlate_with_flags;
 	imx->chip.of_pwm_n_cells = 3;
 
-	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	imx->mmio_base = devm_ioremap_resource(&pdev->dev, r);
+	imx->mmio_base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(imx->mmio_base))
 		return PTR_ERR(imx->mmio_base);
 

@@ -1,17 +1,6 @@
+// SPDX-License-Identifier: ISC
 /*
  * Copyright (C) 2018 Lorenzo Bianconi <lorenzo.bianconi83@gmail.com>
- *
- * Permission to use, copy, modify, and/or distribute this software for any
- * purpose with or without fee is hereby granted, provided that the above
- * copyright notice and this permission notice appear in all copies.
- *
- * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
- * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
- * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
- * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
- * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
- * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
 #include <linux/kernel.h>
@@ -36,10 +25,12 @@ static int mt76x2u_probe(struct usb_interface *intf,
 			 const struct usb_device_id *id)
 {
 	static const struct mt76_driver_ops drv_ops = {
+		.update_survey = mt76x02_update_channel,
 		.tx_prepare_skb = mt76x02u_tx_prepare_skb,
 		.tx_complete_skb = mt76x02u_tx_complete_skb,
 		.tx_status_data = mt76x02_tx_status_data,
 		.rx_skb = mt76x02_queue_rx_skb,
+		.sta_ps = mt76x02_sta_ps,
 		.sta_add = mt76x02_sta_add,
 		.sta_remove = mt76x02_sta_remove,
 	};
@@ -48,7 +39,7 @@ static int mt76x2u_probe(struct usb_interface *intf,
 	struct mt76_dev *mdev;
 	int err;
 
-	mdev = mt76_alloc_device(&intf->dev, sizeof(*dev), &mt76x2u_ops,
+	mdev = mt76_alloc_device(&udev->dev, sizeof(*dev), &mt76x2u_ops,
 				 &drv_ops);
 	if (!mdev)
 		return -ENOMEM;
@@ -57,6 +48,8 @@ static int mt76x2u_probe(struct usb_interface *intf,
 
 	udev = usb_get_dev(udev);
 	usb_reset_device(udev);
+
+	usb_set_intfdata(intf, dev);
 
 	mt76x02u_init_mcu(mdev);
 	err = mt76u_init(mdev, intf);
@@ -104,8 +97,7 @@ static int __maybe_unused mt76x2u_suspend(struct usb_interface *intf,
 {
 	struct mt76x02_dev *dev = usb_get_intfdata(intf);
 
-	mt76u_stop_queues(&dev->mt76);
-	mt76x2u_stop_hw(dev);
+	mt76u_stop_rx(&dev->mt76);
 
 	return 0;
 }
@@ -113,15 +105,11 @@ static int __maybe_unused mt76x2u_suspend(struct usb_interface *intf,
 static int __maybe_unused mt76x2u_resume(struct usb_interface *intf)
 {
 	struct mt76x02_dev *dev = usb_get_intfdata(intf);
-	struct mt76_usb *usb = &dev->mt76.usb;
 	int err;
 
-	err = mt76u_submit_rx_buffers(&dev->mt76);
+	err = mt76u_resume_rx(&dev->mt76);
 	if (err < 0)
 		goto err;
-
-	tasklet_enable(&usb->rx_tasklet);
-	tasklet_enable(&usb->tx_tasklet);
 
 	err = mt76x2u_init_hardware(dev);
 	if (err < 0)

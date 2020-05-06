@@ -23,6 +23,8 @@
  *
  */
 
+#include <linux/slab.h>
+
 #include "dm_services.h"
 #include "dc.h"
 #include "mod_freesync.h"
@@ -37,6 +39,8 @@
 #define RENDER_TIMES_MAX_COUNT 10
 /* Threshold to exit BTR (to avoid frequent enter-exits at the lower limit) */
 #define BTR_EXIT_MARGIN 2000
+/* Threshold to change BTR multiplier (to avoid frequent changes) */
+#define BTR_DRIFT_MARGIN 2000
 /*Threshold to exit fixed refresh rate*/
 #define FIXED_REFRESH_EXIT_MARGIN_IN_HZ 4
 /* Number of consecutive frames to check before entering/exiting fixed refresh*/
@@ -248,6 +252,7 @@ static void apply_below_the_range(struct core_freesync *core_freesync,
 	unsigned int frames_to_insert = 0;
 	unsigned int min_frame_duration_in_ns = 0;
 	unsigned int max_render_time_in_us = in_out_vrr->max_duration_in_us;
+	unsigned int delta_from_mid_point_delta_in_us;
 
 	min_frame_duration_in_ns = ((unsigned int) (div64_u64(
 		(1000000000ULL * 1000000),
@@ -318,22 +323,43 @@ static void apply_below_the_range(struct core_freesync *core_freesync,
 		/* Choose number of frames to insert based on how close it
 		 * can get to the mid point of the variable range.
 		 */
-		if (delta_from_mid_point_in_us_1 < delta_from_mid_point_in_us_2)
+		if (delta_from_mid_point_in_us_1 < delta_from_mid_point_in_us_2) {
 			frames_to_insert = mid_point_frames_ceil;
-		else
+			delta_from_mid_point_delta_in_us = delta_from_mid_point_in_us_2 -
+					delta_from_mid_point_in_us_1;
+		} else {
 			frames_to_insert = mid_point_frames_floor;
+			delta_from_mid_point_delta_in_us = delta_from_mid_point_in_us_1 -
+					delta_from_mid_point_in_us_2;
+		}
+
+		/* Prefer current frame multiplier when BTR is enabled unless it drifts
+		 * too far from the midpoint
+		 */
+		if (in_out_vrr->btr.frames_to_insert != 0 &&
+				delta_from_mid_point_delta_in_us < BTR_DRIFT_MARGIN) {
+			if (((last_render_time_in_us / in_out_vrr->btr.frames_to_insert) <
+					in_out_vrr->max_duration_in_us) &&
+				((last_render_time_in_us / in_out_vrr->btr.frames_to_insert) >
+					in_out_vrr->min_duration_in_us))
+				frames_to_insert = in_out_vrr->btr.frames_to_insert;
+		}
 
 		/* Either we've calculated the number of frames to insert,
 		 * or we need to insert min duration frames
 		 */
+		if (last_render_time_in_us / frames_to_insert <
+				in_out_vrr->min_duration_in_us){
+			frames_to_insert -= (frames_to_insert > 1) ?
+					1 : 0;
+		}
+
 		if (frames_to_insert > 0)
 			inserted_frame_duration_in_us = last_render_time_in_us /
 							frames_to_insert;
 
-		if (inserted_frame_duration_in_us <
-			(1000000 / in_out_vrr->max_refresh_in_uhz))
-			inserted_frame_duration_in_us =
-				(1000000 / in_out_vrr->max_refresh_in_uhz);
+		if (inserted_frame_duration_in_us < in_out_vrr->min_duration_in_us)
+			inserted_frame_duration_in_us = in_out_vrr->min_duration_in_us;
 
 		/* Cache the calculated variables */
 		in_out_vrr->btr.inserted_duration_in_us =
@@ -461,24 +487,64 @@ bool mod_freesync_get_v_position(struct mod_freesync *mod_freesync,
 	return false;
 }
 
-static void build_vrr_infopacket_header_vtem(enum signal_type signal,
+static void build_vrr_infopacket_data(const struct mod_vrr_params *vrr,
 		struct dc_info_packet *infopacket)
 {
-	// HEADER
+	/* PB1 = 0x1A (24bit AMD IEEE OUI (0x00001A) - Byte 0) */
+	infopacket->sb[1] = 0x1A;
 
-	// HB0, HB1, HB2 indicates PacketType VTEMPacket
-	infopacket->hb0 = 0x7F;
-	infopacket->hb1 = 0xC0;
-	infopacket->hb2 = 0x00;
-	/* HB3 Bit Fields
-	 * Reserved :1 = 0
-	 * Sync     :1 = 0
-	 * VFR      :1 = 1
-	 * Ds_Type  :2 = 0
-	 * End      :1 = 0
-	 * New      :1 = 0
+	/* PB2 = 0x00 (24bit AMD IEEE OUI (0x00001A) - Byte 1) */
+	infopacket->sb[2] = 0x00;
+
+	/* PB3 = 0x00 (24bit AMD IEEE OUI (0x00001A) - Byte 2) */
+	infopacket->sb[3] = 0x00;
+
+	/* PB4 = Reserved */
+
+	/* PB5 = Reserved */
+
+	/* PB6 = [Bits 7:3 = Reserved] */
+
+	/* PB6 = [Bit 0 = FreeSync Supported] */
+	if (vrr->state != VRR_STATE_UNSUPPORTED)
+		infopacket->sb[6] |= 0x01;
+
+	/* PB6 = [Bit 1 = FreeSync Enabled] */
+	if (vrr->state != VRR_STATE_DISABLED &&
+			vrr->state != VRR_STATE_UNSUPPORTED)
+		infopacket->sb[6] |= 0x02;
+
+	/* PB6 = [Bit 2 = FreeSync Active] */
+	if (vrr->state == VRR_STATE_ACTIVE_VARIABLE ||
+			vrr->state == VRR_STATE_ACTIVE_FIXED)
+		infopacket->sb[6] |= 0x04;
+
+	/* PB7 = FreeSync Minimum refresh rate (Hz) */
+	infopacket->sb[7] = (unsigned char)(vrr->min_refresh_in_uhz / 1000000);
+
+	/* PB8 = FreeSync Maximum refresh rate (Hz)
+	 * Note: We should never go above the field rate of the mode timing set.
 	 */
-	infopacket->hb3 = 0x20;
+	infopacket->sb[8] = (unsigned char)(vrr->max_refresh_in_uhz / 1000000);
+
+
+	//FreeSync HDR
+	infopacket->sb[9] = 0;
+	infopacket->sb[10] = 0;
+}
+
+static void build_vrr_infopacket_fs2_data(enum color_transfer_func app_tf,
+		struct dc_info_packet *infopacket)
+{
+	if (app_tf != TRANSFER_FUNC_UNKNOWN) {
+		infopacket->valid = true;
+
+		infopacket->sb[6] |= 0x08;  // PB6 = [Bit 3 = Native Color Active]
+
+		if (app_tf == TRANSFER_FUNC_GAMMA_22) {
+			infopacket->sb[9] |= 0x04;  // PB6 = [Bit 2 = Gamma 2.2 EOTF Active]
+		}
+	}
 }
 
 static void build_vrr_infopacket_header_v1(enum signal_type signal,
@@ -579,114 +645,6 @@ static void build_vrr_infopacket_header_v2(enum signal_type signal,
 	}
 }
 
-static void build_vrr_vtem_infopacket_data(const struct dc_stream_state *stream,
-		const struct mod_vrr_params *vrr,
-		struct dc_info_packet *infopacket)
-{
-	/* dc_info_packet to VtemPacket Translation of Bit-fields,
-	 * SB[6]
-	 * unsigned char VRR_EN        :1
-	 * unsigned char M_CONST       :1
-	 * unsigned char Reserved2     :2
-	 * unsigned char FVA_Factor_M1 :4
-	 * SB[7]
-	 * unsigned char Base_Vfront   :8
-	 * SB[8]
-	 * unsigned char Base_Refresh_Rate_98 :2
-	 * unsigned char RB                   :1
-	 * unsigned char Reserved3            :5
-	 * SB[9]
-	 * unsigned char Base_RefreshRate_07  :8
-	 */
-	unsigned int fieldRateInHz;
-
-	if (vrr->state == VRR_STATE_ACTIVE_VARIABLE ||
-				vrr->state == VRR_STATE_ACTIVE_FIXED){
-		infopacket->sb[6] |= 0x80; //VRR_EN Bit = 1
-	} else {
-		infopacket->sb[6] &= 0x7F; //VRR_EN Bit = 0
-	}
-
-	if (!stream->timing.vic) {
-		infopacket->sb[7] = stream->timing.v_front_porch;
-
-		/* TODO: In dal2, we check mode flags for a reduced blanking timing.
-		 * Need a way to relay that information to this function.
-		 * if("ReducedBlanking")
-		 * {
-		 *   infopacket->sb[8] |= 0x20; //Set 3rd bit to 1
-		 * }
-		 */
-		fieldRateInHz = (stream->timing.pix_clk_100hz * 100)/
-				(stream->timing.h_total * stream->timing.v_total);
-
-		infopacket->sb[8] |= ((fieldRateInHz & 0x300) >> 2);
-		infopacket->sb[9] |= fieldRateInHz & 0xFF;
-
-	}
-	infopacket->valid = true;
-}
-
-static void build_vrr_infopacket_data(const struct mod_vrr_params *vrr,
-		struct dc_info_packet *infopacket)
-{
-	/* PB1 = 0x1A (24bit AMD IEEE OUI (0x00001A) - Byte 0) */
-	infopacket->sb[1] = 0x1A;
-
-	/* PB2 = 0x00 (24bit AMD IEEE OUI (0x00001A) - Byte 1) */
-	infopacket->sb[2] = 0x00;
-
-	/* PB3 = 0x00 (24bit AMD IEEE OUI (0x00001A) - Byte 2) */
-	infopacket->sb[3] = 0x00;
-
-	/* PB4 = Reserved */
-
-	/* PB5 = Reserved */
-
-	/* PB6 = [Bits 7:3 = Reserved] */
-
-	/* PB6 = [Bit 0 = FreeSync Supported] */
-	if (vrr->state != VRR_STATE_UNSUPPORTED)
-		infopacket->sb[6] |= 0x01;
-
-	/* PB6 = [Bit 1 = FreeSync Enabled] */
-	if (vrr->state != VRR_STATE_DISABLED &&
-			vrr->state != VRR_STATE_UNSUPPORTED)
-		infopacket->sb[6] |= 0x02;
-
-	/* PB6 = [Bit 2 = FreeSync Active] */
-	if (vrr->state == VRR_STATE_ACTIVE_VARIABLE ||
-			vrr->state == VRR_STATE_ACTIVE_FIXED)
-		infopacket->sb[6] |= 0x04;
-
-	/* PB7 = FreeSync Minimum refresh rate (Hz) */
-	infopacket->sb[7] = (unsigned char)(vrr->min_refresh_in_uhz / 1000000);
-
-	/* PB8 = FreeSync Maximum refresh rate (Hz)
-	 * Note: We should never go above the field rate of the mode timing set.
-	 */
-	infopacket->sb[8] = (unsigned char)(vrr->max_refresh_in_uhz / 1000000);
-
-
-	//FreeSync HDR
-	infopacket->sb[9] = 0;
-	infopacket->sb[10] = 0;
-}
-
-static void build_vrr_infopacket_fs2_data(enum color_transfer_func app_tf,
-		struct dc_info_packet *infopacket)
-{
-	if (app_tf != TRANSFER_FUNC_UNKNOWN) {
-		infopacket->valid = true;
-
-		infopacket->sb[6] |= 0x08;  // PB6 = [Bit 3 = Native Color Active]
-
-		if (app_tf == TRANSFER_FUNC_GAMMA_22) {
-			infopacket->sb[9] |= 0x04;  // PB6 = [Bit 2 = Gamma 2.2 EOTF Active]
-		}
-	}
-}
-
 static void build_vrr_infopacket_checksum(unsigned int *payload_size,
 		struct dc_info_packet *infopacket)
 {
@@ -739,19 +697,6 @@ static void build_vrr_infopacket_v2(enum signal_type signal,
 	infopacket->valid = true;
 }
 
-static void build_vrr_infopacket_vtem(const struct dc_stream_state *stream,
-		const struct mod_vrr_params *vrr,
-		struct dc_info_packet *infopacket)
-{
-	//VTEM info packet for HdmiVrr
-
-	//VTEM Packet is structured differently
-	build_vrr_infopacket_header_vtem(stream->signal, infopacket);
-	build_vrr_vtem_infopacket_data(stream, vrr, infopacket);
-
-	infopacket->valid = true;
-}
-
 void mod_freesync_build_vrr_infopacket(struct mod_freesync *mod_freesync,
 		const struct dc_stream_state *stream,
 		const struct mod_vrr_params *vrr,
@@ -764,15 +709,12 @@ void mod_freesync_build_vrr_infopacket(struct mod_freesync *mod_freesync,
 	 * Check if Freesync is supported. Return if false. If true,
 	 * set the corresponding bit in the info packet
 	 */
-	if (!vrr->supported || (!vrr->send_info_frame && packet_type != PACKET_TYPE_VTEM))
+	if (!vrr->supported || (!vrr->send_info_frame))
 		return;
 
 	switch (packet_type) {
 	case PACKET_TYPE_FS2:
 		build_vrr_infopacket_v2(stream->signal, vrr, app_tf, infopacket);
-		break;
-	case PACKET_TYPE_VTEM:
-		build_vrr_infopacket_vtem(stream, vrr, infopacket);
 		break;
 	case PACKET_TYPE_VRR:
 	case PACKET_TYPE_FS1:
@@ -789,8 +731,8 @@ void mod_freesync_build_vrr_params(struct mod_freesync *mod_freesync,
 	struct core_freesync *core_freesync = NULL;
 	unsigned long long nominal_field_rate_in_uhz = 0;
 	unsigned int refresh_range = 0;
-	unsigned int min_refresh_in_uhz = 0;
-	unsigned int max_refresh_in_uhz = 0;
+	unsigned long long min_refresh_in_uhz = 0;
+	unsigned long long max_refresh_in_uhz = 0;
 
 	if (mod_freesync == NULL)
 		return;
@@ -817,7 +759,7 @@ void mod_freesync_build_vrr_params(struct mod_freesync *mod_freesync,
 		min_refresh_in_uhz = nominal_field_rate_in_uhz;
 
 	if (!vrr_settings_require_update(core_freesync,
-			in_config, min_refresh_in_uhz, max_refresh_in_uhz,
+			in_config, (unsigned int)min_refresh_in_uhz, (unsigned int)max_refresh_in_uhz,
 			in_out_vrr))
 		return;
 
@@ -833,15 +775,15 @@ void mod_freesync_build_vrr_params(struct mod_freesync *mod_freesync,
 		return;
 
 	} else {
-		in_out_vrr->min_refresh_in_uhz = min_refresh_in_uhz;
+		in_out_vrr->min_refresh_in_uhz = (unsigned int)min_refresh_in_uhz;
 		in_out_vrr->max_duration_in_us =
 				calc_duration_in_us_from_refresh_in_uhz(
-						min_refresh_in_uhz);
+						(unsigned int)min_refresh_in_uhz);
 
-		in_out_vrr->max_refresh_in_uhz = max_refresh_in_uhz;
+		in_out_vrr->max_refresh_in_uhz = (unsigned int)max_refresh_in_uhz;
 		in_out_vrr->min_duration_in_us =
 				calc_duration_in_us_from_refresh_in_uhz(
-						max_refresh_in_uhz);
+						(unsigned int)max_refresh_in_uhz);
 
 		refresh_range = in_out_vrr->max_refresh_in_uhz -
 				in_out_vrr->min_refresh_in_uhz;
@@ -852,17 +794,18 @@ void mod_freesync_build_vrr_params(struct mod_freesync *mod_freesync,
 	in_out_vrr->fixed.ramping_active = in_config->ramping;
 
 	in_out_vrr->btr.btr_enabled = in_config->btr;
+
 	if (in_out_vrr->max_refresh_in_uhz <
 			2 * in_out_vrr->min_refresh_in_uhz)
 		in_out_vrr->btr.btr_enabled = false;
+
 	in_out_vrr->btr.btr_active = false;
 	in_out_vrr->btr.inserted_duration_in_us = 0;
 	in_out_vrr->btr.frames_to_insert = 0;
 	in_out_vrr->btr.frame_counter = 0;
 	in_out_vrr->btr.mid_point_in_us =
-			in_out_vrr->min_duration_in_us +
-				(in_out_vrr->max_duration_in_us -
-				in_out_vrr->min_duration_in_us) / 2;
+				(in_out_vrr->min_duration_in_us +
+				 in_out_vrr->max_duration_in_us) / 2;
 
 	if (in_out_vrr->state == VRR_STATE_UNSUPPORTED) {
 		in_out_vrr->adjust.v_total_min = stream->timing.v_total;

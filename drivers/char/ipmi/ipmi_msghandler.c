@@ -214,6 +214,9 @@ struct ipmi_user {
 
 	/* Does this interface receive IPMI events? */
 	bool gets_events;
+
+	/* Free must run in process context for RCU cleanup. */
+	struct work_struct remove_work;
 };
 
 static struct ipmi_user *acquire_ipmi_user(struct ipmi_user *user, int *index)
@@ -632,7 +635,7 @@ static DEFINE_MUTEX(ipmidriver_mutex);
 
 static LIST_HEAD(ipmi_interfaces);
 static DEFINE_MUTEX(ipmi_interfaces_mutex);
-struct srcu_struct ipmi_interfaces_srcu;
+static struct srcu_struct ipmi_interfaces_srcu;
 
 /*
  * List of watchers that want to know when smi's are added and deleted.
@@ -901,12 +904,14 @@ static int deliver_response(struct ipmi_smi *intf, struct ipmi_recv_msg *msg)
 			rv = -EINVAL;
 		}
 		ipmi_free_recv_msg(msg);
-	} else if (!oops_in_progress) {
+	} else if (oops_in_progress) {
 		/*
 		 * If we are running in the panic context, calling the
 		 * receive handler doesn't much meaning and has a deadlock
 		 * risk.  At this moment, simply skip it in that case.
 		 */
+		ipmi_free_recv_msg(msg);
+	} else {
 		int index;
 		struct ipmi_user *user = acquire_ipmi_user(msg->user, &index);
 
@@ -1157,6 +1162,15 @@ static int intf_err_seq(struct ipmi_smi *intf,
 	return rv;
 }
 
+static void free_user_work(struct work_struct *work)
+{
+	struct ipmi_user *user = container_of(work, struct ipmi_user,
+					      remove_work);
+
+	cleanup_srcu_struct(&user->release_barrier);
+	kfree(user);
+}
+
 int ipmi_create_user(unsigned int          if_num,
 		     const struct ipmi_user_hndl *handler,
 		     void                  *handler_data,
@@ -1200,6 +1214,8 @@ int ipmi_create_user(unsigned int          if_num,
 	goto out_kfree;
 
  found:
+	INIT_WORK(&new_user->remove_work, free_user_work);
+
 	rv = init_srcu_struct(&new_user->release_barrier);
 	if (rv)
 		goto out_kfree;
@@ -1260,8 +1276,9 @@ EXPORT_SYMBOL(ipmi_get_smi_info);
 static void free_user(struct kref *ref)
 {
 	struct ipmi_user *user = container_of(ref, struct ipmi_user, refcount);
-	cleanup_srcu_struct(&user->release_barrier);
-	kfree(user);
+
+	/* SRCU cleanup must happen in task context. */
+	schedule_work(&user->remove_work);
 }
 
 static void _ipmi_destroy_user(struct ipmi_user *user)
@@ -2205,7 +2222,8 @@ static int i_ipmi_request(struct ipmi_user     *user,
 	else {
 		smi_msg = ipmi_alloc_smi_msg();
 		if (smi_msg == NULL) {
-			ipmi_free_recv_msg(recv_msg);
+			if (!supplied_recv)
+				ipmi_free_recv_msg(recv_msg);
 			rv = -ENOMEM;
 			goto out;
 		}
@@ -2804,9 +2822,9 @@ static const struct device_type bmc_device_type = {
 	.groups		= bmc_dev_attr_groups,
 };
 
-static int __find_bmc_guid(struct device *dev, void *data)
+static int __find_bmc_guid(struct device *dev, const void *data)
 {
-	guid_t *guid = data;
+	const guid_t *guid = data;
 	struct bmc_device *bmc;
 	int rv;
 
@@ -2842,9 +2860,9 @@ struct prod_dev_id {
 	unsigned char device_id;
 };
 
-static int __find_bmc_prod_dev_id(struct device *dev, void *data)
+static int __find_bmc_prod_dev_id(struct device *dev, const void *data)
 {
-	struct prod_dev_id *cid = data;
+	const struct prod_dev_id *cid = data;
 	struct bmc_device *bmc;
 	int rv;
 
@@ -4200,7 +4218,53 @@ static int handle_one_recv_msg(struct ipmi_smi *intf,
 	int chan;
 
 	ipmi_debug_msg("Recv:", msg->rsp, msg->rsp_size);
-	if (msg->rsp_size < 2) {
+
+	if ((msg->data_size >= 2)
+	    && (msg->data[0] == (IPMI_NETFN_APP_REQUEST << 2))
+	    && (msg->data[1] == IPMI_SEND_MSG_CMD)
+	    && (msg->user_data == NULL)) {
+
+		if (intf->in_shutdown)
+			goto free_msg;
+
+		/*
+		 * This is the local response to a command send, start
+		 * the timer for these.  The user_data will not be
+		 * NULL if this is a response send, and we will let
+		 * response sends just go through.
+		 */
+
+		/*
+		 * Check for errors, if we get certain errors (ones
+		 * that mean basically we can try again later), we
+		 * ignore them and start the timer.  Otherwise we
+		 * report the error immediately.
+		 */
+		if ((msg->rsp_size >= 3) && (msg->rsp[2] != 0)
+		    && (msg->rsp[2] != IPMI_NODE_BUSY_ERR)
+		    && (msg->rsp[2] != IPMI_LOST_ARBITRATION_ERR)
+		    && (msg->rsp[2] != IPMI_BUS_ERR)
+		    && (msg->rsp[2] != IPMI_NAK_ON_WRITE_ERR)) {
+			int ch = msg->rsp[3] & 0xf;
+			struct ipmi_channel *chans;
+
+			/* Got an error sending the message, handle it. */
+
+			chans = READ_ONCE(intf->channel_list)->c;
+			if ((chans[ch].medium == IPMI_CHANNEL_MEDIUM_8023LAN)
+			    || (chans[ch].medium == IPMI_CHANNEL_MEDIUM_ASYNC))
+				ipmi_inc_stat(intf, sent_lan_command_errs);
+			else
+				ipmi_inc_stat(intf, sent_ipmb_command_errs);
+			intf_err_seq(intf, msg->msgid, msg->rsp[2]);
+		} else
+			/* The message was sent, start the timer. */
+			intf_start_seq_timer(intf, msg->msgid);
+free_msg:
+		requeue = 0;
+		goto out;
+
+	} else if (msg->rsp_size < 2) {
 		/* Message is too small to be correct. */
 		dev_warn(intf->si_dev,
 			 "BMC returned too small a message for netfn %x cmd %x, got %d bytes\n",
@@ -4457,62 +4521,16 @@ void ipmi_smi_msg_received(struct ipmi_smi *intf,
 	unsigned long flags = 0; /* keep us warning-free. */
 	int run_to_completion = intf->run_to_completion;
 
-	if ((msg->data_size >= 2)
-	    && (msg->data[0] == (IPMI_NETFN_APP_REQUEST << 2))
-	    && (msg->data[1] == IPMI_SEND_MSG_CMD)
-	    && (msg->user_data == NULL)) {
-
-		if (intf->in_shutdown)
-			goto free_msg;
-
-		/*
-		 * This is the local response to a command send, start
-		 * the timer for these.  The user_data will not be
-		 * NULL if this is a response send, and we will let
-		 * response sends just go through.
-		 */
-
-		/*
-		 * Check for errors, if we get certain errors (ones
-		 * that mean basically we can try again later), we
-		 * ignore them and start the timer.  Otherwise we
-		 * report the error immediately.
-		 */
-		if ((msg->rsp_size >= 3) && (msg->rsp[2] != 0)
-		    && (msg->rsp[2] != IPMI_NODE_BUSY_ERR)
-		    && (msg->rsp[2] != IPMI_LOST_ARBITRATION_ERR)
-		    && (msg->rsp[2] != IPMI_BUS_ERR)
-		    && (msg->rsp[2] != IPMI_NAK_ON_WRITE_ERR)) {
-			int ch = msg->rsp[3] & 0xf;
-			struct ipmi_channel *chans;
-
-			/* Got an error sending the message, handle it. */
-
-			chans = READ_ONCE(intf->channel_list)->c;
-			if ((chans[ch].medium == IPMI_CHANNEL_MEDIUM_8023LAN)
-			    || (chans[ch].medium == IPMI_CHANNEL_MEDIUM_ASYNC))
-				ipmi_inc_stat(intf, sent_lan_command_errs);
-			else
-				ipmi_inc_stat(intf, sent_ipmb_command_errs);
-			intf_err_seq(intf, msg->msgid, msg->rsp[2]);
-		} else
-			/* The message was sent, start the timer. */
-			intf_start_seq_timer(intf, msg->msgid);
-
-free_msg:
-		ipmi_free_smi_msg(msg);
-	} else {
-		/*
-		 * To preserve message order, we keep a queue and deliver from
-		 * a tasklet.
-		 */
-		if (!run_to_completion)
-			spin_lock_irqsave(&intf->waiting_rcv_msgs_lock, flags);
-		list_add_tail(&msg->link, &intf->waiting_rcv_msgs);
-		if (!run_to_completion)
-			spin_unlock_irqrestore(&intf->waiting_rcv_msgs_lock,
-					       flags);
-	}
+	/*
+	 * To preserve message order, we keep a queue and deliver from
+	 * a tasklet.
+	 */
+	if (!run_to_completion)
+		spin_lock_irqsave(&intf->waiting_rcv_msgs_lock, flags);
+	list_add_tail(&msg->link, &intf->waiting_rcv_msgs);
+	if (!run_to_completion)
+		spin_unlock_irqrestore(&intf->waiting_rcv_msgs_lock,
+				       flags);
 
 	if (!run_to_completion)
 		spin_lock_irqsave(&intf->xmit_msgs_lock, flags);
@@ -5164,7 +5182,7 @@ static void __exit cleanup_ipmi(void)
 		 * avoids problems with race conditions removing the timer
 		 * here.
 		 */
-		atomic_inc(&stop_operation);
+		atomic_set(&stop_operation, 1);
 		del_timer_sync(&ipmi_timer);
 
 		initialized = false;

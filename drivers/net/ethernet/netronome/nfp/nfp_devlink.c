@@ -144,7 +144,8 @@ nfp_devlink_sb_pool_get(struct devlink *devlink, unsigned int sb_index,
 static int
 nfp_devlink_sb_pool_set(struct devlink *devlink, unsigned int sb_index,
 			u16 pool_index,
-			u32 size, enum devlink_sb_threshold_type threshold_type)
+			u32 size, enum devlink_sb_threshold_type threshold_type,
+			struct netlink_ext_ack *extack)
 {
 	struct nfp_pf *pf = devlink_priv(devlink);
 
@@ -354,6 +355,8 @@ int nfp_devlink_port_register(struct nfp_app *app, struct nfp_port *port)
 {
 	struct nfp_eth_table_port eth_port;
 	struct devlink *devlink;
+	const u8 *serial;
+	int serial_len;
 	int ret;
 
 	rtnl_lock();
@@ -362,9 +365,10 @@ int nfp_devlink_port_register(struct nfp_app *app, struct nfp_port *port)
 	if (ret)
 		return ret;
 
+	serial_len = nfp_cpp_serial(port->app->cpp, &serial);
 	devlink_port_attrs_set(&port->dl_port, DEVLINK_PORT_FLAVOUR_PHYSICAL,
 			       eth_port.label_port, eth_port.is_split,
-			       eth_port.label_subport);
+			       eth_port.label_subport, serial, serial_len);
 
 	devlink = priv_to_devlink(app->pf);
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include <linux/module.h>
 #include <linux/errno.h>
 #include <linux/socket.h>
@@ -121,6 +122,7 @@ static int gue_udp_recv(struct sock *sk, struct sk_buff *skb)
 	struct guehdr *guehdr;
 	void *data;
 	u16 doffset = 0;
+	u8 proto_ctype;
 
 	if (!fou)
 		return 1;
@@ -136,7 +138,7 @@ static int gue_udp_recv(struct sock *sk, struct sk_buff *skb)
 		break;
 
 	case 1: {
-		/* Direct encasulation of IPv4 or IPv6 */
+		/* Direct encapsulation of IPv4 or IPv6 */
 
 		int prot;
 
@@ -170,9 +172,7 @@ static int gue_udp_recv(struct sock *sk, struct sk_buff *skb)
 	/* guehdr may change after pull */
 	guehdr = (struct guehdr *)&udp_hdr(skb)[1];
 
-	hdrlen = sizeof(struct guehdr) + optlen;
-
-	if (guehdr->version != 0 || validate_gue_flags(guehdr, optlen))
+	if (validate_gue_flags(guehdr, optlen))
 		goto drop;
 
 	hdrlen = sizeof(struct guehdr) + optlen;
@@ -212,13 +212,14 @@ static int gue_udp_recv(struct sock *sk, struct sk_buff *skb)
 	if (unlikely(guehdr->control))
 		return gue_control_message(skb, guehdr);
 
+	proto_ctype = guehdr->proto_ctype;
 	__skb_pull(skb, sizeof(struct udphdr) + hdrlen);
 	skb_reset_transport_header(skb);
 
 	if (iptunnel_pull_offloads(skb))
 		goto drop;
 
-	return -guehdr->proto_ctype;
+	return -proto_ctype;
 
 drop:
 	kfree_skb(skb);
@@ -913,16 +914,19 @@ static int fou_nl_dump(struct sk_buff *skb, struct netlink_callback *cb)
 static const struct genl_ops fou_nl_ops[] = {
 	{
 		.cmd = FOU_CMD_ADD,
+		.validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
 		.doit = fou_nl_cmd_add_port,
 		.flags = GENL_ADMIN_PERM,
 	},
 	{
 		.cmd = FOU_CMD_DEL,
+		.validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
 		.doit = fou_nl_cmd_rm_port,
 		.flags = GENL_ADMIN_PERM,
 	},
 	{
 		.cmd = FOU_CMD_GET,
+		.validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
 		.doit = fou_nl_cmd_get_port,
 		.dumpit = fou_nl_dump,
 	},
@@ -1137,7 +1141,7 @@ static int gue_err(struct sk_buff *skb, u32 info)
 	case 0: /* Full GUE header present */
 		break;
 	case 1: {
-		/* Direct encasulation of IPv4 or IPv6 */
+		/* Direct encapsulation of IPv4 or IPv6 */
 		skb_set_transport_header(skb, -(int)sizeof(struct icmphdr));
 
 		switch (((struct iphdr *)guehdr)->version) {

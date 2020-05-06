@@ -1,19 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /**
  * drivers/net/ethernet/micrel/ks8851_mll.c
  * Copyright (c) 2009 Micrel Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 /* Supports:
@@ -1237,7 +1225,6 @@ MODULE_DEVICE_TABLE(of, ks8851_ml_dt_ids);
 static int ks8851_probe(struct platform_device *pdev)
 {
 	int err;
-	struct resource *io_d, *io_c;
 	struct net_device *netdev;
 	struct ks_net *ks;
 	u16 id, data;
@@ -1252,15 +1239,13 @@ static int ks8851_probe(struct platform_device *pdev)
 	ks = netdev_priv(netdev);
 	ks->netdev = netdev;
 
-	io_d = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	ks->hw_addr = devm_ioremap_resource(&pdev->dev, io_d);
+	ks->hw_addr = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(ks->hw_addr)) {
 		err = PTR_ERR(ks->hw_addr);
 		goto err_free;
 	}
 
-	io_c = platform_get_resource(pdev, IORESOURCE_MEM, 1);
-	ks->hw_addr_cmd = devm_ioremap_resource(&pdev->dev, io_c);
+	ks->hw_addr_cmd = devm_platform_ioremap_resource(pdev, 1);
 	if (IS_ERR(ks->hw_addr_cmd)) {
 		err = PTR_ERR(ks->hw_addr_cmd);
 		goto err_free;
@@ -1327,8 +1312,8 @@ static int ks8851_probe(struct platform_device *pdev)
 	/* overwriting the default MAC address */
 	if (pdev->dev.of_node) {
 		mac = of_get_mac_address(pdev->dev.of_node);
-		if (mac)
-			memcpy(ks->mac_addr, mac, ETH_ALEN);
+		if (!IS_ERR(mac))
+			ether_addr_copy(ks->mac_addr, mac);
 	} else {
 		struct ks8851_mll_platform_data *pdata;
 

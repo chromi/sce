@@ -51,6 +51,7 @@
 extern void kernel_exception(void);
 extern void user_exception(void);
 
+extern void fast_illegal_instruction_user(void);
 extern void fast_syscall_user(void);
 extern void fast_alloca(void);
 extern void fast_unaligned(void);
@@ -87,6 +88,9 @@ typedef struct {
 
 static dispatch_init_table_t __initdata dispatch_init_table[] = {
 
+#ifdef CONFIG_USER_ABI_CALL0_PROBE
+{ EXCCAUSE_ILLEGAL_INSTRUCTION,	USER,	   fast_illegal_instruction_user },
+#endif
 { EXCCAUSE_ILLEGAL_INSTRUCTION,	0,	   do_illegal_instruction},
 { EXCCAUSE_SYSTEM_CALL,		USER,	   fast_syscall_user },
 { EXCCAUSE_SYSTEM_CALL,		0,	   system_call },
@@ -184,7 +188,7 @@ void do_unhandled(struct pt_regs *regs, unsigned long exccause)
 			    "\tEXCCAUSE is %ld\n",
 			    current->comm, task_pid_nr(current), regs->pc,
 			    exccause);
-	force_sig(SIGILL, current);
+	force_sig(SIGILL);
 }
 
 /*
@@ -306,7 +310,7 @@ do_illegal_instruction(struct pt_regs *regs)
 
 	pr_info_ratelimited("Illegal Instruction in '%s' (pid = %d, pc = %#010lx)\n",
 			    current->comm, task_pid_nr(current), regs->pc);
-	force_sig(SIGILL, current);
+	force_sig(SIGILL);
 }
 
 
@@ -330,7 +334,7 @@ do_unaligned_user (struct pt_regs *regs)
 			    "(pid = %d, pc = %#010lx)\n",
 			    regs->excvaddr, current->comm,
 			    task_pid_nr(current), regs->pc);
-	force_sig_fault(SIGBUS, BUS_ADRALN, (void *) regs->excvaddr, current);
+	force_sig_fault(SIGBUS, BUS_ADRALN, (void *) regs->excvaddr);
 }
 #endif
 
@@ -354,7 +358,7 @@ do_debug(struct pt_regs *regs)
 
 	/* If in user mode, send SIGTRAP signal to current process */
 
-	force_sig(SIGTRAP, current);
+	force_sig(SIGTRAP);
 }
 
 

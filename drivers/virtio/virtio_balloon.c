@@ -1,22 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Virtio balloon implementation, inspired by Dor Laor and Marcelo
  * Tosatti's implementations.
  *
  *  Copyright 2008 Rusty Russell IBM Corporation
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
 #include <linux/virtio.h>
@@ -31,6 +18,7 @@
 #include <linux/mm.h>
 #include <linux/mount.h>
 #include <linux/magic.h>
+#include <linux/pseudo_fs.h>
 
 /*
  * Balloon device works in 4K page units.  So each page is pointed to by
@@ -758,20 +746,14 @@ static int virtballoon_migratepage(struct balloon_dev_info *vb_dev_info,
 	return MIGRATEPAGE_SUCCESS;
 }
 
-static struct dentry *balloon_mount(struct file_system_type *fs_type,
-		int flags, const char *dev_name, void *data)
+static int balloon_init_fs_context(struct fs_context *fc)
 {
-	static const struct dentry_operations ops = {
-		.d_dname = simple_dname,
-	};
-
-	return mount_pseudo(fs_type, "balloon-kvm:", NULL, &ops,
-				BALLOON_KVM_MAGIC);
+	return init_pseudo(fc, BALLOON_KVM_MAGIC) ? 0 : -ENOMEM;
 }
 
 static struct file_system_type balloon_fs = {
 	.name           = "balloon-kvm",
-	.mount          = balloon_mount,
+	.init_fs_context = balloon_init_fs_context,
 	.kill_sb        = kill_anon_super,
 };
 
@@ -790,6 +772,13 @@ static unsigned long shrink_free_pages(struct virtio_balloon *vb,
 	return blocks_freed << VIRTIO_BALLOON_FREE_PAGE_ORDER;
 }
 
+static unsigned long leak_balloon_pages(struct virtio_balloon *vb,
+                                          unsigned long pages_to_free)
+{
+	return leak_balloon(vb, pages_to_free * VIRTIO_BALLOON_PAGES_PER_PAGE) /
+		VIRTIO_BALLOON_PAGES_PER_PAGE;
+}
+
 static unsigned long shrink_balloon_pages(struct virtio_balloon *vb,
 					  unsigned long pages_to_free)
 {
@@ -800,11 +789,10 @@ static unsigned long shrink_balloon_pages(struct virtio_balloon *vb,
 	 * VIRTIO_BALLOON_ARRAY_PFNS_MAX balloon pages, so we call it
 	 * multiple times to deflate pages till reaching pages_to_free.
 	 */
-	while (vb->num_pages && pages_to_free) {
-		pages_freed += leak_balloon(vb, pages_to_free) /
-					VIRTIO_BALLOON_PAGES_PER_PAGE;
-		pages_to_free -= pages_freed;
-	}
+	while (vb->num_pages && pages_freed < pages_to_free)
+		pages_freed += leak_balloon_pages(vb,
+						  pages_to_free - pages_freed);
+
 	update_balloon_size(vb);
 
 	return pages_freed;
@@ -817,7 +805,7 @@ static unsigned long virtio_balloon_shrinker_scan(struct shrinker *shrinker,
 	struct virtio_balloon *vb = container_of(shrinker,
 					struct virtio_balloon, shrinker);
 
-	pages_to_free = sc->nr_to_scan * VIRTIO_BALLOON_PAGES_PER_PAGE;
+	pages_to_free = sc->nr_to_scan;
 
 	if (virtio_has_feature(vb->vdev, VIRTIO_BALLOON_F_FREE_PAGE_HINT))
 		pages_freed = shrink_free_pages(vb, pages_to_free);
@@ -838,7 +826,7 @@ static unsigned long virtio_balloon_shrinker_count(struct shrinker *shrinker,
 	unsigned long count;
 
 	count = vb->num_pages / VIRTIO_BALLOON_PAGES_PER_PAGE;
-	count += vb->num_free_page_blocks >> VIRTIO_BALLOON_FREE_PAGE_ORDER;
+	count += vb->num_free_page_blocks << VIRTIO_BALLOON_FREE_PAGE_ORDER;
 
 	return count;
 }

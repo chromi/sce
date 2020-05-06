@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * This file contains miscellaneous low-level functions.
  *    Copyright (C) 1995-1996 Gary Thomas (gdt@linuxppc.org)
@@ -10,12 +11,6 @@
  * GameCube/ppc32 port Copyright (C) 2004 Albert Herranz
  * PPC44x port. Copyright (C) 2011,  IBM Corporation
  * 		Author: Suzuki Poulose <suzuki@in.ibm.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
- *
  */
 
 #include <linux/sys.h>
@@ -297,22 +292,20 @@ _GLOBAL(flush_instruction_cache)
 	iccci	0,r3
 #endif
 #elif defined(CONFIG_FSL_BOOKE)
-BEGIN_FTR_SECTION
+#ifdef CONFIG_E200
 	mfspr   r3,SPRN_L1CSR0
 	ori     r3,r3,L1CSR0_CFI|L1CSR0_CLFC
 	/* msync; isync recommended here */
 	mtspr   SPRN_L1CSR0,r3
 	isync
 	blr
-END_FTR_SECTION_IFSET(CPU_FTR_UNIFIED_ID_CACHE)
+#endif
 	mfspr	r3,SPRN_L1CSR1
 	ori	r3,r3,L1CSR1_ICFI|L1CSR1_ICLFR
 	mtspr	SPRN_L1CSR1,r3
+#elif defined(CONFIG_PPC_BOOK3S_601)
+	blr			/* for 601, do nothing */
 #else
-	mfspr	r3,SPRN_PVR
-	rlwinm	r3,r3,16,16,31
-	cmpwi	0,r3,1
-	beqlr			/* for 601, do nothing */
 	/* 603/604 processor - use invalidate-all bit in HID0 */
 	mfspr	r3,SPRN_HID0
 	ori	r3,r3,HID0_ICFI
@@ -331,10 +324,10 @@ EXPORT_SYMBOL(flush_instruction_cache)
  * flush_icache_range(unsigned long start, unsigned long stop)
  */
 _GLOBAL(flush_icache_range)
-BEGIN_FTR_SECTION
+#if defined(CONFIG_PPC_BOOK3S_601) || defined(CONFIG_E200)
 	PURGE_PREFETCHED_INS
-	blr				/* for 601, do nothing */
-END_FTR_SECTION_IFSET(CPU_FTR_COHERENT_ICACHE)
+	blr				/* for 601 and e200, do nothing */
+#else
 	rlwinm	r3,r3,0,0,31 - L1_CACHE_SHIFT
 	subf	r4,r3,r4
 	addi	r4,r4,L1_CACHE_BYTES - 1
@@ -360,6 +353,7 @@ END_FTR_SECTION_IFSET(CPU_FTR_COHERENT_ICACHE)
 	sync				/* additional sync needed on g4 */
 	isync
 	blr
+#endif
 _ASM_NOKPROBE_SYMBOL(flush_icache_range)
 EXPORT_SYMBOL(flush_icache_range)
 
@@ -367,15 +361,15 @@ EXPORT_SYMBOL(flush_icache_range)
  * Flush a particular page from the data cache to RAM.
  * Note: this is necessary because the instruction cache does *not*
  * snoop from the data cache.
- * This is a no-op on the 601 which has a unified cache.
+ * This is a no-op on the 601 and e200 which have a unified cache.
  *
  *	void __flush_dcache_icache(void *page)
  */
 _GLOBAL(__flush_dcache_icache)
-BEGIN_FTR_SECTION
+#if defined(CONFIG_PPC_BOOK3S_601) || defined(CONFIG_E200)
 	PURGE_PREFETCHED_INS
 	blr
-END_FTR_SECTION_IFSET(CPU_FTR_COHERENT_ICACHE)
+#else
 	rlwinm	r3,r3,0,0,31-PAGE_SHIFT		/* Get page base address */
 	li	r4,PAGE_SIZE/L1_CACHE_BYTES	/* Number of lines in a page */
 	mtctr	r4
@@ -403,6 +397,7 @@ END_MMU_FTR_SECTION_IFSET(MMU_FTR_TYPE_44x)
 	sync
 	isync
 	blr
+#endif
 
 #ifndef CONFIG_BOOKE
 /*
@@ -414,10 +409,10 @@ END_MMU_FTR_SECTION_IFSET(MMU_FTR_TYPE_44x)
  *	void __flush_dcache_icache_phys(unsigned long physaddr)
  */
 _GLOBAL(__flush_dcache_icache_phys)
-BEGIN_FTR_SECTION
+#if defined(CONFIG_PPC_BOOK3S_601) || defined(CONFIG_E200)
 	PURGE_PREFETCHED_INS
-	blr					/* for 601, do nothing */
-END_FTR_SECTION_IFSET(CPU_FTR_COHERENT_ICACHE)
+	blr					/* for 601 and e200, do nothing */
+#else
 	mfmsr	r10
 	rlwinm	r0,r10,0,28,26			/* clear DR */
 	mtmsr	r0
@@ -438,6 +433,7 @@ END_FTR_SECTION_IFSET(CPU_FTR_COHERENT_ICACHE)
 	mtmsr	r10				/* restore DR */
 	isync
 	blr
+#endif
 #endif /* CONFIG_BOOKE */
 
 /*
@@ -457,7 +453,12 @@ END_FTR_SECTION_IFSET(CPU_FTR_COHERENT_ICACHE)
 	stwu	r9,16(r3)
 
 _GLOBAL(copy_page)
+	rlwinm	r5, r3, 0, L1_CACHE_BYTES - 1
 	addi	r3,r3,-4
+
+0:	twnei	r5, 0	/* WARN if r3 is not cache aligned */
+	EMIT_BUG_ENTRY 0b,__FILE__,__LINE__, BUGFLAG_WARNING
+
 	addi	r4,r4,-4
 
 	li	r5,4

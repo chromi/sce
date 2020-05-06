@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Clause 45 PHY support
  */
@@ -218,6 +219,20 @@ int genphy_c45_read_link(struct phy_device *phydev)
 	int val, devad;
 	bool link = true;
 
+	if (phydev->c45_ids.devices_in_package & MDIO_DEVS_AN) {
+		val = phy_read_mmd(phydev, MDIO_MMD_AN, MDIO_CTRL1);
+		if (val < 0)
+			return val;
+
+		/* Autoneg is being started, therefore disregard current
+		 * link status and report link as down.
+		 */
+		if (val & MDIO_AN_CTRL1_RESTART) {
+			phydev->link = 0;
+			return 0;
+		}
+	}
+
 	while (mmd_mask && link) {
 		devad = __ffs(mmd_mask);
 		mmd_mask &= ~BIT(devad);
@@ -307,6 +322,8 @@ EXPORT_SYMBOL_GPL(genphy_c45_read_lpa);
 int genphy_c45_read_pma(struct phy_device *phydev)
 {
 	int val;
+
+	linkmode_zero(phydev->lp_advertising);
 
 	val = phy_read_mmd(phydev, MDIO_MMD_PMAPMD, MDIO_CTRL1);
 	if (val < 0)
@@ -508,6 +525,32 @@ int genphy_c45_read_status(struct phy_device *phydev)
 }
 EXPORT_SYMBOL_GPL(genphy_c45_read_status);
 
+/**
+ * genphy_c45_config_aneg - restart auto-negotiation or forced setup
+ * @phydev: target phy_device struct
+ *
+ * Description: If auto-negotiation is enabled, we configure the
+ *   advertising, and then restart auto-negotiation.  If it is not
+ *   enabled, then we force a configuration.
+ */
+int genphy_c45_config_aneg(struct phy_device *phydev)
+{
+	bool changed = false;
+	int ret;
+
+	if (phydev->autoneg == AUTONEG_DISABLE)
+		return genphy_c45_pma_setup_forced(phydev);
+
+	ret = genphy_c45_an_config_aneg(phydev);
+	if (ret < 0)
+		return ret;
+	if (ret > 0)
+		changed = true;
+
+	return genphy_c45_check_and_restart_aneg(phydev, changed);
+}
+EXPORT_SYMBOL_GPL(genphy_c45_config_aneg);
+
 /* The gen10g_* functions are the old Clause 45 stub */
 
 int gen10g_config_aneg(struct phy_device *phydev)
@@ -516,21 +559,10 @@ int gen10g_config_aneg(struct phy_device *phydev)
 }
 EXPORT_SYMBOL_GPL(gen10g_config_aneg);
 
-static int gen10g_read_status(struct phy_device *phydev)
-{
-	/* For now just lie and say it's 10G all the time */
-	phydev->speed = SPEED_10000;
-	phydev->duplex = DUPLEX_FULL;
-
-	return genphy_c45_read_link(phydev);
-}
-
-struct phy_driver genphy_10g_driver = {
+struct phy_driver genphy_c45_driver = {
 	.phy_id         = 0xffffffff,
 	.phy_id_mask    = 0xffffffff,
-	.name           = "Generic 10G PHY",
+	.name           = "Generic Clause 45 PHY",
 	.soft_reset	= genphy_no_soft_reset,
-	.features       = PHY_10GBIT_FEATURES,
-	.config_aneg    = gen10g_config_aneg,
-	.read_status    = gen10g_read_status,
+	.read_status    = genphy_c45_read_status,
 };

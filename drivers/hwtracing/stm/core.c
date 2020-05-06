@@ -89,13 +89,6 @@ static struct class stm_class = {
 	.dev_groups	= stm_groups,
 };
 
-static int stm_dev_match(struct device *dev, const void *data)
-{
-	const char *name = data;
-
-	return sysfs_streq(name, dev_name(dev));
-}
-
 /**
  * stm_find_device() - find stm device by name
  * @buf:	character buffer containing the name
@@ -116,7 +109,7 @@ struct stm_device *stm_find_device(const char *buf)
 	if (!stm_core_up)
 		return NULL;
 
-	dev = class_find_device(&stm_class, NULL, buf, stm_dev_match);
+	dev = class_find_device_by_name(&stm_class, buf);
 	if (!dev)
 		return NULL;
 
@@ -166,11 +159,10 @@ stm_master(struct stm_device *stm, unsigned int idx)
 static int stp_master_alloc(struct stm_device *stm, unsigned int idx)
 {
 	struct stp_master *master;
-	size_t size;
 
-	size = ALIGN(stm->data->sw_nchannels, 8) / 8;
-	size += sizeof(struct stp_master);
-	master = kzalloc(size, GFP_ATOMIC);
+	master = kzalloc(struct_size(master, chan_map,
+				     BITS_TO_LONGS(stm->data->sw_nchannels)),
+			 GFP_ATOMIC);
 	if (!master)
 		return -ENOMEM;
 
@@ -218,8 +210,8 @@ stm_output_disclaim(struct stm_device *stm, struct stm_output *output)
 	bitmap_release_region(&master->chan_map[0], output->channel,
 			      ilog2(output->nr_chans));
 
-	output->nr_chans = 0;
 	master->nr_free += output->nr_chans;
+	output->nr_chans = 0;
 }
 
 /*
@@ -1277,7 +1269,6 @@ int stm_source_register_device(struct device *parent,
 
 err:
 	put_device(&src->dev);
-	kfree(src);
 
 	return err;
 }

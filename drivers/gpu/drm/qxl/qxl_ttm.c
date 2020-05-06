@@ -23,18 +23,20 @@
  *          Alon Levy
  */
 
+#include <linux/delay.h>
+
+#include <drm/drm.h>
+#include <drm/drm_file.h>
+#include <drm/drm_debugfs.h>
+#include <drm/qxl_drm.h>
 #include <drm/ttm/ttm_bo_api.h>
 #include <drm/ttm/ttm_bo_driver.h>
-#include <drm/ttm/ttm_placement.h>
-#include <drm/ttm/ttm_page_alloc.h>
 #include <drm/ttm/ttm_module.h>
-#include <drm/drmP.h>
-#include <drm/drm.h>
-#include <drm/qxl_drm.h>
+#include <drm/ttm/ttm_page_alloc.h>
+#include <drm/ttm/ttm_placement.h>
+
 #include "qxl_drv.h"
 #include "qxl_object.h"
-
-#include <linux/delay.h>
 
 static struct qxl_device *qxl_get_qdev(struct ttm_bo_device *bdev)
 {
@@ -63,15 +65,10 @@ static vm_fault_t qxl_ttm_fault(struct vm_fault *vmf)
 
 int qxl_mmap(struct file *filp, struct vm_area_struct *vma)
 {
-	struct drm_file *file_priv;
-	struct qxl_device *qdev;
 	int r;
+	struct drm_file *file_priv = filp->private_data;
+	struct qxl_device *qdev = file_priv->minor->dev->dev_private;
 
-	if (unlikely(vma->vm_pgoff < DRM_FILE_PAGE_OFFSET))
-		return -EINVAL;
-
-	file_priv = filp->private_data;
-	qdev = file_priv->minor->dev->dev_private;
 	if (qdev == NULL) {
 		DRM_ERROR(
 		 "filp->private_data->minor->dev->dev_private == NULL\n");
@@ -158,7 +155,7 @@ static int qxl_verify_access(struct ttm_buffer_object *bo, struct file *filp)
 {
 	struct qxl_bo *qbo = to_qxl_bo(bo);
 
-	return drm_vma_node_verify_access(&qbo->gem_base.vma_node,
+	return drm_vma_node_verify_access(&qbo->tbo.base.vma_node,
 					  filp->private_data);
 }
 
@@ -300,7 +297,7 @@ static void qxl_bo_move_notify(struct ttm_buffer_object *bo,
 	if (!qxl_ttm_bo_is_qxl_bo(bo))
 		return;
 	qbo = to_qxl_bo(bo);
-	qdev = qbo->gem_base.dev->dev_private;
+	qdev = qbo->tbo.base.dev->dev_private;
 
 	if (bo->mem.mem_type == TTM_PL_PRIV && qbo->surface_id)
 		qxl_surface_evict(qdev, qbo, new_mem ? true : false);
@@ -328,7 +325,7 @@ int qxl_ttm_init(struct qxl_device *qdev)
 	r = ttm_bo_device_init(&qdev->mman.bdev,
 			       &qxl_bo_driver,
 			       qdev->ddev.anon_inode->i_mapping,
-			       DRM_FILE_PAGE_OFFSET, 0);
+			       false);
 	if (r) {
 		DRM_ERROR("failed initializing buffer object driver(%d).\n", r);
 		return r;

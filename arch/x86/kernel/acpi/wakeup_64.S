@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 .text
 #include <linux/linkage.h>
 #include <asm/segment.h>
@@ -7,7 +8,7 @@
 #include <asm/asm-offsets.h>
 #include <asm/frame.h>
 
-# Copyright 2003 Pavel Machek <pavel@suse.cz>, distribute under GPLv2
+# Copyright 2003 Pavel Machek <pavel@suse.cz
 
 .code64
 	/*
@@ -17,8 +18,13 @@ ENTRY(wakeup_long64)
 	movq	saved_magic, %rax
 	movq	$0x123456789abcdef0, %rdx
 	cmpq	%rdx, %rax
-	jne	bogus_64_magic
+	je	2f
 
+	/* stop here on a saved_magic mismatch */
+	movq $0xbad6d61676963, %rcx
+1:
+	jmp 1b
+2:
 	movw	$__KERNEL_DS, %ax
 	movw	%ax, %ss	
 	movw	%ax, %ds
@@ -35,9 +41,6 @@ ENTRY(wakeup_long64)
 	movq	saved_rip, %rax
 	jmp	*%rax
 ENDPROC(wakeup_long64)
-
-bogus_64_magic:
-	jmp	bogus_64_magic
 
 ENTRY(do_suspend_lowlevel)
 	FRAME_BEGIN
