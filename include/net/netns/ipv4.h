@@ -96,8 +96,8 @@ struct netns_ipv4 {
 	int sysctl_tcp_ecn;
 	int sysctl_tcp_ecn_fallback;
 	int sysctl_tcp_sce;
-	int sysctl_tcp_sce_feedback_mode;
 	int sysctl_tcp_sce_pacing;
+	int sysctl_tcp_sce_feedback_mode;
 
 	int sysctl_ip_default_ttl;
 	int sysctl_ip_no_pmtu_disc;
