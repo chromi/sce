@@ -828,7 +828,7 @@ static int cnq_change(struct Qdisc *sch, struct nlattr *opt,
 
 	if (tb[TCA_CAKE_RTT]) {
 		q->classes[0].cparams.ce_interval = us_to_ns(nla_get_u32(tb[TCA_CAKE_RTT]));
-		q->classes[1].cparams.ce_interval = q->classes[0].cparams.ce_interval / q->divisor;
+		q->classes[1].cparams.ce_interval = div64_u64(q->classes[0].cparams.ce_interval, q->divisor);
 
 		if (!q->classes[0].cparams.ce_interval)
 			q->classes[0].cparams.ce_interval = 1;
@@ -841,7 +841,7 @@ static int cnq_change(struct Qdisc *sch, struct nlattr *opt,
 
 	if (tb[TCA_CAKE_TARGET]) {
 		q->classes[0].cparams.ce_target = us_to_ns(nla_get_u32(tb[TCA_CAKE_TARGET]));
-		q->classes[1].cparams.ce_target = q->classes[0].cparams.ce_target / q->divisor;
+		q->classes[1].cparams.ce_target = div64_u64(q->classes[0].cparams.ce_target, q->divisor);
 
 		if (!q->classes[0].cparams.ce_target)
 			q->classes[0].cparams.ce_target = 1;
