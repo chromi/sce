@@ -173,13 +173,15 @@ void __init check_wait(void)
 	case CPU_CAVIUM_OCTEON2:
 	case CPU_CAVIUM_OCTEON3:
 	case CPU_XBURST:
-	case CPU_LOONGSON1:
+	case CPU_LOONGSON32:
 	case CPU_XLR:
 	case CPU_XLP:
 		cpu_wait = r4k_wait;
 		break;
-	case CPU_LOONGSON3:
-		if ((c->processor_id & PRID_REV_MASK) >= PRID_REV_LOONGSON3A_R2_0)
+	case CPU_LOONGSON64:
+		if ((c->processor_id & (PRID_IMP_MASK | PRID_REV_MASK)) >=
+				(PRID_IMP_LOONGSON_64C | PRID_REV_LOONGSON3A_R2_0) ||
+				(c->processor_id & PRID_IMP_MASK) == PRID_IMP_LOONGSON_64R)
 			cpu_wait = r4k_wait;
 		break;
 
@@ -200,7 +202,7 @@ void __init check_wait(void)
 		 */
 		if (IS_ENABLED(CONFIG_MIPS_EJTAG_FDC_TTY))
 			break;
-		/* fall through */
+		fallthrough;
 	case CPU_M14KC:
 	case CPU_M14KEC:
 	case CPU_24K:

@@ -34,8 +34,8 @@ the names, the ``net`` tree is for fixes to existing code already in the
 mainline tree from Linus, and ``net-next`` is where the new code goes
 for the future release.  You can find the trees here:
 
-- https://git.kernel.org/pub/scm/linux/kernel/git/davem/net.git
-- https://git.kernel.org/pub/scm/linux/kernel/git/davem/net-next.git
+- https://git.kernel.org/pub/scm/linux/kernel/git/netdev/net.git
+- https://git.kernel.org/pub/scm/linux/kernel/git/netdev/net-next.git
 
 Q: How often do changes from these trees make it to the mainline Linus tree?
 ----------------------------------------------------------------------------
@@ -110,7 +110,7 @@ Q: I sent a patch and I'm wondering what happened to it?
 Q: How can I tell whether it got merged?
 A: Start by looking at the main patchworks queue for netdev:
 
-  http://patchwork.ozlabs.org/project/netdev/list/
+  https://patchwork.kernel.org/project/netdevbpf/list/
 
 The "State" field will tell you exactly where things are at with your
 patch.
@@ -152,7 +152,7 @@ networking subsystem, and then hands them off to Greg.
 
 There is a patchworks queue that you can see here:
 
-  http://patchwork.ozlabs.org/bundle/davem/stable/?state=*
+  https://patchwork.kernel.org/bundle/netdev/stable/?state=*
 
 It contains the patches which Dave has selected, but not yet handed off
 to Greg.  If Greg already has the patch, then it will be here:

@@ -14,6 +14,7 @@
 
 #define EDVD_CORE_VOLT_FREQ(core)		(0x20 + (core) * 0x4)
 #define EDVD_CORE_VOLT_FREQ_F_SHIFT		0
+#define EDVD_CORE_VOLT_FREQ_F_MASK		0xffff
 #define EDVD_CORE_VOLT_FREQ_V_SHIFT		16
 
 struct tegra186_cpufreq_cluster_info {
@@ -91,9 +92,39 @@ static int tegra186_cpufreq_set_target(struct cpufreq_policy *policy,
 	return 0;
 }
 
+static unsigned int tegra186_cpufreq_get(unsigned int cpu)
+{
+	struct cpufreq_frequency_table *tbl;
+	struct cpufreq_policy *policy;
+	void __iomem *edvd_reg;
+	unsigned int i, freq = 0;
+	u32 ndiv;
+
+	policy = cpufreq_cpu_get(cpu);
+	if (!policy)
+		return 0;
+
+	tbl = policy->freq_table;
+	edvd_reg = policy->driver_data;
+	ndiv = readl(edvd_reg) & EDVD_CORE_VOLT_FREQ_F_MASK;
+
+	for (i = 0; tbl[i].frequency != CPUFREQ_TABLE_END; i++) {
+		if ((tbl[i].driver_data & EDVD_CORE_VOLT_FREQ_F_MASK) == ndiv) {
+			freq = tbl[i].frequency;
+			break;
+		}
+	}
+
+	cpufreq_cpu_put(policy);
+
+	return freq;
+}
+
 static struct cpufreq_driver tegra186_cpufreq_driver = {
 	.name = "tegra186",
-	.flags = CPUFREQ_STICKY | CPUFREQ_HAVE_GOVERNOR_PER_POLICY,
+	.flags = CPUFREQ_STICKY | CPUFREQ_HAVE_GOVERNOR_PER_POLICY |
+			CPUFREQ_NEED_INITIAL_FREQ_CHECK,
+	.get = tegra186_cpufreq_get,
 	.verify = cpufreq_generic_frequency_table_verify,
 	.target_index = tegra186_cpufreq_set_target,
 	.init = tegra186_cpufreq_init,
@@ -187,7 +218,6 @@ static int tegra186_cpufreq_probe(struct platform_device *pdev)
 {
 	struct tegra186_cpufreq_data *data;
 	struct tegra_bpmp *bpmp;
-	struct resource *res;
 	unsigned int i = 0, err;
 
 	data = devm_kzalloc(&pdev->dev, sizeof(*data), GFP_KERNEL);
@@ -205,8 +235,7 @@ static int tegra186_cpufreq_probe(struct platform_device *pdev)
 	if (IS_ERR(bpmp))
 		return PTR_ERR(bpmp);
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	data->regs = devm_ioremap_resource(&pdev->dev, res);
+	data->regs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(data->regs)) {
 		err = PTR_ERR(data->regs);
 		goto put_bpmp;
@@ -224,15 +253,9 @@ static int tegra186_cpufreq_probe(struct platform_device *pdev)
 		}
 	}
 
-	tegra_bpmp_put(bpmp);
-
 	tegra186_cpufreq_driver.driver_data = data;
 
 	err = cpufreq_register_driver(&tegra186_cpufreq_driver);
-	if (err)
-		return err;
-
-	return 0;
 
 put_bpmp:
 	tegra_bpmp_put(bpmp);
