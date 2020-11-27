@@ -514,19 +514,18 @@ static const struct drm_display_mode acx565akm_mode = {
 	.vsync_start = 480 + 3,
 	.vsync_end = 480 + 3 + 3,
 	.vtotal = 480 + 3 + 3 + 4,
-	.vrefresh = 57,
 	.type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED,
 	.flags = DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC,
 	.width_mm = 77,
 	.height_mm = 46,
 };
 
-static int acx565akm_get_modes(struct drm_panel *panel)
+static int acx565akm_get_modes(struct drm_panel *panel,
+			       struct drm_connector *connector)
 {
-	struct drm_connector *connector = panel->connector;
 	struct drm_display_mode *mode;
 
-	mode = drm_mode_duplicate(panel->drm, &acx565akm_mode);
+	mode = drm_mode_duplicate(connector->dev, &acx565akm_mode);
 	if (!mode)
 		return -ENOMEM;
 
@@ -648,16 +647,10 @@ static int acx565akm_probe(struct spi_device *spi)
 			return ret;
 	}
 
-	drm_panel_init(&lcd->panel);
-	lcd->panel.dev = &lcd->spi->dev;
-	lcd->panel.funcs = &acx565akm_funcs;
+	drm_panel_init(&lcd->panel, &lcd->spi->dev, &acx565akm_funcs,
+		       DRM_MODE_CONNECTOR_DPI);
 
-	ret = drm_panel_add(&lcd->panel);
-	if (ret < 0) {
-		if (lcd->has_bc)
-			acx565akm_backlight_cleanup(lcd);
-		return ret;
-	}
+	drm_panel_add(&lcd->panel);
 
 	return 0;
 }
