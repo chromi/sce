@@ -17,11 +17,13 @@ The various qdiscs in development are experiments with how to improve the
 deployability of SCE in a small number of queues. While flow isolation and
 fairness is straightforward with FQ, mechanisms for achieving both without FQ
 are still under research. Possibilities include approximate fairness (see "af"
-qdiscs), DSCP, flow-aware queue selection, or queueing algorithms that do not
+qdiscs and
+[CodelAF](https://tools.ietf.org/html/draft-morton-tsvwg-codel-approx-fair-01)),
+DSCP, flow-aware queue selection, or queueing algorithms that do not
 adhere to strict FIFO semantics such as
 [LFQ](https://tools.ietf.org/html/draft-morton-tsvwg-lightweight-fair-queueing-00).
 
-We welcome any problem reports as [Issues](issues) on this repo.
+We welcome any problem reports as [Issues](../issues) on this repo.
 
 ## Compiling the kernel
 
