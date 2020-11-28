@@ -388,6 +388,8 @@ static void __tcp_ecn_check_ce(struct sock *sk, const struct sk_buff *skb)
 				__tcp_send_ack(sk, tp->sce_prior_rcv_nxt);
 				tcp_enter_quickack_mode(sk, 1);
 			}
+			if (tcp_ca_needs_ecn(sk))
+				tcp_ca_event(sk, CA_EVENT_ECN_NO_CE);
 			tp->ecn_flags |= TCP_ECN_QUEUE_ESCE | TCP_ECN_PRIOR_ESCE | TCP_ECN_SEEN;
 			break;
 		}
