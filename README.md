@@ -23,7 +23,8 @@ DSCP, flow-aware queue selection, or queueing algorithms that do not
 adhere to strict FIFO semantics such as
 [LFQ](https://tools.ietf.org/html/draft-morton-tsvwg-lightweight-fair-queueing-00).
 
-We welcome any problem reports as [Issues](../issues) on this repo.
+We welcome any problem reports as
+[Issues](https://github.com/chromi/sce/issues) on this repo.
 
 ## Compiling the kernel
 
