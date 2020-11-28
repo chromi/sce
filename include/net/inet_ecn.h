@@ -113,6 +113,7 @@ static inline int IP_ECN_set_ce(struct iphdr *iph)
 
 static inline int IP_ECN_set_ect1(struct iphdr *iph)
 {
+#if 0
 	u32 check = (__force u32)iph->check;
 
 	if ((iph->tos & INET_ECN_MASK) != INET_ECN_ECT_0)
@@ -123,6 +124,12 @@ static inline int IP_ECN_set_ect1(struct iphdr *iph)
 	iph->check = (__force __sum16)(check + (check>=0xFFFF));
 	iph->tos ^= INET_ECN_MASK;
 	return 1;
+#else
+	if ((iph->tos & INET_ECN_MASK) != INET_ECN_ECT_0)
+		return 0;
+	ipv4_change_dsfield(iph, ~INET_ECN_MASK, INET_ECN_ECT_1);
+	return 1;
+#endif
 }
 
 static inline void IP_ECN_clear(struct iphdr *iph)
