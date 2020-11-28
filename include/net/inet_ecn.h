@@ -37,6 +37,16 @@ static inline int INET_ECN_is_not_ect(__u8 dsfield)
 	return (dsfield & INET_ECN_MASK) == INET_ECN_NOT_ECT;
 }
 
+static inline int INET_ECN_is_ect0(__u8 dsfield)
+{
+	return (dsfield & INET_ECN_MASK) == INET_ECN_ECT_0;
+}
+
+static inline int INET_ECN_is_ect1(__u8 dsfield)
+{
+	return (dsfield & INET_ECN_MASK) == INET_ECN_ECT_1;
+}
+
 static inline int INET_ECN_is_capable(__u8 dsfield)
 {
 	return dsfield & INET_ECN_MASK;
