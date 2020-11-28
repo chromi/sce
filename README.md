@@ -4,21 +4,30 @@ This is the [SCE](https://datatracker.ietf.org/doc/draft-morton-tsvwg-sce/)
 (Some Congestion Experienced) reference implementation, containing:
 
 - the new TCP CC algorithms reno-sce, dctcp-sce and cubic-sce
-- changes to the Cake qdisc for SCE signaling
 - changes to TCP input for SCE to ESCE feedback
-- additional qdiscs under testing
+- changes to the Cake qdisc for SCE signaling
+- additional qdiscs under testing: twin_codel_af, cnq_codel_af, cnq_cobalt,
+  lfq_cobalt
 
 ## Status
 
-The reno-sce and dctcp-sce CC algorithms are working. cubic-sce is still
-undergoing development and testing. We welcome any problem reports as issues
-on this repo.
+The CC algorithms are all working, but may need subtle tweaks.
+
+The various qdiscs in development are experiments with how to improve the
+deployability of SCE in a small number of queues. While flow isolation and
+fairness is straightforward with FQ, mechanisms for achieving both without FQ
+are still under research. Possibilities include approximate fairness (see "af"
+qdiscs), DSCP, flow-aware queue selection, or queueing algorithms that do not
+adhere to strict FIFO semantics such as
+[LFQ](https://tools.ietf.org/html/draft-morton-tsvwg-lightweight-fair-queueing-00).
+
+We welcome any problem reports as [Issues](issues) on this repo.
 
 ## Compiling the kernel
 
 Compile the Linux kernel as usual, making sure to include the new CC algorithms
 in the config (under Networking support > Networking options > TCP: advanced
-congestion control) and the Cake qdisc (under Networking support >
+congestion control) and the SCE qdiscs (under Networking support >
 Networking options > QoS and/or fair queueing). Here's a quick overview of a
 typical way to do this:
 
@@ -62,22 +71,14 @@ the operation of SCE and related functionality:
   cubic-sce to default all TCP connections to use this CC algorithm, although
   setting it explicitly for individual test flows may be the preferred method
 
-In some setups, changing Linux's default pacing parameters may improve
-performance and reduce CE marks or drops (e.g. the one that may sometimes be
-seen as a flow reaches BDP). We've found the following settings to be an
-interesting starting point for experimentation:
-
-- `net.ipv4.tcp_pacing_ca_ratio` - set to 40 (Linux default is 120)
-- `net.ipv4.tcp_pacing_ss_ratio` - set to 100 (Linux default is 200)
-
 ## Cake and its SCE related parameters
 
-To test SCE, a bottleneck and SCE marking are needed between the TCP sender
-and receiver. Unless supplied another way, the Cake qdisc from this kernel
-must be used at the bottleneck. Cake's shaper is used to restrict bandwidth
-and create a bottleneck, then Cake can be configured to do SCE marking, which
-will mark IP packets with SCE as queue sojourn times increase. An example
-invocation of Cake is as follows:
+To test SCE, a bottleneck and SCE marking are needed between the TCP sender and
+receiver. As an example, the Cake qdisc from this kernel must be used at the
+bottleneck. Cake's shaper is used to restrict bandwidth and create a bottleneck,
+then Cake can be configured to do SCE marking, which will mark IP packets with
+SCE as queue sojourn times increase. An example invocation of Cake is as
+follows:
 
 ```
 tc qdisc add dev enp1s0 root cake besteffort bandwidth 10Mbit sce
@@ -94,7 +95,7 @@ parameters may be used to control the operation of SCE:
   to `sce`, and 1024 being nearly equivalent to `sce-single`. This balances SCE
   vs non-SCE throughput fairness with earlier SCE signaling. Numbers around 20
   may yield a reasonable balance for 50Mbit at 80ms for reno vs reno-sce
-  competition, for example. This setting is still undergoing testing.
+  competition, for example.
 
 ## Testing
 
@@ -114,6 +115,10 @@ with latency measurement flows.
 A tool called `scetrace` has been implemented that uses libpcap to record
 per-flow SCE and related statisics from either pcap files or live captures.
 This is available [here](https://github.com/heistp/scetrace).
+
+Test repositories [here](https://github.com/heistp/sce-l4s-bakeoff) and
+[here](https://github.com/heistp/sce-l4s-ect1) include flent batch files
+and a surrounding test harness to run various tests of SCE, and also L4S.
 
 ## Feedback branch
 
