@@ -113,13 +113,13 @@ static inline int IP_ECN_set_ce(struct iphdr *iph)
 
 static inline int IP_ECN_set_ect1(struct iphdr *iph)
 {
-#if 0
+#if 1
 	u32 check = (__force u32)iph->check;
 
 	if ((iph->tos & INET_ECN_MASK) != INET_ECN_ECT_0)
 		return 0;
 
-	check += (__force u16)htons(0x100);
+	check += (__force u16)htons(0x1);
 
 	iph->check = (__force __sum16)(check + (check>=0xFFFF));
 	iph->tos ^= INET_ECN_MASK;
