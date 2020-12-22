@@ -358,12 +358,35 @@ static void __tcp_ecn_check_ce(struct sock *sk, const struct sk_buff *skb)
 		}
 		tp->ecn_flags |= TCP_ECN_SEEN;
 		break;
-	default:
+	case INET_ECN_ECT_1:
+		if (sock_net(sk)->ipv4.sysctl_tcp_sce) {
+			if (!(tp->ecn_flags & TCP_ECN_PRIOR_ESCE) &&
+				inet_csk(sk)->icsk_ack.pending & ICSK_ACK_TIMER) {
+				__tcp_send_ack(sk, tp->sce_prior_rcv_nxt);
+				tcp_enter_quickack_mode(sk, 1);
+			}
+			if (tcp_ca_needs_ecn(sk))
+				tcp_ca_event(sk, CA_EVENT_ECN_NO_CE);
+			tp->ecn_flags |= TCP_ECN_QUEUE_ESCE | TCP_ECN_PRIOR_ESCE | TCP_ECN_SEEN;
+			break;
+		}
+		/* fallthrough - since ECT(1) == ECT(0) in RFC-3168 */
+	default: /* INET_ECN_ECT */
+		if (sock_net(sk)->ipv4.sysctl_tcp_sce) {
+			if ((tp->ecn_flags & TCP_ECN_PRIOR_ESCE) &&
+				inet_csk(sk)->icsk_ack.pending & ICSK_ACK_TIMER) {
+				__tcp_send_ack(sk, tp->sce_prior_rcv_nxt);
+				tcp_enter_quickack_mode(sk, 1);
+			}
+			tp->ecn_flags &= ~(TCP_ECN_QUEUE_ESCE | TCP_ECN_PRIOR_ESCE);
+		}
 		if (tcp_ca_needs_ecn(sk))
 			tcp_ca_event(sk, CA_EVENT_ECN_NO_CE);
 		tp->ecn_flags |= TCP_ECN_SEEN;
 		break;
 	}
+
+	tp->sce_prior_rcv_nxt = tcp_sk(sk)->rcv_nxt;
 }
 
 static void tcp_ecn_check_ce(struct sock *sk, const struct sk_buff *skb)
@@ -387,6 +410,13 @@ static void tcp_ecn_rcv_syn(struct tcp_sock *tp, const struct tcphdr *th)
 static bool tcp_ecn_rcv_ecn_echo(const struct tcp_sock *tp, const struct tcphdr *th)
 {
 	if (th->ece && !th->syn && (tp->ecn_flags & TCP_ECN_OK))
+		return true;
+	return false;
+}
+
+static bool tcp_ecn_rcv_sce_echo(const struct tcp_sock *tp, const struct tcphdr *th)
+{
+	if (th->esce && !th->syn && (tp->ecn_flags & TCP_ECN_OK))
 		return true;
 	return false;
 }
@@ -3743,7 +3773,10 @@ static int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)
 		tcp_snd_una_update(tp, ack);
 		flag |= FLAG_WIN_UPDATE;
 
-		tcp_in_ack_event(sk, CA_ACK_WIN_UPDATE);
+		if (tcp_ecn_rcv_sce_echo(tp, tcp_hdr(skb)))
+			tcp_in_ack_event(sk, CA_ACK_WIN_UPDATE | CA_ACK_ESCE);
+		else
+			tcp_in_ack_event(sk, CA_ACK_WIN_UPDATE);
 
 		NET_INC_STATS(sock_net(sk), LINUX_MIB_TCPHPACKS);
 	} else {
@@ -3764,6 +3797,9 @@ static int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)
 			flag |= FLAG_ECE;
 			ack_ev_flags |= CA_ACK_ECE;
 		}
+
+		if (tcp_ecn_rcv_sce_echo(tp, tcp_hdr(skb)))
+			ack_ev_flags |= CA_ACK_ESCE;
 
 		if (sack_state.sack_delivered)
 			tcp_count_delivered(tp, sack_state.sack_delivered,

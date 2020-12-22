@@ -368,6 +368,8 @@ static inline void tcp_dec_quickack_mode(struct sock *sk,
 #define	TCP_ECN_QUEUE_CWR	2
 #define	TCP_ECN_DEMAND_CWR	4
 #define	TCP_ECN_SEEN		8
+#define	TCP_ECN_QUEUE_ESCE	16
+#define	TCP_ECN_PRIOR_ESCE	32
 
 enum tcp_tw_status {
 	TCP_TW_SUCCESS = 0,
@@ -817,6 +819,12 @@ static inline u64 tcp_skb_timestamp_us(const struct sk_buff *skb)
 
 #define TCPHDR_SYN_ECN	(TCPHDR_SYN | TCPHDR_ECE | TCPHDR_CWR)
 
+
+#define tcp_res_flag_byte(th) (((u_int8_t *)th)[12])
+
+#define TCPHDR_ESCE 0x01
+
+
 /* This is what the send packet queuing engine uses to pass
  * TCP per-packet control information to the transmission code.
  * We also store the host-order sequence numbers in here too.
@@ -839,6 +847,7 @@ struct tcp_skb_cb {
 			u16	tcp_gso_size;
 		};
 	};
+	__u8		tcp_res_flags;	/* TCP reserved flags. (tcp[12]) */
 	__u8		tcp_flags;	/* TCP header flags. (tcp[13])	*/
 
 	__u8		sacked;		/* State flags for SACK.	*/
@@ -1003,6 +1012,7 @@ enum tcp_ca_ack_event_flags {
 	CA_ACK_SLOWPATH		= (1 << 0),	/* In slow path processing */
 	CA_ACK_WIN_UPDATE	= (1 << 1),	/* ACK updated window */
 	CA_ACK_ECE		= (1 << 2),	/* ECE bit is set on ack */
+	CA_ACK_ESCE		= (1 << 3),	/* ESCE bit is set on ack */
 };
 
 /*

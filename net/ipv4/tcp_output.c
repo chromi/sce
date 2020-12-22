@@ -383,6 +383,10 @@ static void tcp_ecn_send(struct sock *sk, struct sk_buff *skb,
 		}
 		if (tp->ecn_flags & TCP_ECN_DEMAND_CWR)
 			th->ece = 1;
+		if (tp->ecn_flags & TCP_ECN_QUEUE_ESCE) {
+			tp->ecn_flags &= ~TCP_ECN_QUEUE_ESCE;
+			th->esce = 1;
+		}
 	}
 }
 
@@ -1209,7 +1213,7 @@ static void tcp_update_skb_after_send(struct sock *sk, struct sk_buff *skb,
 		 * Note that tp->data_segs_out overflows after 2^32 packets,
 		 * this is a minor annoyance.
 		 */
-		if (rate != ~0UL && rate && tp->data_segs_out >= 10) {
+		if (rate != ~0UL && rate && tp->data_segs_out >= 1) {
 			u64 len_ns = div64_ul((u64)skb->len * NSEC_PER_SEC, rate);
 			u64 credit = tp->tcp_wstamp_ns - prior_wstamp;
 
@@ -2474,6 +2478,10 @@ static bool tcp_pacing_check(struct sock *sk)
 			      ns_to_ktime(tp->tcp_wstamp_ns),
 			      HRTIMER_MODE_ABS_PINNED_SOFT);
 		sock_hold(sk);
+	}
+	if (sk->sk_pacing_rate < sk->sk_max_pacing_rate) {
+		/* pacing is a product of cwnd, ergo we are cwnd limited */
+		tcp_cwnd_validate(sk, true);
 	}
 	return true;
 }

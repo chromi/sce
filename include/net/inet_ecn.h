@@ -8,6 +8,7 @@
 
 #include <net/inet_sock.h>
 #include <net/dsfield.h>
+#include <net/checksum.h>
 
 enum {
 	INET_ECN_NOT_ECT = 0,
@@ -29,9 +30,20 @@ static inline int INET_ECN_is_not_ect(__u8 dsfield)
 	return (dsfield & INET_ECN_MASK) == INET_ECN_NOT_ECT;
 }
 
+static inline int INET_ECN_is_ect0(__u8 dsfield)
+{
+	return (dsfield & INET_ECN_MASK) == INET_ECN_ECT_0;
+}
+
+static inline int INET_ECN_is_ect1(__u8 dsfield)
+{
+	return (dsfield & INET_ECN_MASK) == INET_ECN_ECT_1;
+}
+
 static inline int INET_ECN_is_capable(__u8 dsfield)
 {
-	return dsfield & INET_ECN_ECT_0;
+	// The ECT(0), ECT(1) and CE codepoints each designate an ECN Capable transport.
+	return !!(dsfield & INET_ECN_MASK);
 }
 
 /*
@@ -75,8 +87,8 @@ static inline void INET_ECN_dontxmit(struct sock *sk)
 
 static inline int IP_ECN_set_ce(struct iphdr *iph)
 {
-	u32 check = (__force u32)iph->check;
 	u32 ecn = (iph->tos + 1) & INET_ECN_MASK;
+	u16 check_add;
 
 	/*
 	 * After the last operation we have (in binary):
@@ -93,17 +105,15 @@ static inline int IP_ECN_set_ce(struct iphdr *iph)
 	 * INET_ECN_ECT_1 => check += htons(0xFFFD)
 	 * INET_ECN_ECT_0 => check += htons(0xFFFE)
 	 */
-	check += (__force u16)htons(0xFFFB) + (__force u16)htons(ecn);
+	check_add = htons(0xFFFB) + htons(ecn);
 
-	iph->check = (__force __sum16)(check + (check>=0xFFFF));
+	iph->check = csum16_add(iph->check, check_add);
 	iph->tos |= INET_ECN_CE;
 	return 1;
 }
 
 static inline int IP_ECN_set_ect1(struct iphdr *iph)
 {
-	u32 check = (__force u32)iph->check;
-
 	if ((iph->tos & INET_ECN_MASK) != INET_ECN_ECT_0)
 		return 0;
 
