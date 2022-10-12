@@ -28,31 +28,18 @@
 #define HYSTART_DELAY_THRESH(x)	clamp(x, HYSTART_DELAY_MIN, HYSTART_DELAY_MAX)
 
 static int fast_convergence __read_mostly = 1;
-static int beta __read_mostly = 717;	/* = 717/1024 (LINEAR_BETA_SCALE) */
 static int initial_ssthresh __read_mostly;
-static int bic_scale __read_mostly = 41;
-static int tcp_friendliness __read_mostly = 1;
 
 static int hystart __read_mostly = 1;
 static int hystart_detect __read_mostly = HYSTART_ACK_TRAIN | HYSTART_DELAY;
 static int hystart_low_window __read_mostly = 16;
 static int hystart_ack_delta_us __read_mostly = 2000;
 
-static u32 cube_rtt_scale __read_mostly;
-static u32 beta_scale __read_mostly;
-static u64 cube_factor __read_mostly;
-
 /* Note parameters that are used for precomputing scale factors are read-only */
 module_param(fast_convergence, int, 0644);
 MODULE_PARM_DESC(fast_convergence, "turn on/off fast convergence");
-module_param(beta, int, 0644);
-MODULE_PARM_DESC(beta, "beta for multiplicative increase");
 module_param(initial_ssthresh, int, 0644);
 MODULE_PARM_DESC(initial_ssthresh, "initial value of slow start threshold");
-module_param(bic_scale, int, 0444);
-MODULE_PARM_DESC(bic_scale, "scale (scaled by 1024) value for bic function (bic_scale/1024)");
-module_param(tcp_friendliness, int, 0644);
-MODULE_PARM_DESC(tcp_friendliness, "turn on/off tcp friendliness");
 module_param(hystart, int, 0644);
 MODULE_PARM_DESC(hystart, "turn on/off hybrid slow start algorithm");
 module_param(hystart_detect, int, 0644);
@@ -69,9 +56,10 @@ struct linear {
 	u32	last_max_cwnd;	/* last maximum snd_cwnd */
 	u32	last_cwnd;	/* the last snd_cwnd */
 	u32	last_time;	/* time when updated last_cwnd */
-	u32	bic_origin_point;/* origin point of bic function */
-	u32	bic_K;		/* time to origin point
-				   from the beginning of the current epoch */
+
+	u32	alpha;		/* parameters of Reno compatibility mode */
+	u32	beta;
+
 	u32	delay_min;	/* min delay (usec) */
 	u32	epoch_start;	/* beginning of an epoch */
 	u32	ack_cnt;	/* number of acks */
@@ -91,8 +79,7 @@ static inline void linear_reset(struct linear *ca)
 	ca->last_max_cwnd = 0;
 	ca->last_cwnd = 0;
 	ca->last_time = 0;
-	ca->bic_origin_point = 0;
-	ca->bic_K = 0;
+
 	ca->delay_min = 0;
 	ca->epoch_start = 0;
 	ca->ack_cnt = 0;
@@ -116,11 +103,14 @@ static inline void linear_hystart_reset(struct sock *sk)
 	ca->sample_cnt = 0;
 }
 
-static void linear_init(struct sock *sk)
+static inline void linear_init(struct sock *sk, const u32 beta)
 {
 	struct linear *ca = inet_csk_ca(sk);
 
 	linear_reset(ca);
+
+	ca->alpha = 8 * (LINEAR_BETA_SCALE + beta) / 3 / (LINEAR_BETA_SCALE - beta);
+	ca->beta = beta;
 
 	if (hystart)
 		linear_hystart_reset(sk);
@@ -128,6 +118,22 @@ static void linear_init(struct sock *sk)
 	if (!hystart && initial_ssthresh)
 		tcp_sk(sk)->snd_ssthresh = initial_ssthresh;
 }
+
+static void linearA_init(struct sock *sk)
+{
+	linear_init(sk, 512);  // 0.5 * 1024, per NewReno
+}
+
+static void linearB_init(struct sock *sk)
+{
+	linear_init(sk, 717);  // 0.7 * 1024, per CUBIC
+}
+
+static void linearC_init(struct sock *sk)
+{
+	linear_init(sk, 870);  // 0.85 * 1024, per ABE (RFC-8511)
+}
+
 
 static void linear_cwnd_event(struct sock *sk, enum tcp_ca_event event)
 {
@@ -150,61 +156,13 @@ static void linear_cwnd_event(struct sock *sk, enum tcp_ca_event event)
 	}
 }
 
-/* calculate the cubic root of x using a table lookup followed by one
- * Newton-Raphson iteration.
- * Avg err ~= 0.195%
- */
-static u32 cubic_root(u64 a)
-{
-	u32 x, b, shift;
-	/*
-	 * cbrt(x) MSB values for x MSB values in [0..63].
-	 * Precomputed then refined by hand - Willy Tarreau
-	 *
-	 * For x in [0..63],
-	 *   v = cbrt(x << 18) - 1
-	 *   cbrt(x) = (v[x] + 10) >> 6
-	 */
-	static const u8 v[] = {
-		/* 0x00 */    0,   54,   54,   54,  118,  118,  118,  118,
-		/* 0x08 */  123,  129,  134,  138,  143,  147,  151,  156,
-		/* 0x10 */  157,  161,  164,  168,  170,  173,  176,  179,
-		/* 0x18 */  181,  185,  187,  190,  192,  194,  197,  199,
-		/* 0x20 */  200,  202,  204,  206,  209,  211,  213,  215,
-		/* 0x28 */  217,  219,  221,  222,  224,  225,  227,  229,
-		/* 0x30 */  231,  232,  234,  236,  237,  239,  240,  242,
-		/* 0x38 */  244,  245,  246,  248,  250,  251,  252,  254,
-	};
-
-	b = fls64(a);
-	if (b < 7) {
-		/* a in [0..63] */
-		return ((u32)v[(u32)a] + 35) >> 6;
-	}
-
-	b = ((b * 84) >> 8) - 1;
-	shift = (a >> (b * 3));
-
-	x = ((u32)(((u32)v[shift] + 10) << b)) >> 6;
-
-	/*
-	 * Newton-Raphson iteration
-	 *                         2
-	 * x    = ( 2 * x  +  a / x  ) / 3
-	 *  k+1          k         k
-	 */
-	x = (2 * x + (u32)div64_u64(a, (u64)x * (u64)(x - 1)));
-	x = ((x * 341) >> 10);
-	return x;
-}
-
 /*
  * Compute congestion window to use.
  */
 static inline void linear_update(struct linear *ca, u32 cwnd, u32 acked)
 {
-	u32 delta, bic_target, max_cnt;
-	u64 offs, t;
+	u32 delta, max_cnt;
+	u32 scale = ca->alpha;
 
 	ca->ack_cnt += acked;	/* count the number of ACKed packets */
 
@@ -212,97 +170,18 @@ static inline void linear_update(struct linear *ca, u32 cwnd, u32 acked)
 	    (s32)(tcp_jiffies32 - ca->last_time) <= HZ / 32)
 		return;
 
-	/* The CUBIC function can update ca->cnt at most once per jiffy.
-	 * On all cwnd reduction events, ca->epoch_start is set to 0,
-	 * which will force a recalculation of ca->cnt.
-	 */
-	if (ca->epoch_start && tcp_jiffies32 == ca->last_time)
-		goto tcp_friendliness;
-
-	ca->last_cwnd = cwnd;
-	ca->last_time = tcp_jiffies32;
-
-	if (ca->epoch_start == 0) {
-		ca->epoch_start = tcp_jiffies32;	/* record beginning */
-		ca->ack_cnt = acked;			/* start counting */
-		ca->tcp_cwnd = cwnd;			/* syn with cubic */
-
-		if (ca->last_max_cwnd <= cwnd) {
-			ca->bic_K = 0;
-			ca->bic_origin_point = cwnd;
-		} else {
-			/* Compute new K based on
-			 * (wmax-cwnd) * (srtt>>3 / HZ) / c * 2^(3*linear_HZ)
-			 */
-			ca->bic_K = cubic_root(cube_factor
-					       * (ca->last_max_cwnd - cwnd));
-			ca->bic_origin_point = ca->last_max_cwnd;
-		}
-	}
-
-	/* cubic function - calc*/
-	/* calculate c * time^3 / rtt,
-	 *  while considering overflow in calculation of time^3
-	 * (so time^3 is done by using 64 bit)
-	 * and without the support of division of 64bit numbers
-	 * (so all divisions are done by using 32 bit)
-	 *  also NOTE the unit of those veriables
-	 *	  time  = (t - K) / 2^linear_HZ
-	 *	  c = bic_scale >> 10
-	 * rtt  = (srtt >> 3) / HZ
-	 * !!! The following code does not have overflow problems,
-	 * if the cwnd < 1 million packets !!!
-	 */
-
-	t = (s32)(tcp_jiffies32 - ca->epoch_start);
-	t += usecs_to_jiffies(ca->delay_min);
-	/* change the unit from HZ to linear_HZ */
-	t <<= LINEAR_HZ;
-	do_div(t, HZ);
-
-	if (t < ca->bic_K)		/* t - K */
-		offs = ca->bic_K - t;
-	else
-		offs = t - ca->bic_K;
-
-	/* c/rtt * (t-K)^3 */
-	delta = (cube_rtt_scale * offs * offs * offs) >> (10+3*LINEAR_HZ);
-	if (t < ca->bic_K)                            /* below origin*/
-		bic_target = ca->bic_origin_point - delta;
-	else                                          /* above origin*/
-		bic_target = ca->bic_origin_point + delta;
-
-	/* cubic function - calc linear_cnt*/
-	if (bic_target > cwnd) {
-		ca->cnt = cwnd / (bic_target - cwnd);
-	} else {
-		ca->cnt = 100 * cwnd;              /* very small increment*/
-	}
-
-	/*
-	 * The initial growth of cubic function may be too conservative
-	 * when the available bandwidth is still unknown.
-	 */
-	if (ca->last_max_cwnd == 0 && ca->cnt > 20)
-		ca->cnt = 20;	/* increase cwnd 5% per RTT */
-
-tcp_friendliness:
 	/* TCP Friendly */
-	if (tcp_friendliness) {
-		u32 scale = beta_scale;
+	delta = (cwnd * scale) >> 3;
+	while (ca->ack_cnt > delta) {		/* update tcp cwnd */
+		ca->ack_cnt -= delta;
+		ca->tcp_cwnd++;
+	}
 
-		delta = (cwnd * scale) >> 3;
-		while (ca->ack_cnt > delta) {		/* update tcp cwnd */
-			ca->ack_cnt -= delta;
-			ca->tcp_cwnd++;
-		}
-
-		if (ca->tcp_cwnd > cwnd) {	/* if bic is slower than tcp */
-			delta = ca->tcp_cwnd - cwnd;
-			max_cnt = cwnd / delta;
-			if (ca->cnt > max_cnt)
-				ca->cnt = max_cnt;
-		}
+	if (ca->tcp_cwnd > cwnd) {	/* if bic is slower than tcp */
+		delta = ca->tcp_cwnd - cwnd;
+		max_cnt = cwnd / delta;
+		if (ca->cnt > max_cnt)
+			ca->cnt = max_cnt;
 	}
 
 	/* The maximum rate of cwnd increase CUBIC allows is 1 packet per
@@ -336,15 +215,9 @@ static u32 linear_recalc_ssthresh(struct sock *sk)
 	struct linear *ca = inet_csk_ca(sk);
 
 	ca->epoch_start = 0;	/* end of epoch */
+	ca->last_max_cwnd = tp->snd_cwnd;
 
-	/* Wmax and fast convergence */
-	if (tp->snd_cwnd < ca->last_max_cwnd && fast_convergence)
-		ca->last_max_cwnd = (tp->snd_cwnd * (LINEAR_BETA_SCALE + beta))
-			/ (2 * LINEAR_BETA_SCALE);
-	else
-		ca->last_max_cwnd = tp->snd_cwnd;
-
-	return max((tp->snd_cwnd * beta) / LINEAR_BETA_SCALE, 2U);
+	return max((tp->snd_cwnd * ca->beta) / LINEAR_BETA_SCALE, 2U);
 }
 
 static void linear_state(struct sock *sk, u8 new_state)
@@ -462,8 +335,8 @@ static void linear_acked(struct sock *sk, const struct ack_sample *sample)
 		hystart_update(sk, delay);
 }
 
-static struct tcp_congestion_ops lineartcp __read_mostly = {
-	.init		= linear_init,
+static struct tcp_congestion_ops linearAtcp __read_mostly = {
+	.init		= linearA_init,
 	.ssthresh	= linear_recalc_ssthresh,
 	.cong_avoid	= linear_cong_avoid,
 	.set_state	= linear_state,
@@ -471,47 +344,47 @@ static struct tcp_congestion_ops lineartcp __read_mostly = {
 	.cwnd_event	= linear_cwnd_event,
 	.pkts_acked     = linear_acked,
 	.owner		= THIS_MODULE,
-	.name		= "linear",
+	.name		= "linear-a",
+};
+
+static struct tcp_congestion_ops linearBtcp __read_mostly = {
+	.init		= linearB_init,
+	.ssthresh	= linear_recalc_ssthresh,
+	.cong_avoid	= linear_cong_avoid,
+	.set_state	= linear_state,
+	.undo_cwnd	= tcp_reno_undo_cwnd,
+	.cwnd_event	= linear_cwnd_event,
+	.pkts_acked     = linear_acked,
+	.owner		= THIS_MODULE,
+	.name		= "linear-b",
+};
+
+static struct tcp_congestion_ops linearCtcp __read_mostly = {
+	.init		= linearC_init,
+	.ssthresh	= linear_recalc_ssthresh,
+	.cong_avoid	= linear_cong_avoid,
+	.set_state	= linear_state,
+	.undo_cwnd	= tcp_reno_undo_cwnd,
+	.cwnd_event	= linear_cwnd_event,
+	.pkts_acked     = linear_acked,
+	.owner		= THIS_MODULE,
+	.name		= "linear-c",
 };
 
 static int __init lineartcp_register(void)
 {
 	BUILD_BUG_ON(sizeof(struct linear) > ICSK_CA_PRIV_SIZE);
 
-	/* Precompute a bunch of the scaling factors that are used per-packet
-	 * based on SRTT of 100ms
-	 */
-
-	beta_scale = 8*(LINEAR_BETA_SCALE+beta) / 3
-		/ (LINEAR_BETA_SCALE - beta);
-
-	cube_rtt_scale = (bic_scale * 10);	/* 1024*c/rtt */
-
-	/* calculate the "K" for (wmax-cwnd) = c/rtt * K^3
-	 *  so K = cubic_root( (wmax-cwnd)*rtt/c )
-	 * the unit of K is linear_HZ=2^10, not HZ
-	 *
-	 *  c = bic_scale >> 10
-	 *  rtt = 100ms
-	 *
-	 * the following code has been designed and tested for
-	 * cwnd < 1 million packets
-	 * RTT < 100 seconds
-	 * HZ < 1,000,00  (corresponding to 10 nano-second)
-	 */
-
-	/* 1/c * 2^2*linear_HZ * srtt */
-	cube_factor = 1ull << (10+3*LINEAR_HZ); /* 2^40 */
-
-	/* divide by bic_scale and by constant Srtt (100ms) */
-	do_div(cube_factor, bic_scale * 10);
-
-	return tcp_register_congestion_control(&lineartcp);
+	tcp_register_congestion_control(&linearCtcp);
+	tcp_register_congestion_control(&linearBtcp);
+	return tcp_register_congestion_control(&linearAtcp);
 }
 
 static void __exit lineartcp_unregister(void)
 {
-	tcp_unregister_congestion_control(&lineartcp);
+	tcp_unregister_congestion_control(&linearAtcp);
+	tcp_unregister_congestion_control(&linearBtcp);
+	tcp_unregister_congestion_control(&linearCtcp);
 }
 
 module_init(lineartcp_register);
