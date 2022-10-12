@@ -672,6 +672,14 @@ config TCP_CONG_CUBIC_SCE
 	---help---
 	This is CUBIC with support for Some Congestion Experienced (SCE) signals.
 
+config TCP_CONG_LINEAR
+	tristate "LINEAR TCP"
+	default n
+	help
+	  This is a neutered version of CUBIC with the polynomial function removed,
+	  for conducting experiments on its Reno compatibility mode.  Say N unless
+	  you know what you're doing.
+
 config TCP_CONG_CDG
 	tristate "CAIA Delay-Gradient (CDG)"
 	default n
