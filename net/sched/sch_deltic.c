@@ -352,7 +352,9 @@ static int deltic_init(struct Qdisc *sch, struct nlattr *opt,
 
 	deltic_parameterise(&q->drp_params,   8);  // 125ms target for hard dropping
 	deltic_parameterise(&q->ecn_params,  40);  //  25ms target for ECN marking
-	deltic_parameterise(&q->sce_params,   0);  //  default disable SCE marking
+	deltic_parameterise(&q->sce_params, 200);  //   5ms target for SCE marking
+
+//	deltic_parameterise(&q->sce_params,   0);  //  default disable SCE marking
 
 	if (opt) {
 		int err = deltic_change(sch, opt, extack);
