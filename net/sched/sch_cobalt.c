@@ -519,12 +519,14 @@ static int cobalt_init(struct Qdisc *sch, struct nlattr *opt,
 	sch->limit = 10240;
 
 	q->cparams.ce_interval  = ms_to_ns( 100);
-	q->cparams.sce_interval =             0 ;  /* off by default, otherwise: 25ms */
+	q->cparams.sce_interval = ms_to_ns(  25);
 	q->cparams.ce_target    = ms_to_ns(   5);
 	q->cparams.sce_target   = us_to_ns(2500);
 	q->cparams.blue_thresh  = ms_to_ns( 400);
 	q->cparams.p_inc	= 1 << 24;
 	q->cparams.p_dec	= 1 << 20;
+
+//	q->cparams.sce_interval =             0 ;  /* off by default, otherwise: 25ms */
 
 	if (opt) {
 		int err = cobalt_change(sch, opt, extack);
