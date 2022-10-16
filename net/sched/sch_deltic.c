@@ -22,7 +22,7 @@ struct deltic_params {
 };
 
 struct deltic_vars {
-	u64 accumulator;    // for I part of PID controller
+	s64 accumulator;    // for I part of PID controller
 	u64 history;        // for D part of PID controller
 	ktime_t timestamp;  // time last packet was processed
 	u64 oscillator;     // Numerically Controlled Oscillator's accumulator
@@ -126,15 +126,16 @@ static bool deltic_control(struct deltic_vars *vars,
 	{
 		s64 delta = sojourn - vars->history;
 		s64 sigma = ns_scaled_mul(sojourn - p->target, interval);
-		s64 deltasigma = delta + sigma;
-		if(deltasigma > 0 || vars->accumulator > -deltasigma)
-			vars->accumulator += deltasigma;
-		else
-			vars->accumulator = 0;
-	}
 
-	vars->history = sojourn;
-	vars->timestamp = now;
+		vars->accumulator += delta + sigma;
+		if(vars->accumulator < 0) {
+			vars->accumulator = 0;
+			vars->oscillator  = 0;
+		}
+
+		vars->history = sojourn;
+		vars->timestamp = now;
+	}
 
 	// Suppress marking below half of control target
 	if(sojourn * 2 >= p->target) {
