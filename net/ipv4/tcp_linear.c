@@ -177,17 +177,14 @@ static inline void linear_update(struct linear *ca, u32 cwnd, u32 acked)
 		ca->tcp_cwnd++;
 	}
 
-	if (ca->tcp_cwnd > cwnd) {	/* if bic is slower than tcp */
+	if (ca->tcp_cwnd > cwnd) {	/* if cwnd should increase */
 		delta = ca->tcp_cwnd - cwnd;
 		max_cnt = cwnd / delta;
-		if (ca->cnt > max_cnt)
-			ca->cnt = max_cnt;
+		ca->cnt = max(max_cnt, 2U);
+	} else {
+		/* avoid cwnd increase */
+		ca->cnt = 100 * cwnd;
 	}
-
-	/* The maximum rate of cwnd increase CUBIC allows is 1 packet per
-	 * 2 packets ACKed, meaning cwnd grows at 1.5x per RTT.
-	 */
-	ca->cnt = max(ca->cnt, 2U);
 }
 
 static void linear_cong_avoid(struct sock *sk, u32 ack, u32 acked)
