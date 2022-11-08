@@ -170,6 +170,15 @@ static inline void linear_update(struct linear *ca, u32 cwnd, u32 acked)
 	    (s32)(tcp_jiffies32 - ca->last_time) <= HZ / 32)
 		return;
 
+	ca->last_cwnd = cwnd;
+	ca->last_time = tcp_jiffies32;
+
+	if (ca->epoch_start == 0) {
+		ca->epoch_start = tcp_jiffies32;	/* record beginning */
+		ca->ack_cnt = acked;			/* start counting */
+		ca->tcp_cwnd = cwnd;			/* synchronise states */
+	}
+
 	/* TCP Friendly */
 	delta = (cwnd * scale) >> 3;
 	while (ca->ack_cnt > delta) {		/* update tcp cwnd */
