@@ -16,10 +16,9 @@
 #include <net/tcp.h>
 
 struct deltic_params {
-	u64 frequency_scale;
-	u32 target;
-	u16 resonance;
-	u16 baseline;
+	u32 frequency_scale;	/* product of sig_freq and resonance */
+	u32 target;		/* sojourn time in nanoseconds */
+	u16 resonance;	/* target queue depth expressed as a frequency, Hz */
 };
 
 struct deltic_vars {
@@ -38,10 +37,13 @@ struct deltic_sched_data {
 	struct sk_buff	*bulk_head;
 	struct sk_buff	*bulk_tail;
 
-	/* AQM */
+	/* AQM params */
 	struct deltic_params	sce_params;
 	struct deltic_params	ecn_params;
 	struct deltic_params	drp_params;
+	u16	sig_freq;
+
+	/* AQM state */
 	struct deltic_vars	sce_vars;
 	struct deltic_vars	ecn_vars;
 	struct deltic_vars	drp_vars;
@@ -272,10 +274,11 @@ static struct sk_buff* deltic_dequeue(struct Qdisc *sch)
 
 /* Configuration */
 
-static const struct nla_policy deltic_policy[TCA_CAKE_MAX + 1] = {
-	[TCA_CAKE_RTT]		 = { .type = NLA_U32 },  // resonance frequency for drop controller
-	[TCA_CAKE_TARGET]	 = { .type = NLA_U32 },  // resonance frequency for ECN controller
-	[TCA_CAKE_SCE]		 = { .type = NLA_U32 },  // resonance frequency for SCE controller
+static const struct nla_policy deltic_policy[TCA_DELTIC_MAX + 1] = {
+	[TCA_DELTIC_FREQ_DROP]   	= { .type = NLA_U16 },  // resonance frequency for drop controller
+	[TCA_DELTIC_FREQ_ECN]   	= { .type = NLA_U16 },  // resonance frequency for ECN controller
+	[TCA_DELTIC_FREQ_SCE]   	= { .type = NLA_U16 },  // resonance frequency for SCE controller
+	[TCA_DELTIC_FREQ_SIGNAL]	= { .type = NLA_U16 },  // baseline signalling frequency for all controllers
 };
 
 static void deltic_parameterise(struct deltic_params *p, const u16 res_freq, const u16 sig_freq)
@@ -302,18 +305,21 @@ static int deltic_change(struct Qdisc *sch, struct nlattr *opt,
 	if (!opt)
 		return -EINVAL;
 
-	err = nla_parse_nested(tb, TCA_CAKE_MAX, opt, deltic_policy, extack);
+	err = nla_parse_nested(tb, TCA_DELTIC_MAX, opt, deltic_policy, extack);
 	if (err < 0)
 		return err;
 
-	if (tb[TCA_CAKE_RTT])
-		deltic_parameterise(&q->drp_params, nla_get_u32(tb[TCA_CAKE_RTT]), 12);
+	if (tb[TCA_DELTIC_FREQ_SIGNAL])
+		q->sig_freq = nla_get_u16(tb[TCA_DELTIC_FREQ_SIGNAL]);
 
-	if (tb[TCA_CAKE_TARGET])
-		deltic_parameterise(&q->ecn_params, nla_get_u32(tb[TCA_CAKE_TARGET]), 12);
+	if (tb[TCA_DELTIC_FREQ_DROP])
+		deltic_parameterise(&q->drp_params, nla_get_u32(tb[TCA_DELTIC_FREQ_DROP]), q->sig_freq);
 
-	if (tb[TCA_CAKE_SCE])
-		deltic_parameterise(&q->sce_params, nla_get_u32(tb[TCA_CAKE_SCE]), 12);
+	if (tb[TCA_DELTIC_FREQ_ECN])
+		deltic_parameterise(&q->ecn_params, nla_get_u32(tb[TCA_DELTIC_FREQ_ECN]), q->sig_freq);
+
+	if (tb[TCA_DELTIC_FREQ_SCE])
+		deltic_parameterise(&q->sce_params, nla_get_u32(tb[TCA_DELTIC_FREQ_SCE]), q->sig_freq);
 
 	/* unlimited mode */
 	sch->flags |= TCQ_F_CAN_BYPASS;
@@ -330,13 +336,16 @@ static int deltic_dump(struct Qdisc *sch, struct sk_buff *skb)
 	if (!opts)
 		goto nla_put_failure;
 
-	if (nla_put_u32(skb, TCA_CAKE_RTT, q->drp_params.resonance))
+	if (nla_put_u32(skb, TCA_DELTIC_FREQ_SIGNAL, q->sig_freq))
 		goto nla_put_failure;
 
-	if (nla_put_u32(skb, TCA_CAKE_TARGET, q->ecn_params.resonance))
+	if (nla_put_u32(skb, TCA_DELTIC_FREQ_DROP, q->drp_params.resonance))
 		goto nla_put_failure;
 
-	if (nla_put_u32(skb, TCA_CAKE_SCE, q->sce_params.resonance))
+	if (nla_put_u32(skb, TCA_DELTIC_FREQ_ECN, q->ecn_params.resonance))
+		goto nla_put_failure;
+
+	if (nla_put_u32(skb, TCA_DELTIC_FREQ_SCE, q->sce_params.resonance))
 		goto nla_put_failure;
 
 	return nla_nest_end(skb, opts);
@@ -353,9 +362,10 @@ static int deltic_init(struct Qdisc *sch, struct nlattr *opt,
 	memset(q, 0, sizeof(*q));
 	sch->limit = 10240;
 
-	deltic_parameterise(&q->drp_params,   8, 12);  // 125ms target for hard dropping
-	deltic_parameterise(&q->ecn_params,  40, 12);  //  25ms target for ECN marking
-	deltic_parameterise(&q->sce_params, 200, 12);  //   5ms target for SCE marking
+	q->sig_freq = 12;	// signalling rate when accumulator == target is 12Hz
+	deltic_parameterise(&q->drp_params,   8, q->sig_freq);  // 125ms target for hard dropping
+	deltic_parameterise(&q->ecn_params,  40, q->sig_freq);  //  25ms target for ECN marking
+	deltic_parameterise(&q->sce_params, 200, q->sig_freq);  //   5ms target for SCE marking
 
 //	deltic_parameterise(&q->sce_params,   0);  //  default disable SCE marking
 
