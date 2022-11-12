@@ -97,7 +97,7 @@ static bool deltic_control(struct deltic_vars *vars,
 			       ktime_t now,
 			       struct sk_buff *skb)
 {
-	// Delta-Sigma control:
+	// Delta-Sigma control is essentially a PID controller without the P term:
 
 	// slope = (sojourn - last_sojourn) / (now - then)
 	// acc = max(0, acc + (slope + sojourn - target) * (now - then))
@@ -151,6 +151,10 @@ static bool deltic_control(struct deltic_vars *vars,
 			mark = true;
 			vars->oscillator -= NSEC_PER_SEC;
 		}
+
+		// Soft limit on over-controlling
+		if(vars->oscillator > NSEC_PER_SEC)
+			vars->accumulator -= vars->accumulator >> 4;
 	}
 
 	return mark;
