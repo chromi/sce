@@ -288,7 +288,6 @@ static const struct nla_policy deltic_policy[TCA_DELTIC_MAX + 1] = {
 static void deltic_parameterise(struct deltic_params *p, const u16 res_freq, const u16 sig_freq)
 {
 	p->resonance = res_freq;
-	p->baseline  = sig_freq;
 
 	if(res_freq && sig_freq) {
 		p->target = NSEC_PER_SEC / res_freq;
