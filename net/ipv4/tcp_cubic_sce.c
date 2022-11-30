@@ -518,10 +518,8 @@ static void bictcp_handle_ack(struct sock *sk, u32 flags)
 			u32 now = tcp_jiffies32;
 
 #if 1 // Simplify to just halting polynomial growth on ESCE
-			ca->epoch_start = now;
-			ca->bic_K = 0;
-			ca->bic_origin_point = ca->last_max_cwnd = ca->tcp_cwnd = tp->snd_cwnd;
-			tp->snd_ssthresh = tp->snd_cwnd / 2;
+			ca->epoch_start = 0;
+			ca->last_max_cwnd = tp->snd_cwnd;
 #else
 			u64 t = now - ca->epoch_start;
 
@@ -582,9 +580,8 @@ static void bictcp_handle_ack(struct sock *sk, u32 flags)
 					tp->snd_cwnd--;
 					if(ca->sqrt_cnt * ca->sqrt_cnt >= tp->snd_cwnd)
 						ca->sqrt_cnt--;
+					ca->last_max_cwnd--;
 				}
-				if(ca->bic_origin_point > 0)
-					ca->bic_origin_point--;
 			}
 		}
 
