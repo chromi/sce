@@ -7,13 +7,13 @@
  * Copyright 2012 Freescale Semiconductor, Inc.
  */
 
-#include <linux/platform_device.h>
 #include <linux/device.h>
+#include <linux/mdio-mux.h>
+#include <linux/module.h>
 #include <linux/of_address.h>
 #include <linux/of_mdio.h>
-#include <linux/module.h>
 #include <linux/phy.h>
-#include <linux/mdio-mux.h>
+#include <linux/platform_device.h>
 
 struct mdio_mux_mmioreg_state {
 	void *mux_handle;
@@ -159,12 +159,9 @@ static int mdio_mux_mmioreg_probe(struct platform_device *pdev)
 	ret = mdio_mux_init(&pdev->dev, pdev->dev.of_node,
 			    mdio_mux_mmioreg_switch_fn,
 			    &s->mux_handle, s, NULL);
-	if (ret) {
-		if (ret != -EPROBE_DEFER)
-			dev_err(&pdev->dev,
-				"failed to register mdio-mux bus %pOF\n", np);
-		return ret;
-	}
+	if (ret)
+		return dev_err_probe(&pdev->dev, ret,
+				     "failed to register mdio-mux bus %pOF\n", np);
 
 	pdev->dev.platform_data = s;
 

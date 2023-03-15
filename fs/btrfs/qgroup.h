@@ -100,6 +100,9 @@
  *     subtree rescan for them.
  */
 
+#define BTRFS_QGROUP_RUNTIME_FLAG_CANCEL_RESCAN		(1UL << 3)
+#define BTRFS_QGROUP_RUNTIME_FLAG_NO_ACCOUNTING		(1UL << 4)
+
 /*
  * Record a dirty extent, and info qgroup to update quota on it
  * TODO: Use kmem cache to alloc it.
@@ -298,7 +301,7 @@ int btrfs_qgroup_trace_extent_nolock(
  * using current root, then we can move all expensive backref walk out of
  * transaction committing, but not now as qgroup accounting will be wrong again.
  */
-int btrfs_qgroup_trace_extent_post(struct btrfs_fs_info *fs_info,
+int btrfs_qgroup_trace_extent_post(struct btrfs_trans_handle *trans,
 				   struct btrfs_qgroup_extent_record *qrecord);
 
 /*
@@ -361,20 +364,26 @@ int btrfs_qgroup_release_data(struct btrfs_inode *inode, u64 start, u64 len);
 int btrfs_qgroup_free_data(struct btrfs_inode *inode,
 			   struct extent_changeset *reserved, u64 start,
 			   u64 len);
+int btrfs_qgroup_reserve_meta(struct btrfs_root *root, int num_bytes,
+			      enum btrfs_qgroup_rsv_type type, bool enforce);
 int __btrfs_qgroup_reserve_meta(struct btrfs_root *root, int num_bytes,
-				enum btrfs_qgroup_rsv_type type, bool enforce);
+				enum btrfs_qgroup_rsv_type type, bool enforce,
+				bool noflush);
 /* Reserve metadata space for pertrans and prealloc type */
 static inline int btrfs_qgroup_reserve_meta_pertrans(struct btrfs_root *root,
 				int num_bytes, bool enforce)
 {
 	return __btrfs_qgroup_reserve_meta(root, num_bytes,
-			BTRFS_QGROUP_RSV_META_PERTRANS, enforce);
+					   BTRFS_QGROUP_RSV_META_PERTRANS,
+					   enforce, false);
 }
 static inline int btrfs_qgroup_reserve_meta_prealloc(struct btrfs_root *root,
-				int num_bytes, bool enforce)
+						     int num_bytes, bool enforce,
+						     bool noflush)
 {
 	return __btrfs_qgroup_reserve_meta(root, num_bytes,
-			BTRFS_QGROUP_RSV_META_PREALLOC, enforce);
+					   BTRFS_QGROUP_RSV_META_PREALLOC,
+					   enforce, noflush);
 }
 
 void __btrfs_qgroup_free_meta(struct btrfs_root *root, int num_bytes,

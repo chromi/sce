@@ -349,9 +349,9 @@ static int lm355x_indicator_brightness_set(struct led_classdev *cdev,
 }
 
 /* indicator pattern only for lm3556*/
-static ssize_t lm3556_indicator_pattern_store(struct device *dev,
-					      struct device_attribute *attr,
-					      const char *buf, size_t size)
+static ssize_t pattern_store(struct device *dev,
+			     struct device_attribute *attr,
+			     const char *buf, size_t size)
 {
 	ssize_t ret;
 	struct led_classdev *led_cdev = dev_get_drvdata(dev);
@@ -381,7 +381,7 @@ out:
 	return ret;
 }
 
-static DEVICE_ATTR(pattern, S_IWUSR, NULL, lm3556_indicator_pattern_store);
+static DEVICE_ATTR_WO(pattern);
 
 static struct attribute *lm355x_indicator_attrs[] = {
 	&dev_attr_pattern.attr,
@@ -491,7 +491,7 @@ err_out:
 	return err;
 }
 
-static int lm355x_remove(struct i2c_client *client)
+static void lm355x_remove(struct i2c_client *client)
 {
 	struct lm355x_chip_data *chip = i2c_get_clientdata(client);
 	struct lm355x_reg_data *preg = chip->regs;
@@ -501,8 +501,6 @@ static int lm355x_remove(struct i2c_client *client)
 	led_classdev_unregister(&chip->cdev_torch);
 	led_classdev_unregister(&chip->cdev_flash);
 	dev_info(&client->dev, "%s is removed\n", lm355x_name[chip->type]);
-
-	return 0;
 }
 
 static const struct i2c_device_id lm355x_id[] = {

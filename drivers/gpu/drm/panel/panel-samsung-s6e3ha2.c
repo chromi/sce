@@ -214,7 +214,7 @@ static const u8 gamma_tbl[S6E3HA2_NUM_GAMMA_STEPS][S6E3HA2_GAMMA_CMD_CNT] = {
 	  0x00, 0x00 }
 };
 
-unsigned char vint_table[S6E3HA2_VINT_STATUS_MAX] = {
+static const unsigned char vint_table[S6E3HA2_VINT_STATUS_MAX] = {
 	0x18, 0x19, 0x1a, 0x1b, 0x1c,
 	0x1d, 0x1e, 0x1f, 0x20, 0x21
 };
@@ -747,15 +747,13 @@ remove_panel:
 	return ret;
 }
 
-static int s6e3ha2_remove(struct mipi_dsi_device *dsi)
+static void s6e3ha2_remove(struct mipi_dsi_device *dsi)
 {
 	struct s6e3ha2 *ctx = mipi_dsi_get_drvdata(dsi);
 
 	mipi_dsi_detach(dsi);
 	drm_panel_remove(&ctx->panel);
 	backlight_device_unregister(ctx->bl_dev);
-
-	return 0;
 }
 
 static const struct of_device_id s6e3ha2_of_match[] = {

@@ -95,7 +95,7 @@ struct nv50_outp_atom {
 
 int nv50_dmac_create(struct nvif_device *device, struct nvif_object *disp,
 		     const s32 *oclass, u8 head, void *data, u32 size,
-		     u64 syncbuf, struct nv50_dmac *dmac);
+		     s64 syncbuf, struct nv50_dmac *dmac);
 void nv50_dmac_destroy(struct nv50_dmac *);
 
 /*
@@ -105,6 +105,8 @@ void nv50_dmac_destroy(struct nv50_dmac *);
  * return anyway.
  */
 struct nouveau_encoder *nv50_real_outp(struct drm_encoder *encoder);
+
+bool nv50_has_mst(struct nouveau_drm *drm);
 
 u32 *evo_wait(struct nv50_dmac *, int nr);
 void evo_kick(u32 *, struct nv50_dmac *);

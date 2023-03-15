@@ -343,8 +343,10 @@ static int qm1d1c0042_init(struct dvb_frontend *fe)
 		if (val == reg_initval[reg_index][0x00])
 			break;
 	}
-	if (reg_index >= QM1D1C0042_NUM_REG_ROWS)
+	if (reg_index >= QM1D1C0042_NUM_REG_ROWS) {
+		ret = -EINVAL;
 		goto failed;
+	}
 	memcpy(state->regs, reg_initval[reg_index], QM1D1C0042_NUM_REGS);
 	usleep_range(2000, 3000);
 
@@ -422,14 +424,13 @@ static int qm1d1c0042_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int qm1d1c0042_remove(struct i2c_client *client)
+static void qm1d1c0042_remove(struct i2c_client *client)
 {
 	struct qm1d1c0042_state *state;
 
 	state = cfg_to_state(i2c_get_clientdata(client));
 	state->cfg.fe->tuner_priv = NULL;
 	kfree(state);
-	return 0;
 }
 
 

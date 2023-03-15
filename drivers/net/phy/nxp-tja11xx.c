@@ -10,6 +10,7 @@
 #include <linux/mdio.h>
 #include <linux/mii.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/phy.h>
 #include <linux/hwmon.h>
 #include <linux/bitfield.h>
@@ -34,6 +35,11 @@
 #define MII_CFG1			18
 #define MII_CFG1_MASTER_SLAVE		BIT(15)
 #define MII_CFG1_AUTO_OP		BIT(14)
+#define MII_CFG1_INTERFACE_MODE_MASK	GENMASK(9, 8)
+#define MII_CFG1_MII_MODE				(0x0 << 8)
+#define MII_CFG1_RMII_MODE_REFCLK_IN	BIT(8)
+#define MII_CFG1_RMII_MODE_REFCLK_OUT	BIT(9)
+#define MII_CFG1_REVMII_MODE			GENMASK(9, 8)
 #define MII_CFG1_SLEEP_CONFIRM		BIT(6)
 #define MII_CFG1_LED_MODE_MASK		GENMASK(5, 4)
 #define MII_CFG1_LED_MODE_LINKUP	0
@@ -44,12 +50,17 @@
 #define MII_CFG2_SLEEP_REQUEST_TO_16MS	0x3
 
 #define MII_INTSRC			21
-#define MII_INTSRC_TEMP_ERR		BIT(1)
+#define MII_INTSRC_LINK_FAIL		BIT(10)
+#define MII_INTSRC_LINK_UP		BIT(9)
+#define MII_INTSRC_MASK			(MII_INTSRC_LINK_FAIL | MII_INTSRC_LINK_UP)
 #define MII_INTSRC_UV_ERR		BIT(3)
+#define MII_INTSRC_TEMP_ERR		BIT(1)
 
 #define MII_INTEN			22
 #define MII_INTEN_LINK_FAIL		BIT(10)
 #define MII_INTEN_LINK_UP		BIT(9)
+#define MII_INTEN_UV_ERR		BIT(3)
+#define MII_INTEN_TEMP_ERR		BIT(1)
 
 #define MII_COMMSTAT			23
 #define MII_COMMSTAT_LINK_UP		BIT(15)
@@ -67,11 +78,15 @@
 #define MII_COMMCFG			27
 #define MII_COMMCFG_AUTO_OP		BIT(15)
 
+/* Configure REF_CLK as input in RMII mode */
+#define TJA110X_RMII_MODE_REFCLK_IN       BIT(0)
+
 struct tja11xx_priv {
 	char		*hwmon_name;
 	struct device	*hwmon_dev;
 	struct phy_device *phydev;
 	struct work_struct phy_register_work;
+	u32 flags;
 };
 
 struct tja11xx_phy_stats {
@@ -246,8 +261,34 @@ do_test:
 	return __genphy_config_aneg(phydev, changed);
 }
 
+static int tja11xx_get_interface_mode(struct phy_device *phydev)
+{
+	struct tja11xx_priv *priv = phydev->priv;
+	int mii_mode;
+
+	switch (phydev->interface) {
+	case PHY_INTERFACE_MODE_MII:
+		mii_mode = MII_CFG1_MII_MODE;
+		break;
+	case PHY_INTERFACE_MODE_REVMII:
+		mii_mode = MII_CFG1_REVMII_MODE;
+		break;
+	case PHY_INTERFACE_MODE_RMII:
+		if (priv->flags & TJA110X_RMII_MODE_REFCLK_IN)
+			mii_mode = MII_CFG1_RMII_MODE_REFCLK_IN;
+		else
+			mii_mode = MII_CFG1_RMII_MODE_REFCLK_OUT;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return mii_mode;
+}
+
 static int tja11xx_config_init(struct phy_device *phydev)
 {
+	u16 reg_mask, reg_val;
 	int ret;
 
 	ret = tja11xx_enable_reg_write(phydev);
@@ -260,15 +301,32 @@ static int tja11xx_config_init(struct phy_device *phydev)
 
 	switch (phydev->phy_id & PHY_ID_MASK) {
 	case PHY_ID_TJA1100:
-		ret = phy_modify(phydev, MII_CFG1,
-				 MII_CFG1_AUTO_OP | MII_CFG1_LED_MODE_MASK |
-				 MII_CFG1_LED_ENABLE,
-				 MII_CFG1_AUTO_OP | MII_CFG1_LED_MODE_LINKUP |
-				 MII_CFG1_LED_ENABLE);
+		reg_mask = MII_CFG1_AUTO_OP | MII_CFG1_LED_MODE_MASK |
+			   MII_CFG1_LED_ENABLE;
+		reg_val = MII_CFG1_AUTO_OP | MII_CFG1_LED_MODE_LINKUP |
+			  MII_CFG1_LED_ENABLE;
+
+		reg_mask |= MII_CFG1_INTERFACE_MODE_MASK;
+		ret = tja11xx_get_interface_mode(phydev);
+		if (ret < 0)
+			return ret;
+
+		reg_val |= (ret & 0xffff);
+		ret = phy_modify(phydev, MII_CFG1, reg_mask, reg_val);
 		if (ret)
 			return ret;
 		break;
 	case PHY_ID_TJA1101:
+		reg_mask = MII_CFG1_INTERFACE_MODE_MASK;
+		ret = tja11xx_get_interface_mode(phydev);
+		if (ret < 0)
+			return ret;
+
+		reg_val = ret & 0xffff;
+		ret = phy_modify(phydev, MII_CFG1, reg_mask, reg_val);
+		if (ret)
+			return ret;
+		fallthrough;
 	case PHY_ID_TJA1102:
 		ret = phy_set_bits(phydev, MII_COMMCFG, MII_COMMCFG_AUTO_OP);
 		if (ret)
@@ -439,15 +497,10 @@ static int tja11xx_hwmon_register(struct phy_device *phydev,
 				  struct tja11xx_priv *priv)
 {
 	struct device *dev = &phydev->mdio.dev;
-	int i;
 
-	priv->hwmon_name = devm_kstrdup(dev, dev_name(dev), GFP_KERNEL);
-	if (!priv->hwmon_name)
-		return -ENOMEM;
-
-	for (i = 0; priv->hwmon_name[i]; i++)
-		if (hwmon_is_bad_char(priv->hwmon_name[i]))
-			priv->hwmon_name[i] = '_';
+	priv->hwmon_name = devm_hwmon_sanitize_name(dev, dev_name(dev));
+	if (IS_ERR(priv->hwmon_name))
+		return PTR_ERR(priv->hwmon_name);
 
 	priv->hwmon_dev =
 		devm_hwmon_device_register_with_info(dev, priv->hwmon_name,
@@ -458,16 +511,36 @@ static int tja11xx_hwmon_register(struct phy_device *phydev,
 	return PTR_ERR_OR_ZERO(priv->hwmon_dev);
 }
 
+static int tja11xx_parse_dt(struct phy_device *phydev)
+{
+	struct device_node *node = phydev->mdio.dev.of_node;
+	struct tja11xx_priv *priv = phydev->priv;
+
+	if (!IS_ENABLED(CONFIG_OF_MDIO))
+		return 0;
+
+	if (of_property_read_bool(node, "nxp,rmii-refclk-in"))
+		priv->flags |= TJA110X_RMII_MODE_REFCLK_IN;
+
+	return 0;
+}
+
 static int tja11xx_probe(struct phy_device *phydev)
 {
 	struct device *dev = &phydev->mdio.dev;
 	struct tja11xx_priv *priv;
+	int ret;
 
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
 	priv->phydev = phydev;
+	phydev->priv = priv;
+
+	ret = tja11xx_parse_dt(phydev);
+	if (ret)
+		return ret;
 
 	return tja11xx_hwmon_register(phydev, priv);
 }
@@ -597,11 +670,49 @@ static int tja11xx_ack_interrupt(struct phy_device *phydev)
 static int tja11xx_config_intr(struct phy_device *phydev)
 {
 	int value = 0;
+	int err;
 
-	if (phydev->interrupts == PHY_INTERRUPT_ENABLED)
-		value = MII_INTEN_LINK_FAIL | MII_INTEN_LINK_UP;
+	if (phydev->interrupts == PHY_INTERRUPT_ENABLED) {
+		err = tja11xx_ack_interrupt(phydev);
+		if (err)
+			return err;
 
-	return phy_write(phydev, MII_INTEN, value);
+		value = MII_INTEN_LINK_FAIL | MII_INTEN_LINK_UP |
+			MII_INTEN_UV_ERR | MII_INTEN_TEMP_ERR;
+		err = phy_write(phydev, MII_INTEN, value);
+	} else {
+		err = phy_write(phydev, MII_INTEN, value);
+		if (err)
+			return err;
+
+		err = tja11xx_ack_interrupt(phydev);
+	}
+
+	return err;
+}
+
+static irqreturn_t tja11xx_handle_interrupt(struct phy_device *phydev)
+{
+	struct device *dev = &phydev->mdio.dev;
+	int irq_status;
+
+	irq_status = phy_read(phydev, MII_INTSRC);
+	if (irq_status < 0) {
+		phy_error(phydev);
+		return IRQ_NONE;
+	}
+
+	if (irq_status & MII_INTSRC_TEMP_ERR)
+		dev_warn(dev, "Overtemperature error detected (temp > 155C°).\n");
+	if (irq_status & MII_INTSRC_UV_ERR)
+		dev_warn(dev, "Undervoltage error detected.\n");
+
+	if (!(irq_status & MII_INTSRC_MASK))
+		return IRQ_NONE;
+
+	phy_trigger_machine(phydev);
+
+	return IRQ_HANDLED;
 }
 
 static int tja11xx_cable_test_start(struct phy_device *phydev)
@@ -747,8 +858,8 @@ static struct phy_driver tja11xx_driver[] = {
 		.get_sset_count = tja11xx_get_sset_count,
 		.get_strings	= tja11xx_get_strings,
 		.get_stats	= tja11xx_get_stats,
-		.ack_interrupt	= tja11xx_ack_interrupt,
 		.config_intr	= tja11xx_config_intr,
+		.handle_interrupt = tja11xx_handle_interrupt,
 		.cable_test_start = tja11xx_cable_test_start,
 		.cable_test_get_status = tja11xx_cable_test_get_status,
 	}, {
@@ -770,8 +881,8 @@ static struct phy_driver tja11xx_driver[] = {
 		.get_sset_count = tja11xx_get_sset_count,
 		.get_strings	= tja11xx_get_strings,
 		.get_stats	= tja11xx_get_stats,
-		.ack_interrupt	= tja11xx_ack_interrupt,
 		.config_intr	= tja11xx_config_intr,
+		.handle_interrupt = tja11xx_handle_interrupt,
 		.cable_test_start = tja11xx_cable_test_start,
 		.cable_test_get_status = tja11xx_cable_test_get_status,
 	}

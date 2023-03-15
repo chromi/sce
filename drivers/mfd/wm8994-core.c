@@ -40,7 +40,7 @@ static const struct mfd_cell wm8994_regulator_devs[] = {
 	},
 };
 
-static struct resource wm8994_codec_resources[] = {
+static const struct resource wm8994_codec_resources[] = {
 	{
 		.start = WM8994_IRQ_TEMP_SHUT,
 		.end   = WM8994_IRQ_TEMP_WARN,
@@ -48,7 +48,7 @@ static struct resource wm8994_codec_resources[] = {
 	},
 };
 
-static struct resource wm8994_gpio_resources[] = {
+static const struct resource wm8994_gpio_resources[] = {
 	{
 		.start = WM8994_IRQ_GPIO(1),
 		.end   = WM8994_IRQ_GPIO(11),
@@ -657,13 +657,11 @@ static int wm8994_i2c_probe(struct i2c_client *i2c,
 	return wm8994_device_init(wm8994, i2c->irq);
 }
 
-static int wm8994_i2c_remove(struct i2c_client *i2c)
+static void wm8994_i2c_remove(struct i2c_client *i2c)
 {
 	struct wm8994 *wm8994 = i2c_get_clientdata(i2c);
 
 	wm8994_device_exit(wm8994);
-
-	return 0;
 }
 
 static const struct i2c_device_id wm8994_i2c_id[] = {
@@ -683,7 +681,7 @@ static struct i2c_driver wm8994_i2c_driver = {
 	.driver = {
 		.name = "wm8994",
 		.pm = &wm8994_pm_ops,
-		.of_match_table = of_match_ptr(wm8994_of_match),
+		.of_match_table = wm8994_of_match,
 	},
 	.probe = wm8994_i2c_probe,
 	.remove = wm8994_i2c_remove,

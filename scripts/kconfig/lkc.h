@@ -6,6 +6,10 @@
 #ifndef LKC_H
 #define LKC_H
 
+#include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
+
 #include "expr.h"
 
 #ifdef __cplusplus
@@ -16,10 +20,6 @@ extern "C" {
 
 #define SRCTREE "srctree"
 
-#ifndef PACKAGE
-#define PACKAGE "linux"
-#endif
-
 #ifndef CONFIG_
 #define CONFIG_ "CONFIG_"
 #endif
@@ -29,16 +29,6 @@ static inline const char *CONFIG_prefix(void)
 }
 #undef CONFIG_
 #define CONFIG_ CONFIG_prefix()
-
-enum conf_def_mode {
-	def_default,
-	def_yes,
-	def_mod,
-	def_y2m,
-	def_m2y,
-	def_no,
-	def_random
-};
 
 extern int yylineno;
 void zconfdump(FILE *out);
@@ -51,10 +41,6 @@ const char *zconf_curname(void);
 
 /* confdata.c */
 const char *conf_get_configname(void);
-void sym_set_change_count(int count);
-void sym_add_change_count(int count);
-bool conf_set_all_new_symbols(enum conf_def_mode mode);
-void conf_rewrite_mod_or_yes(enum conf_def_mode mode);
 void set_all_choice_values(struct symbol *csym);
 
 /* confdata.c and expr.c */
@@ -103,9 +89,6 @@ void menu_add_visibility(struct expr *dep);
 struct property *menu_add_prompt(enum prop_type type, char *prompt, struct expr *dep);
 void menu_add_expr(enum prop_type type, struct expr *expr, struct expr *dep);
 void menu_add_symbol(enum prop_type type, struct symbol *sym, struct expr *dep);
-void menu_add_option_modules(void);
-void menu_add_option_defconfig_list(void);
-void menu_add_option_allnoconfig_y(void);
 void menu_finalize(struct menu *parent);
 void menu_set_type(int type);
 
@@ -115,7 +98,6 @@ bool menu_is_empty(struct menu *menu);
 bool menu_is_visible(struct menu *menu);
 bool menu_has_prompt(struct menu *menu);
 const char *menu_get_prompt(struct menu *menu);
-struct menu *menu_get_root_menu(struct menu *menu);
 struct menu *menu_get_parent_menu(struct menu *menu);
 bool menu_has_help(struct menu *menu);
 const char *menu_get_help(struct menu *menu);
@@ -139,11 +121,6 @@ static inline tristate sym_get_tristate_value(struct symbol *sym)
 static inline struct symbol *sym_get_choice_value(struct symbol *sym)
 {
 	return (struct symbol *)sym->curr.val;
-}
-
-static inline bool sym_set_choice_value(struct symbol *ch, struct symbol *chval)
-{
-	return sym_set_tristate_value(chval, yes);
 }
 
 static inline bool sym_is_choice(struct symbol *sym)

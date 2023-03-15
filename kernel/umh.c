@@ -27,6 +27,8 @@
 #include <linux/ptrace.h>
 #include <linux/async.h>
 #include <linux/uaccess.h>
+#include <linux/initrd.h>
+#include <linux/freezer.h>
 
 #include <trace/events/module.h>
 
@@ -107,6 +109,7 @@ static int call_usermodehelper_exec_async(void *data)
 
 	commit_creds(new);
 
+	wait_for_initramfs();
 	retval = kernel_execve(sub_info->path,
 			       (const char *const *)sub_info->argv,
 			       (const char *const *)sub_info->envp);
@@ -130,7 +133,7 @@ static void call_usermodehelper_exec_sync(struct subprocess_info *sub_info)
 
 	/* If SIGCLD is ignored do_wait won't populate the status. */
 	kernel_sigaction(SIGCHLD, SIG_DFL);
-	pid = kernel_thread(call_usermodehelper_exec_async, sub_info, SIGCHLD);
+	pid = user_mode_thread(call_usermodehelper_exec_async, sub_info, SIGCHLD);
 	if (pid < 0)
 		sub_info->retval = pid;
 	else
@@ -169,8 +172,8 @@ static void call_usermodehelper_exec_work(struct work_struct *work)
 		 * want to pollute current->children, and we need a parent
 		 * that always ignores SIGCHLD to ensure auto-reaping.
 		 */
-		pid = kernel_thread(call_usermodehelper_exec_async, sub_info,
-				    CLONE_PARENT | SIGCHLD);
+		pid = user_mode_thread(call_usermodehelper_exec_async, sub_info,
+				       CLONE_PARENT | SIGCHLD);
 		if (pid < 0) {
 			sub_info->retval = pid;
 			umh_complete(sub_info);
@@ -336,8 +339,8 @@ static void helper_unlock(void)
  * @argv: arg vector for process
  * @envp: environment for process
  * @gfp_mask: gfp mask for memory allocation
- * @cleanup: a cleanup function
  * @init: an init function
+ * @cleanup: a cleanup function
  * @data: arbitrary context sensitive data
  *
  * Returns either %NULL on allocation failure, or a subprocess_info
@@ -348,7 +351,7 @@ static void helper_unlock(void)
  * exec.  A non-zero return code causes the process to error out, exit,
  * and return the failure to the calling process
  *
- * The cleanup function is just before ethe subprocess_info is about to
+ * The cleanup function is just before the subprocess_info is about to
  * be freed.  This can be used for freeing the argv and envp.  The
  * Function must be runnable in either a process context or the
  * context in which call_usermodehelper_exec is called.
@@ -384,7 +387,7 @@ EXPORT_SYMBOL(call_usermodehelper_setup);
 
 /**
  * call_usermodehelper_exec - start a usermode application
- * @sub_info: information about the subprocessa
+ * @sub_info: information about the subprocess
  * @wait: wait for the application to finish and return status.
  *        when UMH_NO_WAIT don't wait at all, but you get no useful error back
  *        when the program couldn't be exec'ed. This makes it safe to call
@@ -401,6 +404,7 @@ EXPORT_SYMBOL(call_usermodehelper_setup);
  */
 int call_usermodehelper_exec(struct subprocess_info *sub_info, int wait)
 {
+	unsigned int state = TASK_UNINTERRUPTIBLE;
 	DECLARE_COMPLETION_ONSTACK(done);
 	int retval = 0;
 
@@ -434,18 +438,22 @@ int call_usermodehelper_exec(struct subprocess_info *sub_info, int wait)
 	if (wait == UMH_NO_WAIT)	/* task has freed sub_info */
 		goto unlock;
 
-	if (wait & UMH_KILLABLE) {
-		retval = wait_for_completion_killable(&done);
-		if (!retval)
-			goto wait_done;
+	if (wait & UMH_KILLABLE)
+		state |= TASK_KILLABLE;
 
+	if (wait & UMH_FREEZABLE)
+		state |= TASK_FREEZABLE;
+
+	retval = wait_for_completion_state(&done, state);
+	if (!retval)
+		goto wait_done;
+
+	if (wait & UMH_KILLABLE) {
 		/* umh_complete() will see NULL and free sub_info */
 		if (xchg(&sub_info->complete, NULL))
 			goto unlock;
-		/* fallthrough, umh_complete() was already called */
 	}
 
-	wait_for_completion(&done);
 wait_done:
 	retval = sub_info->retval;
 out:

@@ -117,8 +117,8 @@ int temac_indirect_busywait(struct temac_local *lp)
 	spin_until_cond(hard_acs_rdy_or_timeout(lp, timeout));
 	if (WARN_ON(!hard_acs_rdy(lp)))
 		return -ETIMEDOUT;
-	else
-		return 0;
+
+	return 0;
 }
 
 /*
@@ -261,7 +261,7 @@ static void temac_dma_dcr_out(struct temac_local *lp, int reg, u32 value)
  * I/O  functions
  */
 static int temac_dcr_setup(struct temac_local *lp, struct platform_device *op,
-				struct device_node *np)
+			   struct device_node *np)
 {
 	unsigned int dcrs;
 
@@ -286,7 +286,7 @@ static int temac_dcr_setup(struct temac_local *lp, struct platform_device *op,
  * such as with MicroBlaze and x86
  */
 static int temac_dcr_setup(struct temac_local *lp, struct platform_device *op,
-				struct device_node *np)
+			   struct device_node *np)
 {
 	return -1;
 }
@@ -307,11 +307,9 @@ static void temac_dma_bd_release(struct net_device *ndev)
 	for (i = 0; i < lp->rx_bd_num; i++) {
 		if (!lp->rx_skb[i])
 			break;
-		else {
-			dma_unmap_single(ndev->dev.parent, lp->rx_bd_v[i].phys,
-					XTE_MAX_JUMBO_FRAME_SIZE, DMA_FROM_DEVICE);
-			dev_kfree_skb(lp->rx_skb[i]);
-		}
+		dma_unmap_single(ndev->dev.parent, lp->rx_bd_v[i].phys,
+				 XTE_MAX_JUMBO_FRAME_SIZE, DMA_FROM_DEVICE);
+		dev_kfree_skb(lp->rx_skb[i]);
 	}
 	if (lp->rx_bd_v)
 		dma_free_coherent(ndev->dev.parent,
@@ -361,8 +359,9 @@ static int temac_dma_bd_init(struct net_device *ndev)
 		lp->rx_bd_v[i].next = cpu_to_be32(lp->rx_bd_p
 			+ sizeof(*lp->rx_bd_v) * ((i + 1) % lp->rx_bd_num));
 
-		skb = netdev_alloc_skb_ip_align(ndev,
-						XTE_MAX_JUMBO_FRAME_SIZE);
+		skb = __netdev_alloc_skb_ip_align(ndev,
+						  XTE_MAX_JUMBO_FRAME_SIZE,
+						  GFP_KERNEL);
 		if (!skb)
 			goto out;
 
@@ -429,7 +428,8 @@ static void temac_do_set_mac_address(struct net_device *ndev)
 				    (ndev->dev_addr[2] << 16) |
 				    (ndev->dev_addr[3] << 24));
 	/* There are reserved bits in EUAW1
-	 * so don't affect them Set MAC bits [47:32] in EUAW1 */
+	 * so don't affect them Set MAC bits [47:32] in EUAW1
+	 */
 	temac_indirect_out32_locked(lp, XTE_UAW1_OFFSET,
 				    (ndev->dev_addr[4] & 0x000000ff) |
 				    (ndev->dev_addr[5] << 8));
@@ -438,7 +438,7 @@ static void temac_do_set_mac_address(struct net_device *ndev)
 
 static int temac_init_mac_address(struct net_device *ndev, const void *address)
 {
-	ether_addr_copy(ndev->dev_addr, address);
+	eth_hw_addr_set(ndev, address);
 	if (!is_valid_ether_addr(ndev->dev_addr))
 		eth_hw_addr_random(ndev);
 	temac_do_set_mac_address(ndev);
@@ -451,7 +451,7 @@ static int temac_set_mac_address(struct net_device *ndev, void *p)
 
 	if (!is_valid_ether_addr(addr->sa_data))
 		return -EADDRNOTAVAIL;
-	memcpy(ndev->dev_addr, addr->sa_data, ETH_ALEN);
+	eth_hw_addr_set(ndev, addr->sa_data);
 	temac_do_set_mac_address(ndev);
 	return 0;
 }
@@ -529,66 +529,66 @@ static struct temac_option {
 	{
 		.opt = XTE_OPTION_JUMBO,
 		.reg = XTE_RXC1_OFFSET,
-		.m_or =XTE_RXC1_RXJMBO_MASK,
+		.m_or = XTE_RXC1_RXJMBO_MASK,
 	},
 	/* Turn on VLAN packet support for both Rx and Tx */
 	{
 		.opt = XTE_OPTION_VLAN,
 		.reg = XTE_TXC_OFFSET,
-		.m_or =XTE_TXC_TXVLAN_MASK,
+		.m_or = XTE_TXC_TXVLAN_MASK,
 	},
 	{
 		.opt = XTE_OPTION_VLAN,
 		.reg = XTE_RXC1_OFFSET,
-		.m_or =XTE_RXC1_RXVLAN_MASK,
+		.m_or = XTE_RXC1_RXVLAN_MASK,
 	},
 	/* Turn on FCS stripping on receive packets */
 	{
 		.opt = XTE_OPTION_FCS_STRIP,
 		.reg = XTE_RXC1_OFFSET,
-		.m_or =XTE_RXC1_RXFCS_MASK,
+		.m_or = XTE_RXC1_RXFCS_MASK,
 	},
 	/* Turn on FCS insertion on transmit packets */
 	{
 		.opt = XTE_OPTION_FCS_INSERT,
 		.reg = XTE_TXC_OFFSET,
-		.m_or =XTE_TXC_TXFCS_MASK,
+		.m_or = XTE_TXC_TXFCS_MASK,
 	},
 	/* Turn on length/type field checking on receive packets */
 	{
 		.opt = XTE_OPTION_LENTYPE_ERR,
 		.reg = XTE_RXC1_OFFSET,
-		.m_or =XTE_RXC1_RXLT_MASK,
+		.m_or = XTE_RXC1_RXLT_MASK,
 	},
 	/* Turn on flow control */
 	{
 		.opt = XTE_OPTION_FLOW_CONTROL,
 		.reg = XTE_FCC_OFFSET,
-		.m_or =XTE_FCC_RXFLO_MASK,
+		.m_or = XTE_FCC_RXFLO_MASK,
 	},
 	/* Turn on flow control */
 	{
 		.opt = XTE_OPTION_FLOW_CONTROL,
 		.reg = XTE_FCC_OFFSET,
-		.m_or =XTE_FCC_TXFLO_MASK,
+		.m_or = XTE_FCC_TXFLO_MASK,
 	},
 	/* Turn on promiscuous frame filtering (all frames are received ) */
 	{
 		.opt = XTE_OPTION_PROMISC,
 		.reg = XTE_AFM_OFFSET,
-		.m_or =XTE_AFM_EPPRM_MASK,
+		.m_or = XTE_AFM_EPPRM_MASK,
 	},
 	/* Enable transmitter if not already enabled */
 	{
 		.opt = XTE_OPTION_TXEN,
 		.reg = XTE_TXC_OFFSET,
-		.m_or =XTE_TXC_TXEN_MASK,
+		.m_or = XTE_TXC_TXEN_MASK,
 	},
 	/* Enable receiver? */
 	{
 		.opt = XTE_OPTION_RXEN,
 		.reg = XTE_RXC1_OFFSET,
-		.m_or =XTE_RXC1_RXEN_MASK,
+		.m_or = XTE_RXC1_RXEN_MASK,
 	},
 	{}
 };
@@ -640,7 +640,7 @@ static void temac_device_reset(struct net_device *ndev)
 		udelay(1);
 		if (--timeout == 0) {
 			dev_err(&ndev->dev,
-				"temac_device_reset RX reset timeout!!\n");
+				"%s RX reset timeout!!\n", __func__);
 			break;
 		}
 	}
@@ -652,7 +652,7 @@ static void temac_device_reset(struct net_device *ndev)
 		udelay(1);
 		if (--timeout == 0) {
 			dev_err(&ndev->dev,
-				"temac_device_reset TX reset timeout!!\n");
+				"%s TX reset timeout!!\n", __func__);
 			break;
 		}
 	}
@@ -671,7 +671,7 @@ static void temac_device_reset(struct net_device *ndev)
 		udelay(1);
 		if (--timeout == 0) {
 			dev_err(&ndev->dev,
-				"temac_device_reset DMA reset timeout!!\n");
+				"%s DMA reset timeout!!\n", __func__);
 			break;
 		}
 	}
@@ -679,7 +679,7 @@ static void temac_device_reset(struct net_device *ndev)
 
 	if (temac_dma_bd_init(ndev)) {
 		dev_err(&ndev->dev,
-				"temac_device_reset descriptor allocation failed\n");
+			"%s descriptor allocation failed\n", __func__);
 	}
 
 	spin_lock_irqsave(lp->indirect_lock, flags);
@@ -690,7 +690,8 @@ static void temac_device_reset(struct net_device *ndev)
 	spin_unlock_irqrestore(lp->indirect_lock, flags);
 
 	/* Sync default options with HW
-	 * but leave receiver and transmitter disabled.  */
+	 * but leave receiver and transmitter disabled.
+	 */
 	temac_setoptions(ndev,
 			 lp->options & ~(XTE_OPTION_TXEN | XTE_OPTION_RXEN));
 
@@ -722,9 +723,15 @@ static void temac_adjust_link(struct net_device *ndev)
 		mii_speed &= ~XTE_EMCFG_LINKSPD_MASK;
 
 		switch (phy->speed) {
-		case SPEED_1000: mii_speed |= XTE_EMCFG_LINKSPD_1000; break;
-		case SPEED_100: mii_speed |= XTE_EMCFG_LINKSPD_100; break;
-		case SPEED_10: mii_speed |= XTE_EMCFG_LINKSPD_10; break;
+		case SPEED_1000:
+			mii_speed |= XTE_EMCFG_LINKSPD_1000;
+			break;
+		case SPEED_100:
+			mii_speed |= XTE_EMCFG_LINKSPD_100;
+			break;
+		case SPEED_10:
+			mii_speed |= XTE_EMCFG_LINKSPD_10;
+			break;
 		}
 
 		/* Write new speed setting out to TEMAC */
@@ -774,12 +781,15 @@ static void temac_start_xmit_done(struct net_device *ndev)
 	stat = be32_to_cpu(cur_p->app0);
 
 	while (stat & STS_CTRL_APP0_CMPLT) {
+		/* Make sure that the other fields are read after bd is
+		 * released by dma
+		 */
+		rmb();
 		dma_unmap_single(ndev->dev.parent, be32_to_cpu(cur_p->phys),
 				 be32_to_cpu(cur_p->len), DMA_TO_DEVICE);
 		skb = (struct sk_buff *)ptr_from_txbd(cur_p);
 		if (skb)
 			dev_consume_skb_irq(skb);
-		cur_p->app0 = 0;
 		cur_p->app1 = 0;
 		cur_p->app2 = 0;
 		cur_p->app3 = 0;
@@ -787,6 +797,12 @@ static void temac_start_xmit_done(struct net_device *ndev)
 
 		ndev->stats.tx_packets++;
 		ndev->stats.tx_bytes += be32_to_cpu(cur_p->len);
+
+		/* app0 must be visible last, as it is used to flag
+		 * availability of the bd
+		 */
+		smp_mb();
+		cur_p->app0 = 0;
 
 		lp->tx_bd_ci++;
 		if (lp->tx_bd_ci >= lp->tx_bd_num)
@@ -813,6 +829,9 @@ static inline int temac_check_tx_bd_space(struct temac_local *lp, int num_frag)
 	do {
 		if (cur_p->app0)
 			return NETDEV_TX_BUSY;
+
+		/* Make sure to read next bd app0 after this one */
+		rmb();
 
 		tail++;
 		if (tail >= lp->tx_bd_num)
@@ -849,7 +868,7 @@ temac_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 		smp_mb();
 
 		/* Space might have just been freed - check again */
-		if (temac_check_tx_bd_space(lp, num_frag))
+		if (temac_check_tx_bd_space(lp, num_frag + 1))
 			return NETDEV_TX_BUSY;
 
 		netif_wake_queue(ndev);
@@ -876,7 +895,6 @@ temac_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 		return NETDEV_TX_OK;
 	}
 	cur_p->phys = cpu_to_be32(skb_dma_addr);
-	ptr_to_txbd((void *)skb, cur_p);
 
 	for (ii = 0; ii < num_frag; ii++) {
 		if (++lp->tx_bd_tail >= lp->tx_bd_num)
@@ -915,6 +933,11 @@ temac_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 	}
 	cur_p->app0 |= cpu_to_be32(STS_CTRL_APP0_EOP);
 
+	/* Mark last fragment with skb address, so it can be consumed
+	 * in temac_start_xmit_done()
+	 */
+	ptr_to_txbd((void *)skb, cur_p);
+
 	tail_p = lp->tx_bd_p + sizeof(*lp->tx_bd_v) * lp->tx_bd_tail;
 	lp->tx_bd_tail++;
 	if (lp->tx_bd_tail >= lp->tx_bd_num)
@@ -925,6 +948,9 @@ temac_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 	/* Kick off the transfer */
 	wmb();
 	lp->dma_out(lp, TX_TAILDESC_PTR, tail_p); /* DMA start */
+
+	if (temac_check_tx_bd_space(lp, MAX_SKB_FRAGS + 1))
+		netif_stop_queue(ndev);
 
 	return NETDEV_TX_OK;
 }
@@ -987,9 +1013,8 @@ static void ll_temac_recv(struct net_device *ndev)
 		if (((lp->temac_features & TEMAC_FEATURE_RX_CSUM) != 0) &&
 		    (skb->protocol == htons(ETH_P_IP)) &&
 		    (skb->len > 64)) {
-
 			/* Convert from device endianness (be32) to cpu
-			 * endiannes, and if necessary swap the bytes
+			 * endianness, and if necessary swap the bytes
 			 * (back) for proper IP checksum byte order
 			 * (be16).
 			 */
@@ -1218,7 +1243,7 @@ static const struct net_device_ops temac_netdev_ops = {
 	.ndo_set_rx_mode = temac_set_multicast_list,
 	.ndo_set_mac_address = temac_set_mac_address,
 	.ndo_validate_addr = eth_validate_addr,
-	.ndo_do_ioctl = phy_do_ioctl_running,
+	.ndo_eth_ioctl = phy_do_ioctl_running,
 #ifdef CONFIG_NET_POLL_CONTROLLER
 	.ndo_poll_controller = temac_poll_controller,
 #endif
@@ -1257,8 +1282,11 @@ static const struct attribute_group temac_attr_group = {
  * ethtool support
  */
 
-static void ll_temac_ethtools_get_ringparam(struct net_device *ndev,
-					    struct ethtool_ringparam *ering)
+static void
+ll_temac_ethtools_get_ringparam(struct net_device *ndev,
+				struct ethtool_ringparam *ering,
+				struct kernel_ethtool_ringparam *kernel_ering,
+				struct netlink_ext_ack *extack)
 {
 	struct temac_local *lp = netdev_priv(ndev);
 
@@ -1272,8 +1300,11 @@ static void ll_temac_ethtools_get_ringparam(struct net_device *ndev,
 	ering->tx_pending = lp->tx_bd_num;
 }
 
-static int ll_temac_ethtools_set_ringparam(struct net_device *ndev,
-					   struct ethtool_ringparam *ering)
+static int
+ll_temac_ethtools_set_ringparam(struct net_device *ndev,
+				struct ethtool_ringparam *ering,
+				struct kernel_ethtool_ringparam *kernel_ering,
+				struct netlink_ext_ack *extack)
 {
 	struct temac_local *lp = netdev_priv(ndev);
 
@@ -1291,8 +1322,11 @@ static int ll_temac_ethtools_set_ringparam(struct net_device *ndev,
 	return 0;
 }
 
-static int ll_temac_ethtools_get_coalesce(struct net_device *ndev,
-					  struct ethtool_coalesce *ec)
+static int
+ll_temac_ethtools_get_coalesce(struct net_device *ndev,
+			       struct ethtool_coalesce *ec,
+			       struct kernel_ethtool_coalesce *kernel_coal,
+			       struct netlink_ext_ack *extack)
 {
 	struct temac_local *lp = netdev_priv(ndev);
 
@@ -1303,8 +1337,11 @@ static int ll_temac_ethtools_get_coalesce(struct net_device *ndev,
 	return 0;
 }
 
-static int ll_temac_ethtools_set_coalesce(struct net_device *ndev,
-					  struct ethtool_coalesce *ec)
+static int
+ll_temac_ethtools_set_coalesce(struct net_device *ndev,
+			       struct ethtool_coalesce *ec,
+			       struct kernel_ethtool_coalesce *kernel_coal,
+			       struct netlink_ext_ack *extack)
 {
 	struct temac_local *lp = netdev_priv(ndev);
 
@@ -1351,7 +1388,7 @@ static int temac_probe(struct platform_device *pdev)
 	struct device_node *temac_np = dev_of_node(&pdev->dev), *dma_np;
 	struct temac_local *lp;
 	struct net_device *ndev;
-	const void *addr;
+	u8 addr[ETH_ALEN];
 	__be32 *p;
 	bool little_endian;
 	int rc = 0;
@@ -1402,6 +1439,8 @@ static int temac_probe(struct platform_device *pdev)
 		lp->indirect_lock = devm_kmalloc(&pdev->dev,
 						 sizeof(*lp->indirect_lock),
 						 GFP_KERNEL);
+		if (!lp->indirect_lock)
+			return -ENOMEM;
 		spin_lock_init(lp->indirect_lock);
 	}
 
@@ -1481,7 +1520,7 @@ static int temac_probe(struct platform_device *pdev)
 				of_node_put(dma_np);
 				return PTR_ERR(lp->sdma_regs);
 			}
-			if (of_get_property(dma_np, "little-endian", NULL)) {
+			if (of_property_read_bool(dma_np, "little-endian")) {
 				lp->dma_in = temac_dma_in32_le;
 				lp->dma_out = temac_dma_out32_le;
 			} else {
@@ -1529,21 +1568,17 @@ static int temac_probe(struct platform_device *pdev)
 	}
 
 	/* Error handle returned DMA RX and TX interrupts */
-	if (lp->rx_irq < 0) {
-		if (lp->rx_irq != -EPROBE_DEFER)
-			dev_err(&pdev->dev, "could not get DMA RX irq\n");
-		return lp->rx_irq;
-	}
-	if (lp->tx_irq < 0) {
-		if (lp->tx_irq != -EPROBE_DEFER)
-			dev_err(&pdev->dev, "could not get DMA TX irq\n");
-		return lp->tx_irq;
-	}
+	if (lp->rx_irq < 0)
+		return dev_err_probe(&pdev->dev, lp->rx_irq,
+				     "could not get DMA RX irq\n");
+	if (lp->tx_irq < 0)
+		return dev_err_probe(&pdev->dev, lp->tx_irq,
+				     "could not get DMA TX irq\n");
 
 	if (temac_np) {
 		/* Retrieve the MAC address */
-		addr = of_get_mac_address(temac_np);
-		if (IS_ERR(addr)) {
+		rc = of_get_mac_address(temac_np, addr);
+		if (rc) {
 			dev_err(&pdev->dev, "could not find MAC address\n");
 			return -ENODEV;
 		}

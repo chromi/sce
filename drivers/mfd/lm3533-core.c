@@ -358,7 +358,7 @@ static struct attribute *lm3533_attributes[] = {
 static umode_t lm3533_attr_is_visible(struct kobject *kobj,
 					     struct attribute *attr, int n)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
+	struct device *dev = kobj_to_dev(kobj);
 	struct lm3533 *lm3533 = dev_get_drvdata(dev);
 	struct device_attribute *dattr = to_dev_attr(attr);
 	struct lm3533_device_attribute *lattr = to_lm3533_dev_attr(dattr);
@@ -607,15 +607,13 @@ static int lm3533_i2c_probe(struct i2c_client *i2c,
 	return lm3533_device_init(lm3533);
 }
 
-static int lm3533_i2c_remove(struct i2c_client *i2c)
+static void lm3533_i2c_remove(struct i2c_client *i2c)
 {
 	struct lm3533 *lm3533 = i2c_get_clientdata(i2c);
 
 	dev_dbg(&i2c->dev, "%s\n", __func__);
 
 	lm3533_device_exit(lm3533);
-
-	return 0;
 }
 
 static const struct i2c_device_id lm3533_i2c_ids[] = {

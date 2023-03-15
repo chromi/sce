@@ -127,13 +127,13 @@ static int isl29003_set_resolution(struct i2c_client *client, int res)
 static int isl29003_get_mode(struct i2c_client *client)
 {
 	return __isl29003_read_reg(client, ISL29003_REG_COMMAND,
-		ISL29003_RES_MASK, ISL29003_RES_SHIFT);
+		ISL29003_MODE_MASK, ISL29003_MODE_SHIFT);
 }
 
 static int isl29003_set_mode(struct i2c_client *client, int mode)
 {
 	return __isl29003_write_reg(client, ISL29003_REG_COMMAND,
-		ISL29003_RES_MASK, ISL29003_RES_SHIFT, mode);
+		ISL29003_MODE_MASK, ISL29003_MODE_SHIFT, mode);
 }
 
 /* power_state */
@@ -410,12 +410,11 @@ exit_kfree:
 	return err;
 }
 
-static int isl29003_remove(struct i2c_client *client)
+static void isl29003_remove(struct i2c_client *client)
 {
 	sysfs_remove_group(&client->dev.kobj, &isl29003_attr_group);
 	isl29003_set_power_state(client, 0);
 	kfree(i2c_get_clientdata(client));
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP

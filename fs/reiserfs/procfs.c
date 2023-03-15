@@ -411,7 +411,7 @@ int reiserfs_proc_info_init(struct super_block *sb)
 	char *s;
 
 	/* Some block devices use /'s */
-	strlcpy(b, sb->s_id, BDEVNAME_SIZE);
+	strscpy(b, sb->s_id, BDEVNAME_SIZE);
 	s = strchr(b, '/');
 	if (s)
 		*s = '!';
@@ -441,7 +441,7 @@ int reiserfs_proc_info_done(struct super_block *sb)
 		char *s;
 
 		/* Some block devices use /'s */
-		strlcpy(b, sb->s_id, BDEVNAME_SIZE);
+		strscpy(b, sb->s_id, BDEVNAME_SIZE);
 		s = strchr(b, '/');
 		if (s)
 			*s = '!';
@@ -487,14 +487,4 @@ int reiserfs_proc_info_global_done(void)
  * I accept terms and conditions stated in the Legal Agreement
  * (available at http://www.namesys.com/legalese.html)
  *
- */
-
-/*
- * Make Linus happy.
- * Local variables:
- * c-indentation-style: "K&R"
- * mode-name: "LC"
- * c-basic-offset: 8
- * tab-width: 8
- * End:
  */

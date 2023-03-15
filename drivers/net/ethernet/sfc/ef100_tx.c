@@ -54,8 +54,6 @@ static bool ef100_tx_can_tso(struct efx_tx_queue *tx_queue, struct sk_buff *skb)
 	struct efx_nic *efx = tx_queue->efx;
 	struct ef100_nic_data *nic_data;
 	struct efx_tx_buffer *buffer;
-	struct tcphdr *tcphdr;
-	struct iphdr *iphdr;
 	size_t header_len;
 	u32 mss;
 
@@ -98,20 +96,6 @@ static bool ef100_tx_can_tso(struct efx_tx_queue *tx_queue, struct sk_buff *skb)
 	buffer->unmap_len = 0;
 	buffer->skb = skb;
 	++tx_queue->insert_count;
-
-	/* Adjust the TCP checksum to exclude the total length, since we set
-	 * ED_INNER_IP_LEN in the descriptor.
-	 */
-	tcphdr = tcp_hdr(skb);
-	if (skb_is_gso_v6(skb)) {
-		tcphdr->check = ~csum_ipv6_magic(&ipv6_hdr(skb)->saddr,
-						 &ipv6_hdr(skb)->daddr,
-						 0, IPPROTO_TCP, 0);
-	} else {
-		iphdr = ip_hdr(skb);
-		tcphdr->check = ~csum_tcpudp_magic(iphdr->saddr, iphdr->daddr,
-						   0, IPPROTO_TCP, 0);
-	}
 	return true;
 }
 
@@ -203,34 +187,66 @@ static void ef100_make_tso_desc(struct efx_nic *efx,
 				struct efx_tx_buffer *buffer, efx_oword_t *txd,
 				unsigned int segment_count)
 {
-	u32 mangleid = (efx->net_dev->features & NETIF_F_TSO_MANGLEID) ||
-		skb_shinfo(skb)->gso_type & SKB_GSO_TCP_FIXEDID ?
-		ESE_GZ_TX_DESC_IP4_ID_NO_OP :
-		ESE_GZ_TX_DESC_IP4_ID_INC_MOD16;
-	u16 vlan_enable =  efx->net_dev->features & NETIF_F_HW_VLAN_CTAG_TX ?
-		skb_vlan_tag_present(skb) : 0;
+	bool gso_partial = skb_shinfo(skb)->gso_type & SKB_GSO_PARTIAL;
 	unsigned int len, ip_offset, tcp_offset, payload_segs;
+	u32 mangleid = ESE_GZ_TX_DESC_IP4_ID_INC_MOD16;
+	unsigned int outer_ip_offset, outer_l4_offset;
 	u16 vlan_tci = skb_vlan_tag_get(skb);
 	u32 mss = skb_shinfo(skb)->gso_size;
+	bool encap = skb->encapsulation;
+	bool udp_encap = false;
+	u16 vlan_enable = 0;
+	struct tcphdr *tcp;
+	bool outer_csum;
+	u32 paylen;
+
+	if (skb_shinfo(skb)->gso_type & SKB_GSO_TCP_FIXEDID)
+		mangleid = ESE_GZ_TX_DESC_IP4_ID_NO_OP;
+	if (efx->net_dev->features & NETIF_F_HW_VLAN_CTAG_TX)
+		vlan_enable = skb_vlan_tag_present(skb);
 
 	len = skb->len - buffer->len;
 	/* We use 1 for the TSO descriptor and 1 for the header */
 	payload_segs = segment_count - 2;
-	ip_offset =  skb_network_offset(skb);
-	tcp_offset = skb_transport_offset(skb);
+	if (encap) {
+		outer_ip_offset = skb_network_offset(skb);
+		outer_l4_offset = skb_transport_offset(skb);
+		ip_offset = skb_inner_network_offset(skb);
+		tcp_offset = skb_inner_transport_offset(skb);
+		if (skb_shinfo(skb)->gso_type &
+		    (SKB_GSO_UDP_TUNNEL | SKB_GSO_UDP_TUNNEL_CSUM))
+			udp_encap = true;
+	} else {
+		ip_offset =  skb_network_offset(skb);
+		tcp_offset = skb_transport_offset(skb);
+		outer_ip_offset = outer_l4_offset = 0;
+	}
+	outer_csum = skb_shinfo(skb)->gso_type & SKB_GSO_UDP_TUNNEL_CSUM;
 
-	EFX_POPULATE_OWORD_13(*txd,
+	/* subtract TCP payload length from inner checksum */
+	tcp = (void *)skb->data + tcp_offset;
+	paylen = skb->len - tcp_offset;
+	csum_replace_by_diff(&tcp->check, (__force __wsum)htonl(paylen));
+
+	EFX_POPULATE_OWORD_19(*txd,
 			      ESF_GZ_TX_DESC_TYPE, ESE_GZ_TX_DESC_TYPE_TSO,
 			      ESF_GZ_TX_TSO_MSS, mss,
 			      ESF_GZ_TX_TSO_HDR_NUM_SEGS, 1,
 			      ESF_GZ_TX_TSO_PAYLOAD_NUM_SEGS, payload_segs,
 			      ESF_GZ_TX_TSO_HDR_LEN_W, buffer->len >> 1,
 			      ESF_GZ_TX_TSO_PAYLOAD_LEN, len,
+			      ESF_GZ_TX_TSO_CSO_OUTER_L4, outer_csum,
 			      ESF_GZ_TX_TSO_CSO_INNER_L4, 1,
 			      ESF_GZ_TX_TSO_INNER_L3_OFF_W, ip_offset >> 1,
 			      ESF_GZ_TX_TSO_INNER_L4_OFF_W, tcp_offset >> 1,
 			      ESF_GZ_TX_TSO_ED_INNER_IP4_ID, mangleid,
 			      ESF_GZ_TX_TSO_ED_INNER_IP_LEN, 1,
+			      ESF_GZ_TX_TSO_OUTER_L3_OFF_W, outer_ip_offset >> 1,
+			      ESF_GZ_TX_TSO_OUTER_L4_OFF_W, outer_l4_offset >> 1,
+			      ESF_GZ_TX_TSO_ED_OUTER_UDP_LEN, udp_encap && !gso_partial,
+			      ESF_GZ_TX_TSO_ED_OUTER_IP_LEN, encap && !gso_partial,
+			      ESF_GZ_TX_TSO_ED_OUTER_IP4_ID, encap ? mangleid :
+								     ESE_GZ_TX_DESC_IP4_ID_NO_OP,
 			      ESF_GZ_TX_TSO_VLAN_INSERT_EN, vlan_enable,
 			      ESF_GZ_TX_TSO_VLAN_INSERT_TCI, vlan_tci
 		);
@@ -238,7 +254,8 @@ static void ef100_make_tso_desc(struct efx_nic *efx,
 
 static void ef100_tx_make_descriptors(struct efx_tx_queue *tx_queue,
 				      const struct sk_buff *skb,
-				      unsigned int segment_count)
+				      unsigned int segment_count,
+				      struct efx_rep *efv)
 {
 	unsigned int old_write_count = tx_queue->write_count;
 	unsigned int new_write_count = old_write_count;
@@ -255,6 +272,20 @@ static void ef100_tx_make_descriptors(struct efx_tx_queue *tx_queue,
 		next_desc_type = ESE_GZ_TX_DESC_TYPE_TSO;
 	else
 		next_desc_type = ESE_GZ_TX_DESC_TYPE_SEND;
+
+	if (unlikely(efv)) {
+		/* Create TX override descriptor */
+		write_ptr = new_write_count & tx_queue->ptr_mask;
+		txd = ef100_tx_desc(tx_queue, write_ptr);
+		++new_write_count;
+
+		tx_queue->packet_write_count = new_write_count;
+		EFX_POPULATE_OWORD_3(*txd,
+				     ESF_GZ_TX_DESC_TYPE, ESE_GZ_TX_DESC_TYPE_PREFIX,
+				     ESF_GZ_TX_PREFIX_EGRESS_MPORT, efv->mport,
+				     ESF_GZ_TX_PREFIX_EGRESS_MPORT_EN, 1);
+		nr_descs--;
+	}
 
 	/* if it's a raw write (such as XDP) then always SEND single frames */
 	if (!skb)
@@ -290,6 +321,9 @@ static void ef100_tx_make_descriptors(struct efx_tx_queue *tx_queue,
 		/* if it's a raw write (such as XDP) then always SEND */
 		next_desc_type = skb ? ESE_GZ_TX_DESC_TYPE_SEG :
 				       ESE_GZ_TX_DESC_TYPE_SEND;
+		/* mark as an EFV buffer if applicable */
+		if (unlikely(efv))
+			buffer->flags |= EFX_TX_BUF_EFV;
 
 	} while (new_write_count != tx_queue->insert_count);
 
@@ -308,7 +342,7 @@ static void ef100_tx_make_descriptors(struct efx_tx_queue *tx_queue,
 
 void ef100_tx_write(struct efx_tx_queue *tx_queue)
 {
-	ef100_tx_make_descriptors(tx_queue, NULL, 0);
+	ef100_tx_make_descriptors(tx_queue, NULL, 0, NULL);
 	ef100_tx_push_buffers(tx_queue);
 }
 
@@ -335,6 +369,12 @@ void ef100_ev_tx(struct efx_channel *channel, const efx_qword_t *p_event)
  */
 int ef100_enqueue_skb(struct efx_tx_queue *tx_queue, struct sk_buff *skb)
 {
+	return __ef100_enqueue_skb(tx_queue, skb, NULL);
+}
+
+int __ef100_enqueue_skb(struct efx_tx_queue *tx_queue, struct sk_buff *skb,
+			struct efx_rep *efv)
+{
 	unsigned int old_insert_count = tx_queue->insert_count;
 	struct efx_nic *efx = tx_queue->efx;
 	bool xmit_more = netdev_xmit_more();
@@ -360,15 +400,63 @@ int ef100_enqueue_skb(struct efx_tx_queue *tx_queue, struct sk_buff *skb)
 			return 0;
 	}
 
+	if (unlikely(efv)) {
+		struct efx_tx_buffer *buffer = __efx_tx_queue_get_insert_buffer(tx_queue);
+
+		/* Drop representor packets if the queue is stopped.
+		 * We currently don't assert backoff to representors so this is
+		 * to make sure representor traffic can't starve the main
+		 * net device.
+		 * And, of course, if there are no TX descriptors left.
+		 */
+		if (netif_tx_queue_stopped(tx_queue->core_txq) ||
+		    unlikely(efx_tx_buffer_in_use(buffer))) {
+			atomic64_inc(&efv->stats.tx_errors);
+			rc = -ENOSPC;
+			goto err;
+		}
+
+		/* Also drop representor traffic if it could cause us to
+		 * stop the queue. If we assert backoff and we haven't
+		 * received traffic on the main net device recently then the
+		 * TX watchdog can go off erroneously.
+		 */
+		fill_level = efx_channel_tx_old_fill_level(tx_queue->channel);
+		fill_level += efx_tx_max_skb_descs(efx);
+		if (fill_level > efx->txq_stop_thresh) {
+			struct efx_tx_queue *txq2;
+
+			/* Refresh cached fill level and re-check */
+			efx_for_each_channel_tx_queue(txq2, tx_queue->channel)
+				txq2->old_read_count = READ_ONCE(txq2->read_count);
+
+			fill_level = efx_channel_tx_old_fill_level(tx_queue->channel);
+			fill_level += efx_tx_max_skb_descs(efx);
+			if (fill_level > efx->txq_stop_thresh) {
+				atomic64_inc(&efv->stats.tx_errors);
+				rc = -ENOSPC;
+				goto err;
+			}
+		}
+
+		buffer->flags = EFX_TX_BUF_OPTION | EFX_TX_BUF_EFV;
+		tx_queue->insert_count++;
+	}
+
 	/* Map for DMA and create descriptors */
 	rc = efx_tx_map_data(tx_queue, skb, segments);
 	if (rc)
 		goto err;
-	ef100_tx_make_descriptors(tx_queue, skb, segments);
+	ef100_tx_make_descriptors(tx_queue, skb, segments, efv);
 
 	fill_level = efx_channel_tx_old_fill_level(tx_queue->channel);
 	if (fill_level > efx->txq_stop_thresh) {
 		struct efx_tx_queue *txq2;
+
+		/* Because of checks above, representor traffic should
+		 * not be able to stop the queue.
+		 */
+		WARN_ON(efv);
 
 		netif_tx_stop_queue(tx_queue->core_txq);
 		/* Re-read after a memory barrier in case we've raced with
@@ -388,8 +476,12 @@ int ef100_enqueue_skb(struct efx_tx_queue *tx_queue, struct sk_buff *skb)
 	/* If xmit_more then we don't need to push the doorbell, unless there
 	 * are 256 descriptors already queued in which case we have to push to
 	 * ensure we never push more than 256 at once.
+	 *
+	 * Always push for representor traffic, and don't account it to parent
+	 * PF netdevice's BQL.
 	 */
-	if (__netdev_tx_sent_queue(tx_queue->core_txq, skb->len, xmit_more) ||
+	if (unlikely(efv) ||
+	    __netdev_tx_sent_queue(tx_queue->core_txq, skb->len, xmit_more) ||
 	    tx_queue->write_count - tx_queue->notify_count > 255)
 		ef100_tx_push_buffers(tx_queue);
 

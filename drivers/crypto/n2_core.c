@@ -15,7 +15,8 @@
 #include <linux/interrupt.h>
 #include <linux/crypto.h>
 #include <crypto/md5.h>
-#include <crypto/sha.h>
+#include <crypto/sha1.h>
+#include <crypto/sha2.h>
 #include <crypto/aes.h>
 #include <crypto/internal/des.h>
 #include <linux/mutex.h>
@@ -1493,7 +1494,7 @@ static void n2_unregister_algs(void)
  *
  * So we have to back-translate, going through the 'intr' and 'ino'
  * property tables of the n2cp MDESC node, matching it with the OF
- * 'interrupts' property entries, in order to to figure out which
+ * 'interrupts' property entries, in order to figure out which
  * devino goes to which already-translated IRQ.
  */
 static int find_devino_index(struct platform_device *dev, struct spu_mdesc_info *ip,

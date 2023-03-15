@@ -2,11 +2,6 @@
 #include <linux/tcp.h>
 #include <net/tcp.h>
 
-static bool tcp_rack_sent_after(u64 t1, u64 t2, u32 seq1, u32 seq2)
-{
-	return t1 > t2 || (t1 == t2 && after(seq1, seq2));
-}
-
 static u32 tcp_rack_reo_wnd(const struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -19,7 +14,8 @@ static u32 tcp_rack_reo_wnd(const struct sock *sk)
 			return 0;
 
 		if (tp->sacked_out >= tp->reordering &&
-		    !(sock_net(sk)->ipv4.sysctl_tcp_recovery & TCP_RACK_NO_DUPTHRESH))
+		    !(READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_recovery) &
+		      TCP_RACK_NO_DUPTHRESH))
 			return 0;
 	}
 
@@ -77,9 +73,9 @@ static void tcp_rack_detect_loss(struct sock *sk, u32 *reo_timeout)
 		    !(scb->sacked & TCPCB_SACKED_RETRANS))
 			continue;
 
-		if (!tcp_rack_sent_after(tp->rack.mstamp,
-					 tcp_skb_timestamp_us(skb),
-					 tp->rack.end_seq, scb->end_seq))
+		if (!tcp_skb_sent_after(tp->rack.mstamp,
+					tcp_skb_timestamp_us(skb),
+					tp->rack.end_seq, scb->end_seq))
 			break;
 
 		/* A packet is lost if it has not been s/acked beyond
@@ -96,13 +92,13 @@ static void tcp_rack_detect_loss(struct sock *sk, u32 *reo_timeout)
 	}
 }
 
-void tcp_rack_mark_lost(struct sock *sk)
+bool tcp_rack_mark_lost(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	u32 timeout;
 
 	if (!tp->rack.advanced)
-		return;
+		return false;
 
 	/* Reset the advanced flag to avoid unnecessary queue scanning */
 	tp->rack.advanced = 0;
@@ -112,6 +108,7 @@ void tcp_rack_mark_lost(struct sock *sk)
 		inet_csk_reset_xmit_timer(sk, ICSK_TIME_REO_TIMEOUT,
 					  timeout, inet_csk(sk)->icsk_rto);
 	}
+	return !!timeout;
 }
 
 /* Record the most recently (re)sent time among the (s)acked packets
@@ -139,8 +136,8 @@ void tcp_rack_advance(struct tcp_sock *tp, u8 sacked, u32 end_seq,
 	}
 	tp->rack.advanced = 1;
 	tp->rack.rtt_us = rtt_us;
-	if (tcp_rack_sent_after(xmit_time, tp->rack.mstamp,
-				end_seq, tp->rack.end_seq)) {
+	if (tcp_skb_sent_after(xmit_time, tp->rack.mstamp,
+			       end_seq, tp->rack.end_seq)) {
 		tp->rack.mstamp = xmit_time;
 		tp->rack.end_seq = end_seq;
 	}
@@ -153,6 +150,7 @@ void tcp_rack_reo_timeout(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	u32 timeout, prior_inflight;
+	u32 lost = tp->lost;
 
 	prior_inflight = tcp_packets_in_flight(tp);
 	tcp_rack_detect_loss(sk, &timeout);
@@ -160,7 +158,7 @@ void tcp_rack_reo_timeout(struct sock *sk)
 		if (inet_csk(sk)->icsk_ca_state != TCP_CA_Recovery) {
 			tcp_enter_recovery(sk, false);
 			if (!inet_csk(sk)->icsk_ca_ops->cong_control)
-				tcp_cwnd_reduction(sk, 1, 0);
+				tcp_cwnd_reduction(sk, 1, tp->lost - lost, 0);
 		}
 		tcp_xmit_retransmit_queue(sk);
 	}
@@ -170,7 +168,8 @@ void tcp_rack_reo_timeout(struct sock *sk)
 
 /* Updates the RACK's reo_wnd based on DSACK and no. of recoveries.
  *
- * If DSACK is received, increment reo_wnd by min_rtt/4 (upper bounded
+ * If a DSACK is received that seems like it may have been due to reordering
+ * triggering fast recovery, increment reo_wnd by min_rtt/4 (upper bounded
  * by srtt), since there is possibility that spurious retransmission was
  * due to reordering delay longer than reo_wnd.
  *
@@ -189,7 +188,8 @@ void tcp_rack_update_reo_wnd(struct sock *sk, struct rate_sample *rs)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
-	if (sock_net(sk)->ipv4.sysctl_tcp_recovery & TCP_RACK_STATIC_REO_WND ||
+	if ((READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_recovery) &
+	     TCP_RACK_STATIC_REO_WND) ||
 	    !rs->prior_delivered)
 		return;
 
