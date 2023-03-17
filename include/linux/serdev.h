@@ -7,6 +7,7 @@
 
 #include <linux/types.h>
 #include <linux/device.h>
+#include <linux/uaccess.h>
 #include <linux/termios.h>
 #include <linux/delay.h>
 
@@ -326,5 +327,19 @@ static inline int serdev_tty_port_unregister(struct tty_port *port)
 	return -ENODEV;
 }
 #endif /* CONFIG_SERIAL_DEV_CTRL_TTYPORT */
+
+struct acpi_resource;
+struct acpi_resource_uart_serialbus;
+
+#ifdef CONFIG_ACPI
+bool serdev_acpi_get_uart_resource(struct acpi_resource *ares,
+				   struct acpi_resource_uart_serialbus **uart);
+#else
+static inline bool serdev_acpi_get_uart_resource(struct acpi_resource *ares,
+						 struct acpi_resource_uart_serialbus **uart)
+{
+	return false;
+}
+#endif /* CONFIG_ACPI */
 
 #endif /*_LINUX_SERDEV_H */

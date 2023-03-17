@@ -1,5 +1,5 @@
+// SPDX-License-Identifier: LGPL-2.1
 /*
- *   fs/cifs/cifsencrypt.c
  *
  *   Encryption and hashing operations relating to NTLM, NTLMv2.  See MS-NLMP
  *   for more detailed information
@@ -7,19 +7,6 @@
  *   Copyright (C) International Business Machines  Corp., 2005,2013
  *   Author(s): Steve French (sfrench@us.ibm.com)
  *
- *   This library is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU Lesser General Public License as published
- *   by the Free Software Foundation; either version 2.1 of the License, or
- *   (at your option) any later version.
- *
- *   This library is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See
- *   the GNU Lesser General Public License for more details.
- *
- *   You should have received a copy of the GNU Lesser General Public License
- *   along with this library; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
 #include <linux/fs.h>
@@ -34,7 +21,7 @@
 #include <linux/random.h>
 #include <linux/highmem.h>
 #include <linux/fips.h>
-#include <crypto/arc4.h>
+#include "../smbfs_common/arc4.h"
 #include <crypto/aead.h>
 
 int __cifs_calc_signature(struct smb_rqst *rqst,
@@ -45,10 +32,9 @@ int __cifs_calc_signature(struct smb_rqst *rqst,
 	int rc;
 	struct kvec *iov = rqst->rq_iov;
 	int n_vec = rqst->rq_nvec;
-	int is_smb2 = server->vals->header_preamble_size == 0;
 
 	/* iov[0] is actual data and not the rfc1002 length for SMB2+ */
-	if (is_smb2) {
+	if (!is_smb1(server)) {
 		if (iov[0].iov_len <= 4)
 			return -EIO;
 		i = 0;
@@ -117,26 +103,24 @@ static int cifs_calc_signature(struct smb_rqst *rqst,
 	if (!rqst->rq_iov || !signature || !server)
 		return -EINVAL;
 
-	rc = cifs_alloc_hash("md5", &server->secmech.md5,
-			     &server->secmech.sdescmd5);
+	rc = cifs_alloc_hash("md5", &server->secmech.md5);
 	if (rc)
 		return -1;
 
-	rc = crypto_shash_init(&server->secmech.sdescmd5->shash);
+	rc = crypto_shash_init(server->secmech.md5);
 	if (rc) {
 		cifs_dbg(VFS, "%s: Could not init md5\n", __func__);
 		return rc;
 	}
 
-	rc = crypto_shash_update(&server->secmech.sdescmd5->shash,
+	rc = crypto_shash_update(server->secmech.md5,
 		server->session_key.response, server->session_key.len);
 	if (rc) {
 		cifs_dbg(VFS, "%s: Could not update with response\n", __func__);
 		return rc;
 	}
 
-	return __cifs_calc_signature(rqst, server, signature,
-				     &server->secmech.sdescmd5->shash);
+	return __cifs_calc_signature(rqst, server, signature, server->secmech.md5);
 }
 
 /* must be called with server->srv_mutex held */
@@ -154,9 +138,13 @@ int cifs_sign_rqst(struct smb_rqst *rqst, struct TCP_Server_Info *server,
 	if ((cifs_pdu == NULL) || (server == NULL))
 		return -EINVAL;
 
+	spin_lock(&server->srv_lock);
 	if (!(cifs_pdu->Flags2 & SMBFLG2_SECURITY_SIGNATURE) ||
-	    server->tcpStatus == CifsNeedNegotiate)
+	    server->tcpStatus == CifsNeedNegotiate) {
+		spin_unlock(&server->srv_lock);
 		return rc;
+	}
+	spin_unlock(&server->srv_lock);
 
 	if (!server->session_estab) {
 		memcpy(cifs_pdu->Signature.SecuritySignature, "BSRSPYL", 8);
@@ -245,9 +233,9 @@ int cifs_verify_signature(struct smb_rqst *rqst,
 					cpu_to_le32(expected_sequence_number);
 	cifs_pdu->Signature.Sequence.Reserved = 0;
 
-	mutex_lock(&server->srv_mutex);
+	cifs_server_lock(server);
 	rc = cifs_calc_signature(rqst, server, what_we_think_sig_should_be);
-	mutex_unlock(&server->srv_mutex);
+	cifs_server_unlock(server);
 
 	if (rc)
 		return rc;
@@ -261,87 +249,6 @@ int cifs_verify_signature(struct smb_rqst *rqst,
 		return 0;
 
 }
-
-/* first calculate 24 bytes ntlm response and then 16 byte session key */
-int setup_ntlm_response(struct cifs_ses *ses, const struct nls_table *nls_cp)
-{
-	int rc = 0;
-	unsigned int temp_len = CIFS_SESS_KEY_SIZE + CIFS_AUTH_RESP_SIZE;
-	char temp_key[CIFS_SESS_KEY_SIZE];
-
-	if (!ses)
-		return -EINVAL;
-
-	ses->auth_key.response = kmalloc(temp_len, GFP_KERNEL);
-	if (!ses->auth_key.response)
-		return -ENOMEM;
-
-	ses->auth_key.len = temp_len;
-
-	rc = SMBNTencrypt(ses->password, ses->server->cryptkey,
-			ses->auth_key.response + CIFS_SESS_KEY_SIZE, nls_cp);
-	if (rc) {
-		cifs_dbg(FYI, "%s Can't generate NTLM response, error: %d\n",
-			 __func__, rc);
-		return rc;
-	}
-
-	rc = E_md4hash(ses->password, temp_key, nls_cp);
-	if (rc) {
-		cifs_dbg(FYI, "%s Can't generate NT hash, error: %d\n",
-			 __func__, rc);
-		return rc;
-	}
-
-	rc = mdfour(ses->auth_key.response, temp_key, CIFS_SESS_KEY_SIZE);
-	if (rc)
-		cifs_dbg(FYI, "%s Can't generate NTLM session key, error: %d\n",
-			 __func__, rc);
-
-	return rc;
-}
-
-#ifdef CONFIG_CIFS_WEAK_PW_HASH
-int calc_lanman_hash(const char *password, const char *cryptkey, bool encrypt,
-			char *lnm_session_key)
-{
-	int i, len;
-	int rc;
-	char password_with_pad[CIFS_ENCPWD_SIZE] = {0};
-
-	if (password) {
-		for (len = 0; len < CIFS_ENCPWD_SIZE; len++)
-			if (!password[len])
-				break;
-
-		memcpy(password_with_pad, password, len);
-	}
-
-	if (!encrypt && global_secflags & CIFSSEC_MAY_PLNTXT) {
-		memcpy(lnm_session_key, password_with_pad,
-			CIFS_ENCPWD_SIZE);
-		return 0;
-	}
-
-	/* calculate old style session key */
-	/* calling toupper is less broken than repeatedly
-	calling nls_toupper would be since that will never
-	work for UTF8, but neither handles multibyte code pages
-	but the only alternative would be converting to UCS-16 (Unicode)
-	(using a routine something like UniStrupr) then
-	uppercasing and then converting back from Unicode - which
-	would only worth doing it if we knew it were utf8. Basically
-	utf8 and other multibyte codepages each need their own strupper
-	function since a byte at a time will ont work. */
-
-	for (i = 0; i < CIFS_ENCPWD_SIZE; i++)
-		password_with_pad[i] = toupper(password_with_pad[i]);
-
-	rc = SMBencrypt(password_with_pad, cryptkey, lnm_session_key);
-
-	return rc;
-}
-#endif /* CIFS_WEAK_PW_HASH */
 
 /* Build a proper attribute value/target info pairs blob.
  * Fill in netbios and dns domain name and workstation name
@@ -503,7 +410,7 @@ static int calc_ntlmv2_hash(struct cifs_ses *ses, char *ntlmv2_hash,
 	wchar_t *domain;
 	wchar_t *server;
 
-	if (!ses->server->secmech.sdeschmacmd5) {
+	if (!ses->server->secmech.hmacmd5) {
 		cifs_dbg(VFS, "%s: can't generate ntlmv2 hash\n", __func__);
 		return -1;
 	}
@@ -511,14 +418,14 @@ static int calc_ntlmv2_hash(struct cifs_ses *ses, char *ntlmv2_hash,
 	/* calculate md4 hash of password */
 	E_md4hash(ses->password, nt_hash, nls_cp);
 
-	rc = crypto_shash_setkey(ses->server->secmech.hmacmd5, nt_hash,
+	rc = crypto_shash_setkey(ses->server->secmech.hmacmd5->tfm, nt_hash,
 				CIFS_NTHASH_SIZE);
 	if (rc) {
 		cifs_dbg(VFS, "%s: Could not set NT Hash as a key\n", __func__);
 		return rc;
 	}
 
-	rc = crypto_shash_init(&ses->server->secmech.sdeschmacmd5->shash);
+	rc = crypto_shash_init(ses->server->secmech.hmacmd5);
 	if (rc) {
 		cifs_dbg(VFS, "%s: Could not init hmacmd5\n", __func__);
 		return rc;
@@ -539,7 +446,7 @@ static int calc_ntlmv2_hash(struct cifs_ses *ses, char *ntlmv2_hash,
 		memset(user, '\0', 2);
 	}
 
-	rc = crypto_shash_update(&ses->server->secmech.sdeschmacmd5->shash,
+	rc = crypto_shash_update(ses->server->secmech.hmacmd5,
 				(char *)user, 2 * len);
 	kfree(user);
 	if (rc) {
@@ -559,7 +466,7 @@ static int calc_ntlmv2_hash(struct cifs_ses *ses, char *ntlmv2_hash,
 		len = cifs_strtoUTF16((__le16 *)domain, ses->domainName, len,
 				      nls_cp);
 		rc =
-		crypto_shash_update(&ses->server->secmech.sdeschmacmd5->shash,
+		crypto_shash_update(ses->server->secmech.hmacmd5,
 					(char *)domain, 2 * len);
 		kfree(domain);
 		if (rc) {
@@ -568,18 +475,18 @@ static int calc_ntlmv2_hash(struct cifs_ses *ses, char *ntlmv2_hash,
 			return rc;
 		}
 	} else {
-		/* We use ses->serverName if no domain name available */
-		len = strlen(ses->serverName);
+		/* We use ses->ip_addr if no domain name available */
+		len = strlen(ses->ip_addr);
 
 		server = kmalloc(2 + (len * 2), GFP_KERNEL);
 		if (server == NULL) {
 			rc = -ENOMEM;
 			return rc;
 		}
-		len = cifs_strtoUTF16((__le16 *)server, ses->serverName, len,
+		len = cifs_strtoUTF16((__le16 *)server, ses->ip_addr, len,
 					nls_cp);
 		rc =
-		crypto_shash_update(&ses->server->secmech.sdeschmacmd5->shash,
+		crypto_shash_update(ses->server->secmech.hmacmd5,
 					(char *)server, 2 * len);
 		kfree(server);
 		if (rc) {
@@ -589,7 +496,7 @@ static int calc_ntlmv2_hash(struct cifs_ses *ses, char *ntlmv2_hash,
 		}
 	}
 
-	rc = crypto_shash_final(&ses->server->secmech.sdeschmacmd5->shash,
+	rc = crypto_shash_final(ses->server->secmech.hmacmd5,
 					ntlmv2_hash);
 	if (rc)
 		cifs_dbg(VFS, "%s: Could not generate md5 hash\n", __func__);
@@ -609,12 +516,12 @@ CalcNTLMv2_response(const struct cifs_ses *ses, char *ntlmv2_hash)
 	hash_len = ses->auth_key.len - (CIFS_SESS_KEY_SIZE +
 		offsetof(struct ntlmv2_resp, challenge.key[0]));
 
-	if (!ses->server->secmech.sdeschmacmd5) {
+	if (!ses->server->secmech.hmacmd5) {
 		cifs_dbg(VFS, "%s: can't generate ntlmv2 hash\n", __func__);
 		return -1;
 	}
 
-	rc = crypto_shash_setkey(ses->server->secmech.hmacmd5,
+	rc = crypto_shash_setkey(ses->server->secmech.hmacmd5->tfm,
 				 ntlmv2_hash, CIFS_HMAC_MD5_HASH_SIZE);
 	if (rc) {
 		cifs_dbg(VFS, "%s: Could not set NTLMV2 Hash as a key\n",
@@ -622,7 +529,7 @@ CalcNTLMv2_response(const struct cifs_ses *ses, char *ntlmv2_hash)
 		return rc;
 	}
 
-	rc = crypto_shash_init(&ses->server->secmech.sdeschmacmd5->shash);
+	rc = crypto_shash_init(ses->server->secmech.hmacmd5);
 	if (rc) {
 		cifs_dbg(VFS, "%s: Could not init hmacmd5\n", __func__);
 		return rc;
@@ -634,7 +541,7 @@ CalcNTLMv2_response(const struct cifs_ses *ses, char *ntlmv2_hash)
 	else
 		memcpy(ntlmv2->challenge.key,
 		       ses->server->cryptkey, CIFS_SERVER_CHALLENGE_SIZE);
-	rc = crypto_shash_update(&ses->server->secmech.sdeschmacmd5->shash,
+	rc = crypto_shash_update(ses->server->secmech.hmacmd5,
 				 ntlmv2->challenge.key, hash_len);
 	if (rc) {
 		cifs_dbg(VFS, "%s: Could not update with response\n", __func__);
@@ -642,7 +549,7 @@ CalcNTLMv2_response(const struct cifs_ses *ses, char *ntlmv2_hash)
 	}
 
 	/* Note that the MD5 digest over writes anon.challenge_key.key */
-	rc = crypto_shash_final(&ses->server->secmech.sdeschmacmd5->shash,
+	rc = crypto_shash_final(ses->server->secmech.hmacmd5,
 				ntlmv2->ntlmv2_hash);
 	if (rc)
 		cifs_dbg(VFS, "%s: Could not generate md5 hash\n", __func__);
@@ -660,6 +567,11 @@ setup_ntlmv2_rsp(struct cifs_ses *ses, const struct nls_table *nls_cp)
 	char ntlmv2_hash[16];
 	unsigned char *tiblob = NULL; /* target info blob */
 	__le64 rsp_timestamp;
+
+	if (nls_cp == NULL) {
+		cifs_dbg(VFS, "%s called with nls_cp==NULL\n", __func__);
+		return -EINVAL;
+	}
 
 	if (ses->server->negflavor == CIFS_NEGFLAVOR_EXTENDED) {
 		if (!ses->domainName) {
@@ -711,11 +623,9 @@ setup_ntlmv2_rsp(struct cifs_ses *ses, const struct nls_table *nls_cp)
 
 	memcpy(ses->auth_key.response + baselen, tiblob, tilen);
 
-	mutex_lock(&ses->server->srv_mutex);
+	cifs_server_lock(ses->server);
 
-	rc = cifs_alloc_hash("hmac(md5)",
-			     &ses->server->secmech.hmacmd5,
-			     &ses->server->secmech.sdeschmacmd5);
+	rc = cifs_alloc_hash("hmac(md5)", &ses->server->secmech.hmacmd5);
 	if (rc) {
 		goto unlock;
 	}
@@ -735,7 +645,7 @@ setup_ntlmv2_rsp(struct cifs_ses *ses, const struct nls_table *nls_cp)
 	}
 
 	/* now calculate the session key for NTLMv2 */
-	rc = crypto_shash_setkey(ses->server->secmech.hmacmd5,
+	rc = crypto_shash_setkey(ses->server->secmech.hmacmd5->tfm,
 		ntlmv2_hash, CIFS_HMAC_MD5_HASH_SIZE);
 	if (rc) {
 		cifs_dbg(VFS, "%s: Could not set NTLMV2 Hash as a key\n",
@@ -743,13 +653,13 @@ setup_ntlmv2_rsp(struct cifs_ses *ses, const struct nls_table *nls_cp)
 		goto unlock;
 	}
 
-	rc = crypto_shash_init(&ses->server->secmech.sdeschmacmd5->shash);
+	rc = crypto_shash_init(ses->server->secmech.hmacmd5);
 	if (rc) {
 		cifs_dbg(VFS, "%s: Could not init hmacmd5\n", __func__);
 		goto unlock;
 	}
 
-	rc = crypto_shash_update(&ses->server->secmech.sdeschmacmd5->shash,
+	rc = crypto_shash_update(ses->server->secmech.hmacmd5,
 		ntlmv2->ntlmv2_hash,
 		CIFS_HMAC_MD5_HASH_SIZE);
 	if (rc) {
@@ -757,15 +667,15 @@ setup_ntlmv2_rsp(struct cifs_ses *ses, const struct nls_table *nls_cp)
 		goto unlock;
 	}
 
-	rc = crypto_shash_final(&ses->server->secmech.sdeschmacmd5->shash,
+	rc = crypto_shash_final(ses->server->secmech.hmacmd5,
 		ses->auth_key.response);
 	if (rc)
 		cifs_dbg(VFS, "%s: Could not generate md5 hash\n", __func__);
 
 unlock:
-	mutex_unlock(&ses->server->srv_mutex);
+	cifs_server_unlock(ses->server);
 setup_ntlmv2_rsp_ret:
-	kfree(tiblob);
+	kfree_sensitive(tiblob);
 
 	return rc;
 }
@@ -787,9 +697,9 @@ calc_seckey(struct cifs_ses *ses)
 		return -ENOMEM;
 	}
 
-	arc4_setkey(ctx_arc4, ses->auth_key.response, CIFS_SESS_KEY_SIZE);
-	arc4_crypt(ctx_arc4, ses->ntlmssp->ciphertext, sec_key,
-		   CIFS_CPHTXT_SIZE);
+	cifs_arc4_setkey(ctx_arc4, ses->auth_key.response, CIFS_SESS_KEY_SIZE);
+	cifs_arc4_crypt(ctx_arc4, ses->ntlmssp->ciphertext, sec_key,
+			CIFS_CPHTXT_SIZE);
 
 	/* make secondary_key/nonce as session key */
 	memcpy(ses->auth_key.response, sec_key, CIFS_SESS_KEY_SIZE);
@@ -804,49 +714,19 @@ calc_seckey(struct cifs_ses *ses)
 void
 cifs_crypto_secmech_release(struct TCP_Server_Info *server)
 {
-	if (server->secmech.cmacaes) {
-		crypto_free_shash(server->secmech.cmacaes);
-		server->secmech.cmacaes = NULL;
+	cifs_free_hash(&server->secmech.aes_cmac);
+	cifs_free_hash(&server->secmech.hmacsha256);
+	cifs_free_hash(&server->secmech.md5);
+	cifs_free_hash(&server->secmech.sha512);
+	cifs_free_hash(&server->secmech.hmacmd5);
+
+	if (server->secmech.enc) {
+		crypto_free_aead(server->secmech.enc);
+		server->secmech.enc = NULL;
 	}
 
-	if (server->secmech.hmacsha256) {
-		crypto_free_shash(server->secmech.hmacsha256);
-		server->secmech.hmacsha256 = NULL;
+	if (server->secmech.dec) {
+		crypto_free_aead(server->secmech.dec);
+		server->secmech.dec = NULL;
 	}
-
-	if (server->secmech.md5) {
-		crypto_free_shash(server->secmech.md5);
-		server->secmech.md5 = NULL;
-	}
-
-	if (server->secmech.sha512) {
-		crypto_free_shash(server->secmech.sha512);
-		server->secmech.sha512 = NULL;
-	}
-
-	if (server->secmech.hmacmd5) {
-		crypto_free_shash(server->secmech.hmacmd5);
-		server->secmech.hmacmd5 = NULL;
-	}
-
-	if (server->secmech.ccmaesencrypt) {
-		crypto_free_aead(server->secmech.ccmaesencrypt);
-		server->secmech.ccmaesencrypt = NULL;
-	}
-
-	if (server->secmech.ccmaesdecrypt) {
-		crypto_free_aead(server->secmech.ccmaesdecrypt);
-		server->secmech.ccmaesdecrypt = NULL;
-	}
-
-	kfree(server->secmech.sdesccmacaes);
-	server->secmech.sdesccmacaes = NULL;
-	kfree(server->secmech.sdeschmacsha256);
-	server->secmech.sdeschmacsha256 = NULL;
-	kfree(server->secmech.sdeschmacmd5);
-	server->secmech.sdeschmacmd5 = NULL;
-	kfree(server->secmech.sdescmd5);
-	server->secmech.sdescmd5 = NULL;
-	kfree(server->secmech.sdescsha512);
-	server->secmech.sdescsha512 = NULL;
 }

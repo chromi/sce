@@ -130,6 +130,14 @@ struct mipi_dbi_dev {
 	 * @dbi: MIPI DBI interface
 	 */
 	struct mipi_dbi dbi;
+
+	/**
+	 * @driver_private: Driver private data.
+	 *                  Necessary for drivers with private data since devm_drm_dev_alloc()
+	 *                  can't allocate structures that embed a structure which then again
+	 *                  embeds drm_device.
+	 */
+	void *driver_private;
 };
 
 static inline struct mipi_dbi_dev *drm_to_mipi_dbi_dev(struct drm_device *drm)
@@ -147,6 +155,8 @@ int mipi_dbi_dev_init_with_formats(struct mipi_dbi_dev *dbidev,
 int mipi_dbi_dev_init(struct mipi_dbi_dev *dbidev,
 		      const struct drm_simple_display_pipe_funcs *funcs,
 		      const struct drm_display_mode *mode, unsigned int rotation);
+enum drm_mode_status mipi_dbi_pipe_mode_valid(struct drm_simple_display_pipe *pipe,
+					      const struct drm_display_mode *mode);
 void mipi_dbi_pipe_update(struct drm_simple_display_pipe *pipe,
 			  struct drm_plane_state *old_state);
 void mipi_dbi_enable_flush(struct mipi_dbi_dev *dbidev,
@@ -172,7 +182,7 @@ int mipi_dbi_buf_copy(void *dst, struct drm_framebuffer *fb,
  * mipi_dbi_command - MIPI DCS command with optional parameter(s)
  * @dbi: MIPI DBI structure
  * @cmd: Command
- * @seq...: Optional parameter(s)
+ * @seq: Optional parameter(s)
  *
  * Send MIPI DCS command to the controller. Use mipi_dbi_command_read() for
  * get/read.
@@ -183,13 +193,18 @@ int mipi_dbi_buf_copy(void *dst, struct drm_framebuffer *fb,
 #define mipi_dbi_command(dbi, cmd, seq...) \
 ({ \
 	const u8 d[] = { seq }; \
-	mipi_dbi_command_stackbuf(dbi, cmd, d, ARRAY_SIZE(d)); \
+	struct device *dev = &(dbi)->spi->dev;	\
+	int ret; \
+	ret = mipi_dbi_command_stackbuf(dbi, cmd, d, ARRAY_SIZE(d)); \
+	if (ret) \
+		dev_err_ratelimited(dev, "error %d when sending command %#02x\n", ret, cmd); \
+	ret; \
 })
 
 #ifdef CONFIG_DEBUG_FS
 void mipi_dbi_debugfs_init(struct drm_minor *minor);
 #else
-#define mipi_dbi_debugfs_init		NULL
+static inline void mipi_dbi_debugfs_init(struct drm_minor *minor) {}
 #endif
 
 #endif /* __LINUX_MIPI_DBI_H */

@@ -8,7 +8,6 @@
 #include <string.h>
 #include <linux/perf_event.h>
 #include <errno.h>
-#include <sys/resource.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
 
@@ -36,6 +35,9 @@ static void verify_map(int map_id)
 		fprintf(stderr, "failed: map #%d returns value 0\n", map_id);
 		return;
 	}
+
+	printf("verify map:%d val: %d\n", map_id, val);
+
 	val = 0;
 	if (bpf_map_update_elem(map_id, &key, &val, BPF_ANY) != 0) {
 		fprintf(stderr, "map_update failed: %s\n", strerror(errno));
@@ -115,7 +117,6 @@ cleanup:
 
 int main(int argc, char **argv)
 {
-	struct rlimit r = {RLIM_INFINITY, RLIM_INFINITY};
 	int opt, num_progs = 1;
 	char filename[256];
 
@@ -131,7 +132,6 @@ int main(int argc, char **argv)
 		}
 	}
 
-	setrlimit(RLIMIT_MEMLOCK, &r);
 	snprintf(filename, sizeof(filename), "%s_kern.o", argv[0]);
 
 	return test(filename, num_progs);

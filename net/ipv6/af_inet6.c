@@ -62,6 +62,8 @@
 #include <net/rpl.h>
 #include <net/compat.h>
 #include <net/xfrm.h>
+#include <net/ioam6.h>
+#include <net/rawv6.h>
 
 #include <linux/uaccess.h>
 #include <linux/mroute6.h>
@@ -105,6 +107,12 @@ static __inline__ struct ipv6_pinfo *inet6_sk_generic(struct sock *sk)
 	const int offset = sk->sk_prot->obj_size - sizeof(struct ipv6_pinfo);
 
 	return (struct ipv6_pinfo *)(((u8 *)sk) + offset);
+}
+
+void inet6_sock_destruct(struct sock *sk)
+{
+	inet6_cleanup_sock(sk);
+	inet_sock_destruct(sk);
 }
 
 static int inet6_create(struct net *net, struct socket *sock, int protocol,
@@ -199,7 +207,7 @@ lookup_protocol:
 			inet->hdrincl = 1;
 	}
 
-	sk->sk_destruct		= inet_sock_destruct;
+	sk->sk_destruct		= inet6_sock_destruct;
 	sk->sk_family		= PF_INET6;
 	sk->sk_protocol		= protocol;
 
@@ -222,10 +230,10 @@ lookup_protocol:
 	inet->mc_loop	= 1;
 	inet->mc_ttl	= 1;
 	inet->mc_index	= 0;
-	inet->mc_list	= NULL;
+	RCU_INIT_POINTER(inet->mc_list, NULL);
 	inet->rcv_tos	= 0;
 
-	if (net->ipv4.sysctl_ip_no_pmtu_disc)
+	if (READ_ONCE(net->ipv4.sysctl_ip_no_pmtu_disc))
 		inet->pmtudisc = IP_PMTUDISC_DONT;
 	else
 		inet->pmtudisc = IP_PMTUDISC_WANT;
@@ -295,7 +303,8 @@ static int __inet6_bind(struct sock *sk, struct sockaddr *uaddr, int addr_len,
 		return -EINVAL;
 
 	snum = ntohs(addr->sin6_port);
-	if (snum && inet_port_requires_bind_service(net, snum) &&
+	if (!(flags & BIND_NO_CAP_NET_BIND_SERVICE) &&
+	    snum && inet_port_requires_bind_service(net, snum) &&
 	    !ns_capable(net->user_ns, CAP_NET_BIND_SERVICE))
 		return -EACCES;
 
@@ -316,7 +325,7 @@ static int __inet6_bind(struct sock *sk, struct sockaddr *uaddr, int addr_len,
 		/* Binding to v4-mapped address on a v6-only socket
 		 * makes no sense
 		 */
-		if (sk->sk_ipv6only) {
+		if (ipv6_only_sock(sk)) {
 			err = -EINVAL;
 			goto out;
 		}
@@ -335,11 +344,8 @@ static int __inet6_bind(struct sock *sk, struct sockaddr *uaddr, int addr_len,
 		chk_addr_ret = inet_addr_type_dev_table(net, dev, v4addr);
 		rcu_read_unlock();
 
-		if (!inet_can_nonlocal_bind(net, inet) &&
-		    v4addr != htonl(INADDR_ANY) &&
-		    chk_addr_ret != RTN_LOCAL &&
-		    chk_addr_ret != RTN_MULTICAST &&
-		    chk_addr_ret != RTN_BROADCAST) {
+		if (!inet_addr_valid_or_nonlocal(net, inet, v4addr,
+						 chk_addr_ret)) {
 			err = -EADDRNOTAVAIL;
 			goto out;
 		}
@@ -414,6 +420,8 @@ static int __inet6_bind(struct sock *sk, struct sockaddr *uaddr, int addr_len,
 			if (err) {
 				sk->sk_ipv6only = saved_ipv6only;
 				inet_reset_saddr(sk);
+				if (sk->sk_prot->put_port)
+					sk->sk_prot->put_port(sk);
 				goto out;
 			}
 		}
@@ -439,11 +447,15 @@ out_unlock:
 int inet6_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 {
 	struct sock *sk = sock->sk;
+	u32 flags = BIND_WITH_LOCK;
+	const struct proto *prot;
 	int err = 0;
 
+	/* IPV6_ADDRFORM can change sk->sk_prot under us. */
+	prot = READ_ONCE(sk->sk_prot);
 	/* If the socket has its own bind function then use it. */
-	if (sk->sk_prot->bind)
-		return sk->sk_prot->bind(sk, uaddr, addr_len);
+	if (prot->bind)
+		return prot->bind(sk, uaddr, addr_len);
 
 	if (addr_len < SIN6_LEN_RFC2133)
 		return -EINVAL;
@@ -451,11 +463,12 @@ int inet6_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 	/* BPF prog is run before any checks are done so that if the prog
 	 * changes context in a wrong way it will be caught.
 	 */
-	err = BPF_CGROUP_RUN_PROG_INET6_BIND(sk, uaddr);
+	err = BPF_CGROUP_RUN_PROG_INET_BIND_LOCK(sk, uaddr,
+						 CGROUP_INET6_BIND, &flags);
 	if (err)
 		return err;
 
-	return __inet6_bind(sk, uaddr, addr_len, BIND_WITH_LOCK);
+	return __inet6_bind(sk, uaddr, addr_len, flags);
 }
 EXPORT_SYMBOL(inet6_bind);
 
@@ -503,6 +516,12 @@ void inet6_destroy_sock(struct sock *sk)
 }
 EXPORT_SYMBOL_GPL(inet6_destroy_sock);
 
+void inet6_cleanup_sock(struct sock *sk)
+{
+	inet6_destroy_sock(sk);
+}
+EXPORT_SYMBOL_GPL(inet6_cleanup_sock);
+
 /*
  *	This does both peername and sockname.
  */
@@ -517,30 +536,32 @@ int inet6_getname(struct socket *sock, struct sockaddr *uaddr,
 	sin->sin6_family = AF_INET6;
 	sin->sin6_flowinfo = 0;
 	sin->sin6_scope_id = 0;
+	lock_sock(sk);
 	if (peer) {
-		if (!inet->inet_dport)
+		if (!inet->inet_dport ||
+		    (((1 << sk->sk_state) & (TCPF_CLOSE | TCPF_SYN_SENT)) &&
+		    peer == 1)) {
+			release_sock(sk);
 			return -ENOTCONN;
-		if (((1 << sk->sk_state) & (TCPF_CLOSE | TCPF_SYN_SENT)) &&
-		    peer == 1)
-			return -ENOTCONN;
+		}
 		sin->sin6_port = inet->inet_dport;
 		sin->sin6_addr = sk->sk_v6_daddr;
 		if (np->sndflow)
 			sin->sin6_flowinfo = np->flow_label;
+		BPF_CGROUP_RUN_SA_PROG(sk, (struct sockaddr *)sin,
+				       CGROUP_INET6_GETPEERNAME);
 	} else {
 		if (ipv6_addr_any(&sk->sk_v6_rcv_saddr))
 			sin->sin6_addr = np->saddr;
 		else
 			sin->sin6_addr = sk->sk_v6_rcv_saddr;
 		sin->sin6_port = inet->inet_sport;
+		BPF_CGROUP_RUN_SA_PROG(sk, (struct sockaddr *)sin,
+				       CGROUP_INET6_GETSOCKNAME);
 	}
-	if (cgroup_bpf_enabled)
-		BPF_CGROUP_RUN_SA_PROG_LOCK(sk, (struct sockaddr *)sin,
-					    peer ? BPF_CGROUP_INET6_GETPEERNAME :
-						   BPF_CGROUP_INET6_GETSOCKNAME,
-					    NULL);
 	sin->sin6_scope_id = ipv6_iface_scope_id(&sin->sin6_addr,
 						 sk->sk_bound_dev_if);
+	release_sock(sk);
 	return sizeof(*sin);
 }
 EXPORT_SYMBOL(inet6_getname);
@@ -550,6 +571,7 @@ int inet6_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
 	void __user *argp = (void __user *)arg;
 	struct sock *sk = sock->sk;
 	struct net *net = sock_net(sk);
+	const struct proto *prot;
 
 	switch (cmd) {
 	case SIOCADDRT:
@@ -567,9 +589,11 @@ int inet6_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
 	case SIOCSIFDSTADDR:
 		return addrconf_set_dstaddr(net, argp);
 	default:
-		if (!sk->sk_prot->ioctl)
+		/* IPV6_ADDRFORM can change sk->sk_prot under us. */
+		prot = READ_ONCE(sk->sk_prot);
+		if (!prot->ioctl)
 			return -ENOIOCTLCMD;
-		return sk->sk_prot->ioctl(sk, cmd, arg);
+		return prot->ioctl(sk, cmd, arg);
 	}
 	/*NOTREACHED*/
 	return 0;
@@ -631,29 +655,34 @@ INDIRECT_CALLABLE_DECLARE(int udpv6_sendmsg(struct sock *, struct msghdr *,
 int inet6_sendmsg(struct socket *sock, struct msghdr *msg, size_t size)
 {
 	struct sock *sk = sock->sk;
+	const struct proto *prot;
 
 	if (unlikely(inet_send_prepare(sk)))
 		return -EAGAIN;
 
-	return INDIRECT_CALL_2(sk->sk_prot->sendmsg, tcp_sendmsg, udpv6_sendmsg,
+	/* IPV6_ADDRFORM can change sk->sk_prot under us. */
+	prot = READ_ONCE(sk->sk_prot);
+	return INDIRECT_CALL_2(prot->sendmsg, tcp_sendmsg, udpv6_sendmsg,
 			       sk, msg, size);
 }
 
 INDIRECT_CALLABLE_DECLARE(int udpv6_recvmsg(struct sock *, struct msghdr *,
-					    size_t, int, int, int *));
+					    size_t, int, int *));
 int inet6_recvmsg(struct socket *sock, struct msghdr *msg, size_t size,
 		  int flags)
 {
 	struct sock *sk = sock->sk;
+	const struct proto *prot;
 	int addr_len = 0;
 	int err;
 
 	if (likely(!(flags & MSG_ERRQUEUE)))
 		sock_rps_record_flow(sk);
 
-	err = INDIRECT_CALL_2(sk->sk_prot->recvmsg, tcp_recvmsg, udpv6_recvmsg,
-			      sk, msg, size, flags & MSG_DONTWAIT,
-			      flags & ~MSG_DONTWAIT, &addr_len);
+	/* IPV6_ADDRFORM can change sk->sk_prot under us. */
+	prot = READ_ONCE(sk->sk_prot);
+	err = INDIRECT_CALL_2(prot->recvmsg, tcp_recvmsg, udpv6_recvmsg,
+			      sk, msg, size, flags, &addr_len);
 	if (err >= 0)
 		msg->msg_namelen = addr_len;
 	return err;
@@ -661,7 +690,6 @@ int inet6_recvmsg(struct socket *sock, struct msghdr *msg, size_t size,
 
 const struct proto_ops inet6_stream_ops = {
 	.family		   = PF_INET6,
-	.flags		   = PROTO_CMSG_DATA_ONLY,
 	.owner		   = THIS_MODULE,
 	.release	   = inet6_release,
 	.bind		   = inet6_bind,
@@ -686,6 +714,7 @@ const struct proto_ops inet6_stream_ops = {
 	.sendpage_locked   = tcp_sendpage_locked,
 	.splice_read	   = tcp_splice_read,
 	.read_sock	   = tcp_read_sock,
+	.read_skb	   = tcp_read_skb,
 	.peek_len	   = tcp_peek_len,
 #ifdef CONFIG_COMPAT
 	.compat_ioctl	   = inet6_compat_ioctl,
@@ -711,6 +740,7 @@ const struct proto_ops inet6_dgram_ops = {
 	.getsockopt	   = sock_common_getsockopt,	/* ok		*/
 	.sendmsg	   = inet6_sendmsg,		/* retpoline's sake */
 	.recvmsg	   = inet6_recvmsg,		/* retpoline's sake */
+	.read_skb	   = udp_read_skb,
 	.mmap		   = sock_no_mmap,
 	.sendpage	   = sock_no_sendpage,
 	.set_peek_off	   = sk_set_peek_off,
@@ -819,7 +849,7 @@ int inet6_sk_rebuild_header(struct sock *sk)
 		fl6.fl6_dport = inet->inet_dport;
 		fl6.fl6_sport = inet->inet_sport;
 		fl6.flowi6_uid = sk->sk_uid;
-		security_sk_classify_flow(sk, flowi6_to_flowi(&fl6));
+		security_sk_classify_flow(sk, flowi6_to_flowi_common(&fl6));
 
 		rcu_read_lock();
 		final_p = fl6_update_dst(&fl6, rcu_dereference(np->opt),
@@ -954,7 +984,11 @@ static int __net_init inet6_net_init(struct net *net)
 	net->ipv6.sysctl.max_hbh_opts_cnt = IP6_DEFAULT_MAX_HBH_OPTS_CNT;
 	net->ipv6.sysctl.max_dst_opts_len = IP6_DEFAULT_MAX_DST_OPTS_LEN;
 	net->ipv6.sysctl.max_hbh_opts_len = IP6_DEFAULT_MAX_HBH_OPTS_LEN;
+	net->ipv6.sysctl.fib_notify_on_flag_change = 0;
 	atomic_set(&net->ipv6.fib6_sernum, 1);
+
+	net->ipv6.sysctl.ioam6_id = IOAM6_DEFAULT_ID;
+	net->ipv6.sysctl.ioam6_id_wide = IOAM6_DEFAULT_ID_WIDE;
 
 	err = ipv6_init_mibs(net);
 	if (err)
@@ -1016,6 +1050,7 @@ static const struct ipv6_stub ipv6_stub_impl = {
 	.ip6_mtu_from_fib6 = ip6_mtu_from_fib6,
 	.fib6_nh_init	   = fib6_nh_init,
 	.fib6_nh_release   = fib6_nh_release,
+	.fib6_nh_release_dsts = fib6_nh_release_dsts,
 	.fib6_update_sernum = fib6_update_sernum_stub,
 	.fib6_rt_update	   = fib6_rt_update,
 	.ip6_del_rt	   = ip6_del_rt,
@@ -1028,11 +1063,14 @@ static const struct ipv6_stub ipv6_stub_impl = {
 #endif
 	.nd_tbl	= &nd_tbl,
 	.ipv6_fragment = ip6_fragment,
+	.ipv6_dev_find = ipv6_dev_find,
 };
 
 static const struct ipv6_bpf_stub ipv6_bpf_stub_impl = {
 	.inet6_bind = __inet6_bind,
 	.udp6_lib_lookup = __udp6_lib_lookup,
+	.ipv6_setsockopt = do_ipv6_setsockopt,
+	.ipv6_getsockopt = do_ipv6_getsockopt,
 };
 
 static int __init inet6_init(void)
@@ -1045,6 +1083,8 @@ static int __init inet6_init(void)
 	/* Register the socket-side information for inet6_create.  */
 	for (r = &inetsw6[0]; r < &inetsw6[SOCK_MAX]; ++r)
 		INIT_LIST_HEAD(r);
+
+	raw_hashinfo_init(&raw_v6_hashinfo);
 
 	if (disable_ipv6_mod) {
 		pr_info("Loaded, but administratively disabled, reboot required to enable\n");
@@ -1185,6 +1225,10 @@ static int __init inet6_init(void)
 	if (err)
 		goto rpl_fail;
 
+	err = ioam6_init();
+	if (err)
+		goto ioam6_fail;
+
 	err = igmp6_late_init();
 	if (err)
 		goto igmp6_late_err;
@@ -1207,6 +1251,8 @@ sysctl_fail:
 	igmp6_late_cleanup();
 #endif
 igmp6_late_err:
+	ioam6_exit();
+ioam6_fail:
 	rpl_exit();
 rpl_fail:
 	seg6_exit();

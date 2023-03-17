@@ -125,6 +125,7 @@ static int af9033_init(struct dvb_frontend *fe)
 	if (i == ARRAY_SIZE(clock_adc_lut)) {
 		dev_err(&client->dev, "Couldn't find ADC config for clock %d\n",
 			dev->cfg.clock);
+		ret = -ENODEV;
 		goto err;
 	}
 
@@ -852,6 +853,7 @@ static int af9033_read_snr(struct dvb_frontend *fe, u16 *snr)
 				*snr = *snr * 0xffff / 32;
 				break;
 			default:
+				ret = -EINVAL;
 				goto err;
 			}
 		}
@@ -1161,7 +1163,7 @@ err:
 	return ret;
 }
 
-static int af9033_remove(struct i2c_client *client)
+static void af9033_remove(struct i2c_client *client)
 {
 	struct af9033_dev *dev = i2c_get_clientdata(client);
 
@@ -1169,8 +1171,6 @@ static int af9033_remove(struct i2c_client *client)
 
 	regmap_exit(dev->regmap);
 	kfree(dev);
-
-	return 0;
 }
 
 static const struct i2c_device_id af9033_id_table[] = {

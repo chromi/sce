@@ -49,10 +49,21 @@ struct rdma_addr {
 	struct rdma_dev_addr dev_addr;
 };
 
+#define RDMA_PRIMARY_PATH_MAX_REC_NUM 3
 struct rdma_route {
 	struct rdma_addr addr;
 	struct sa_path_rec *path_rec;
-	int num_paths;
+
+	/* Optional path records of primary path */
+	struct sa_path_rec *path_rec_inbound;
+	struct sa_path_rec *path_rec_outbound;
+
+	/*
+	 * 0 - No primary nor alternate path is available
+	 * 1 - Only primary path is available
+	 * 2 - Both primary and alternate path are available
+	 */
+	int num_pri_alt_paths;
 };
 
 struct rdma_conn_param {
@@ -107,7 +118,8 @@ struct rdma_cm_id {
 	struct rdma_route	 route;
 	enum rdma_ucm_port_space ps;
 	enum ib_qp_type		 qp_type;
-	u8			 port_num;
+	u32			 port_num;
+	struct work_struct net_work;
 };
 
 struct rdma_cm_id *
@@ -331,6 +343,8 @@ int rdma_set_reuseaddr(struct rdma_cm_id *id, int reuse);
 int rdma_set_afonly(struct rdma_cm_id *id, int afonly);
 
 int rdma_set_ack_timeout(struct rdma_cm_id *id, u8 timeout);
+
+int rdma_set_min_rnr_timer(struct rdma_cm_id *id, u8 min_rnr_timer);
  /**
  * rdma_get_service_id - Return the IB service ID for a specified address.
  * @id: Communication identifier associated with the address.

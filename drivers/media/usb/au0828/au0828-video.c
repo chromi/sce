@@ -231,6 +231,7 @@ static int au0828_init_isoc(struct au0828_dev *dev, int max_packets,
 	for (i = 0; i < dev->isoc_ctl.num_bufs; i++) {
 		urb = usb_alloc_urb(max_packets, GFP_KERNEL);
 		if (!urb) {
+			au0828_isocdbg("cannot allocate URB\n");
 			au0828_uninit_isoc(dev);
 			return -ENOMEM;
 		}
@@ -239,16 +240,14 @@ static int au0828_init_isoc(struct au0828_dev *dev, int max_packets,
 		dev->isoc_ctl.transfer_buffer[i] = usb_alloc_coherent(dev->usbdev,
 			sb_size, GFP_KERNEL, &urb->transfer_dma);
 		if (!dev->isoc_ctl.transfer_buffer[i]) {
-			printk("unable to allocate %i bytes for transfer buffer %i%s\n",
-					sb_size, i,
-					in_interrupt() ? " while in int" : "");
+			au0828_isocdbg("cannot allocate transfer buffer\n");
 			au0828_uninit_isoc(dev);
 			return -ENOMEM;
 		}
 		memset(dev->isoc_ctl.transfer_buffer[i], 0, sb_size);
 
 		pipe = usb_rcvisocpipe(dev->usbdev,
-				       dev->isoc_in_endpointaddr),
+				       dev->isoc_in_endpointaddr);
 
 		usb_fill_int_urb(urb, dev->usbdev, pipe,
 				 dev->isoc_ctl.transfer_buffer[i], sb_size,
@@ -385,7 +384,7 @@ static void au0828_copy_video(struct au0828_dev *dev,
 }
 
 /*
- * video-buf generic routine to get the next available buffer
+ * generic routine to get the next available buffer
  */
 static inline void get_next_buf(struct au0828_dmaqueue *dma_q,
 				struct au0828_buffer **buf)
@@ -460,7 +459,7 @@ static void au0828_copy_vbi(struct au0828_dev *dev,
 
 
 /*
- * video-buf generic routine to get the next available VBI buffer
+ * generic routine to get the next available VBI buffer
  */
 static inline void vbi_get_next_buf(struct au0828_dmaqueue *dma_q,
 				    struct au0828_buffer **buf)

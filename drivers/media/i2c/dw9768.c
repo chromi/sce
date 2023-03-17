@@ -315,8 +315,7 @@ static int dw9768_release(struct dw9768 *dw9768)
 
 static int dw9768_runtime_suspend(struct device *dev)
 {
-	struct i2c_client *client = to_i2c_client(dev);
-	struct v4l2_subdev *sd = i2c_get_clientdata(client);
+	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct dw9768 *dw9768 = sd_to_dw9768(sd);
 
 	dw9768_release(dw9768);
@@ -328,8 +327,7 @@ static int dw9768_runtime_suspend(struct device *dev)
 
 static int dw9768_runtime_resume(struct device *dev)
 {
-	struct i2c_client *client = to_i2c_client(dev);
-	struct v4l2_subdev *sd = i2c_get_clientdata(client);
+	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct dw9768 *dw9768 = sd_to_dw9768(sd);
 	int ret;
 
@@ -376,15 +374,7 @@ static const struct v4l2_ctrl_ops dw9768_ctrl_ops = {
 
 static int dw9768_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 {
-	int ret;
-
-	ret = pm_runtime_get_sync(sd->dev);
-	if (ret < 0) {
-		pm_runtime_put_noidle(sd->dev);
-		return ret;
-	}
-
-	return 0;
+	return pm_runtime_resume_and_get(sd->dev);
 }
 
 static int dw9768_close(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
@@ -509,7 +499,7 @@ err_free_handler:
 	return ret;
 }
 
-static int dw9768_remove(struct i2c_client *client)
+static void dw9768_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct dw9768 *dw9768 = sd_to_dw9768(sd);
@@ -521,8 +511,6 @@ static int dw9768_remove(struct i2c_client *client)
 	if (!pm_runtime_status_suspended(&client->dev))
 		dw9768_runtime_suspend(&client->dev);
 	pm_runtime_set_suspended(&client->dev);
-
-	return 0;
 }
 
 static const struct of_device_id dw9768_of_table[] = {

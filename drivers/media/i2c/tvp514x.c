@@ -853,13 +853,13 @@ static const struct v4l2_ctrl_ops tvp514x_ctrl_ops = {
 /**
  * tvp514x_enum_mbus_code() - V4L2 decoder interface handler for enum_mbus_code
  * @sd: pointer to standard V4L2 sub-device structure
- * @cfg: pad configuration
+ * @sd_state: subdev state
  * @code: pointer to v4l2_subdev_mbus_code_enum structure
  *
  * Enumertaes mbus codes supported
  */
 static int tvp514x_enum_mbus_code(struct v4l2_subdev *sd,
-				  struct v4l2_subdev_pad_config *cfg,
+				  struct v4l2_subdev_state *sd_state,
 				  struct v4l2_subdev_mbus_code_enum *code)
 {
 	u32 pad = code->pad;
@@ -880,13 +880,13 @@ static int tvp514x_enum_mbus_code(struct v4l2_subdev *sd,
 /**
  * tvp514x_get_pad_format() - V4L2 decoder interface handler for get pad format
  * @sd: pointer to standard V4L2 sub-device structure
- * @cfg: pad configuration
+ * @sd_state: subdev state
  * @format: pointer to v4l2_subdev_format structure
  *
  * Retrieves pad format which is active or tried based on requirement
  */
 static int tvp514x_get_pad_format(struct v4l2_subdev *sd,
-				  struct v4l2_subdev_pad_config *cfg,
+				  struct v4l2_subdev_state *sd_state,
 				  struct v4l2_subdev_format *format)
 {
 	struct tvp514x_decoder *decoder = to_decoder(sd);
@@ -912,13 +912,13 @@ static int tvp514x_get_pad_format(struct v4l2_subdev *sd,
 /**
  * tvp514x_set_pad_format() - V4L2 decoder interface handler for set pad format
  * @sd: pointer to standard V4L2 sub-device structure
- * @cfg: pad configuration
+ * @sd_state: subdev state
  * @fmt: pointer to v4l2_subdev_format structure
  *
  * Set pad format for the output pad
  */
 static int tvp514x_set_pad_format(struct v4l2_subdev *sd,
-				  struct v4l2_subdev_pad_config *cfg,
+				  struct v4l2_subdev_state *sd_state,
 				  struct v4l2_subdev_format *fmt)
 {
 	struct tvp514x_decoder *decoder = to_decoder(sd);
@@ -1121,7 +1121,7 @@ done:
  * Unregister decoder as an i2c client device and V4L2
  * device. Complement of tvp514x_probe().
  */
-static int tvp514x_remove(struct i2c_client *client)
+static void tvp514x_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct tvp514x_decoder *decoder = to_decoder(sd);
@@ -1129,7 +1129,6 @@ static int tvp514x_remove(struct i2c_client *client)
 	v4l2_async_unregister_subdev(&decoder->sd);
 	media_entity_cleanup(&decoder->sd.entity);
 	v4l2_ctrl_handler_free(&decoder->hdl);
-	return 0;
 }
 /* TVP5146 Init/Power on Sequence */
 static const struct tvp514x_reg tvp5146_init_reg_seq[] = {

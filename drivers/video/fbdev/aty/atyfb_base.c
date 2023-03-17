@@ -48,6 +48,7 @@
 
 ******************************************************************************/
 
+#include <linux/aperture.h>
 #include <linux/compat.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
@@ -79,7 +80,6 @@
 
 #ifdef __powerpc__
 #include <asm/machdep.h>
-#include <asm/prom.h>
 #include "../macmodes.h"
 #endif
 #ifdef __sparc__
@@ -133,7 +133,7 @@
 #define PRINTKE(fmt, args...)	printk(KERN_ERR "atyfb: " fmt, ## args)
 
 #if defined(CONFIG_PMAC_BACKLIGHT) || defined(CONFIG_FB_ATY_GENERIC_LCD) || \
-defined(CONFIG_FB_ATY_BACKLIGHT)
+defined(CONFIG_FB_ATY_BACKLIGHT) || defined (CONFIG_PPC_PMAC)
 static const u32 lt_lcd_regs[] = {
 	CNFG_PANEL_LG,
 	LCD_GEN_CNTL_LG,
@@ -175,7 +175,17 @@ u32 aty_ld_lcd(int index, const struct atyfb_par *par)
 		return aty_ld_le32(LCD_DATA, par);
 	}
 }
-#endif /* defined(CONFIG_PMAC_BACKLIGHT) || defined (CONFIG_FB_ATY_GENERIC_LCD) */
+#else /* defined(CONFIG_PMAC_BACKLIGHT) || defined(CONFIG_FB_ATY_BACKLIGHT) ||
+	 defined(CONFIG_FB_ATY_GENERIC_LCD) || defined(CONFIG_PPC_PMAC) */
+void aty_st_lcd(int index, u32 val, const struct atyfb_par *par)
+{ }
+
+u32 aty_ld_lcd(int index, const struct atyfb_par *par)
+{
+	return 0;
+}
+#endif /* defined(CONFIG_PMAC_BACKLIGHT) || defined(CONFIG_FB_ATY_BACKLIGHT) ||
+	  defined (CONFIG_FB_ATY_GENERIC_LCD) || defined(CONFIG_PPC_PMAC) */
 
 #ifdef CONFIG_FB_ATY_GENERIC_LCD
 /*
@@ -2353,6 +2363,9 @@ static int aty_init(struct fb_info *info)
 	int gtb_memsize, has_var = 0;
 	struct fb_var_screeninfo var;
 	int ret;
+#ifdef CONFIG_ATARI
+	u8 dac_type;
+#endif
 
 	init_waitqueue_head(&par->vblank.wait);
 	spin_lock_init(&par->int_lock);
@@ -2360,13 +2373,12 @@ static int aty_init(struct fb_info *info)
 #ifdef CONFIG_FB_ATY_GX
 	if (!M64_HAS(INTEGRATED)) {
 		u32 stat0;
-		u8 dac_type, dac_subtype, clk_type;
+		u8 dac_subtype, clk_type;
 		stat0 = aty_ld_le32(CNFG_STAT0, par);
 		par->bus_type = (stat0 >> 0) & 0x07;
 		par->ram_type = (stat0 >> 3) & 0x07;
 		ramname = aty_gx_ram[par->ram_type];
 		/* FIXME: clockchip/RAMDAC probing? */
-		dac_type = (aty_ld_le32(DAC_CNTL, par) >> 16) & 0x07;
 #ifdef CONFIG_ATARI
 		clk_type = CLK_ATI18818_1;
 		dac_type = (stat0 >> 9) & 0x07;
@@ -2375,7 +2387,6 @@ static int aty_init(struct fb_info *info)
 		else
 			dac_subtype = (aty_ld_8(SCRATCH_REG1 + 1, par) & 0xF0) | dac_type;
 #else
-		dac_type = DAC_IBMRGB514;
 		dac_subtype = DAC_IBMRGB514;
 		clk_type = CLK_IBMRGB514;
 #endif
@@ -3062,7 +3073,6 @@ static int atyfb_setup_sparc(struct pci_dev *pdev, struct fb_info *info,
 	if (dp == of_console_device) {
 		struct fb_var_screeninfo *var = &default_var;
 		unsigned int N, P, Q, M, T, R;
-		u32 v_total, h_total;
 		struct crtc crtc;
 		u8 pll_regs[16];
 		u8 clock_cntl;
@@ -3077,9 +3087,6 @@ static int atyfb_setup_sparc(struct pci_dev *pdev, struct fb_info *info,
 		crtc.v_sync_strt_wid = aty_ld_le32(CRTC_V_SYNC_STRT_WID, par);
 		crtc.gen_cntl = aty_ld_le32(CRTC_GEN_CNTL, par);
 		aty_crtc_to_var(&crtc, var);
-
-		h_total = var->xres + var->right_margin + var->hsync_len + var->left_margin;
-		v_total = var->yres + var->lower_margin + var->vsync_len + var->upper_margin;
 
 		/*
 		 * Read the PLL to figure actual Refresh Rate.
@@ -3527,7 +3534,11 @@ static int atyfb_pci_probe(struct pci_dev *pdev,
 	struct fb_info *info;
 	struct resource *rp;
 	struct atyfb_par *par;
-	int rc = -ENOMEM;
+	int rc;
+
+	rc = aperture_remove_conflicting_pci_devices(pdev, "atyfb");
+	if (rc)
+		return rc;
 
 	/* Enable device in PCI config */
 	if (pci_enable_device(pdev)) {
@@ -3885,7 +3896,7 @@ static int __init atyfb_setup(char *options)
 			 && (!strncmp(this_opt, "Mach64:", 7))) {
 			static unsigned char m64_num;
 			static char mach64_str[80];
-			strlcpy(mach64_str, this_opt + 7, sizeof(mach64_str));
+			strscpy(mach64_str, this_opt + 7, sizeof(mach64_str));
 			if (!store_video_par(mach64_str, m64_num)) {
 				m64_num++;
 				mach64_count = m64_num;

@@ -34,7 +34,7 @@
 #include <linux/types.h>
 
 #include <linux/refcount.h>
-#include <asm/io.h>
+#include <linux/io.h>
 
 #include <asm/sibyte/sb1250.h>
 #include <asm/sibyte/sb1250_uart.h>
@@ -531,7 +531,7 @@ static void sbd_init_port(struct sbd_port *sport)
 }
 
 static void sbd_set_termios(struct uart_port *uport, struct ktermios *termios,
-			    struct ktermios *old_termios)
+			    const struct ktermios *old_termios)
 {
 	struct sbd_port *sport = to_sport(uport);
 	unsigned int mode1 = 0, mode2 = 0, aux = 0;
@@ -820,7 +820,7 @@ static void __init sbd_probe_duarts(void)
  * console output.  The console_lock is held by the caller, so we
  * shouldn't be interrupted for more console activity.
  */
-static void sbd_console_putchar(struct uart_port *uport, int ch)
+static void sbd_console_putchar(struct uart_port *uport, unsigned char ch)
 {
 	struct sbd_port *sport = to_sport(uport);
 

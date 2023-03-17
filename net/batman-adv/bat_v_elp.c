@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Copyright (C) 2011-2020  B.A.T.M.A.N. contributors:
+/* Copyright (C) B.A.T.M.A.N. contributors:
  *
  * Linus Lüssing, Marek Lindner
  */
@@ -10,14 +10,15 @@
 #include <linux/atomic.h>
 #include <linux/bitops.h>
 #include <linux/byteorder/generic.h>
+#include <linux/container_of.h>
 #include <linux/errno.h>
 #include <linux/etherdevice.h>
 #include <linux/ethtool.h>
 #include <linux/gfp.h>
 #include <linux/if_ether.h>
 #include <linux/jiffies.h>
-#include <linux/kernel.h>
 #include <linux/kref.h>
+#include <linux/minmax.h>
 #include <linux/netdevice.h>
 #include <linux/nl80211.h>
 #include <linux/prandom.h>
@@ -124,7 +125,6 @@ static u32 batadv_v_elp_get_throughput(struct batadv_hardif_neigh_node *neigh)
 	/* if not a wifi interface, check if this device provides data via
 	 * ethtool (e.g. an Ethernet adapter)
 	 */
-	memset(&link_settings, 0, sizeof(link_settings));
 	rtnl_lock();
 	ret = __ethtool_get_link_ksettings(hard_iface->net_dev, &link_settings);
 	rtnl_unlock();
@@ -485,14 +485,11 @@ static void batadv_v_elp_neigh_update(struct batadv_priv *bat_priv,
 	hardif_neigh->bat_v.elp_interval = ntohl(elp_packet->elp_interval);
 
 hardif_free:
-	if (hardif_neigh)
-		batadv_hardif_neigh_put(hardif_neigh);
+	batadv_hardif_neigh_put(hardif_neigh);
 neigh_free:
-	if (neigh)
-		batadv_neigh_node_put(neigh);
+	batadv_neigh_node_put(neigh);
 orig_free:
-	if (orig_neigh)
-		batadv_orig_node_put(orig_neigh);
+	batadv_orig_node_put(orig_neigh);
 }
 
 /**

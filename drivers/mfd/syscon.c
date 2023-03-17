@@ -60,7 +60,7 @@ static struct syscon *of_syscon_register(struct device_node *np, bool check_clk)
 		goto err_map;
 	}
 
-	base = ioremap(res.start, resource_size(&res));
+	base = of_iomap(np, 0);
 	if (!base) {
 		ret = -ENOMEM;
 		goto err_map;
@@ -101,13 +101,13 @@ static struct syscon *of_syscon_register(struct device_node *np, bool check_clk)
 		}
 	}
 
-	syscon_config.name = kasprintf(GFP_KERNEL, "%pOFn@%llx", np,
-				       (u64)res.start);
+	syscon_config.name = kasprintf(GFP_KERNEL, "%pOFn@%pa", np, &res.start);
 	syscon_config.reg_stride = reg_io_width;
 	syscon_config.val_bits = reg_io_width * 8;
 	syscon_config.max_register = resource_size(&res) - reg_io_width;
 
 	regmap = regmap_init_mmio(NULL, base, &syscon_config);
+	kfree(syscon_config.name);
 	if (IS_ERR(regmap)) {
 		pr_err("regmap init failed\n");
 		ret = PTR_ERR(regmap);
@@ -144,7 +144,6 @@ err_clk:
 	regmap_exit(regmap);
 err_regmap:
 	iounmap(base);
-	kfree(syscon_config.name);
 err_map:
 	kfree(syscon);
 	return ERR_PTR(ret);
@@ -254,6 +253,24 @@ struct regmap *syscon_regmap_lookup_by_phandle_args(struct device_node *np,
 	return regmap;
 }
 EXPORT_SYMBOL_GPL(syscon_regmap_lookup_by_phandle_args);
+
+/*
+ * It behaves the same as syscon_regmap_lookup_by_phandle() except where
+ * there is no regmap phandle. In this case, instead of returning -ENODEV,
+ * the function returns NULL.
+ */
+struct regmap *syscon_regmap_lookup_by_phandle_optional(struct device_node *np,
+					const char *property)
+{
+	struct regmap *regmap;
+
+	regmap = syscon_regmap_lookup_by_phandle(np, property);
+	if (IS_ERR(regmap) && PTR_ERR(regmap) == -ENODEV)
+		return NULL;
+
+	return regmap;
+}
+EXPORT_SYMBOL_GPL(syscon_regmap_lookup_by_phandle_optional);
 
 static int syscon_probe(struct platform_device *pdev)
 {

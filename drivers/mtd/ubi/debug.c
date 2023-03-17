@@ -511,7 +511,7 @@ int ubi_debugfs_init_dev(struct ubi_device *ubi)
 
 	n = snprintf(d->dfs_dir_name, UBI_DFS_DIR_LEN + 1, UBI_DFS_DIR_NAME,
 		     ubi->ubi_num);
-	if (n == UBI_DFS_DIR_LEN) {
+	if (n > UBI_DFS_DIR_LEN) {
 		/* The array size is too small */
 		return -EINVAL;
 	}
@@ -562,7 +562,7 @@ int ubi_debugfs_init_dev(struct ubi_device *ubi)
 }
 
 /**
- * dbg_debug_exit_dev - free all debugfs files corresponding to device @ubi
+ * ubi_debugfs_exit_dev - free all debugfs files corresponding to device @ubi
  * @ubi: UBI device description object
  */
 void ubi_debugfs_exit_dev(struct ubi_device *ubi)
@@ -590,7 +590,7 @@ int ubi_dbg_power_cut(struct ubi_device *ubi, int caller)
 
 		if (ubi->dbg.power_cut_max > ubi->dbg.power_cut_min) {
 			range = ubi->dbg.power_cut_max - ubi->dbg.power_cut_min;
-			ubi->dbg.power_cut_counter += prandom_u32() % range;
+			ubi->dbg.power_cut_counter += prandom_u32_max(range);
 		}
 		return 0;
 	}

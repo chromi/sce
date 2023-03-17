@@ -105,7 +105,7 @@ static void npcm_pspi_set_mode(struct spi_device *spi)
 	u16 regtemp;
 	u16 mode_val;
 
-	switch (spi->mode & (SPI_CPOL | SPI_CPHA)) {
+	switch (spi->mode & SPI_MODE_X_MASK) {
 	case SPI_MODE_0:
 		mode_val = 0;
 		break;
@@ -443,6 +443,7 @@ static int npcm_pspi_remove(struct platform_device *pdev)
 
 static const struct of_device_id npcm_pspi_match[] = {
 	{ .compatible = "nuvoton,npcm750-pspi", .data = NULL },
+	{ .compatible = "nuvoton,npcm845-pspi", .data = NULL },
 	{}
 };
 MODULE_DEVICE_TABLE(of, npcm_pspi_match);

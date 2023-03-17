@@ -37,12 +37,14 @@
 #include <net/genetlink.h>
 #include <net/net_namespace.h>
 #include <net/netns/generic.h>
+#include <net/pkt_cls.h>
 
 #include "datapath.h"
 #include "flow.h"
 #include "flow_table.h"
 #include "flow_netlink.h"
 #include "meter.h"
+#include "openvswitch_trace.h"
 #include "vport-internal_dev.h"
 #include "vport-netdev.h"
 
@@ -132,6 +134,8 @@ static int queue_userspace_packet(struct datapath *dp, struct sk_buff *,
 
 static void ovs_dp_masks_rebalance(struct work_struct *work);
 
+static int ovs_dp_set_upcall_portids(struct datapath *, const struct nlattr *);
+
 /* Must be called with rcu_read_lock or ovs_mutex. */
 const char *ovs_dp_name(const struct datapath *dp)
 {
@@ -165,6 +169,7 @@ static void destroy_dp_rcu(struct rcu_head *rcu)
 	free_percpu(dp->stats_percpu);
 	kfree(dp->ports);
 	ovs_meters_exit(dp);
+	kfree(rcu_dereference_raw(dp->upcall_portids));
 	kfree(dp);
 }
 
@@ -238,13 +243,26 @@ void ovs_dp_process_packet(struct sk_buff *skb, struct sw_flow_key *key)
 
 		memset(&upcall, 0, sizeof(upcall));
 		upcall.cmd = OVS_PACKET_CMD_MISS;
-		upcall.portid = ovs_vport_find_upcall_portid(p, skb);
+
+		if (dp->user_features & OVS_DP_F_DISPATCH_UPCALL_PER_CPU)
+			upcall.portid =
+			    ovs_dp_get_upcall_portid(dp, smp_processor_id());
+		else
+			upcall.portid = ovs_vport_find_upcall_portid(p, skb);
+
 		upcall.mru = OVS_CB(skb)->mru;
 		error = ovs_dp_upcall(dp, skb, key, &upcall, 0);
-		if (unlikely(error))
-			kfree_skb(skb);
-		else
+		switch (error) {
+		case 0:
+		case -EAGAIN:
+		case -ERESTARTSYS:
+		case -EINTR:
 			consume_skb(skb);
+			break;
+		default:
+			kfree_skb(skb);
+			break;
+		}
 		stats_counter = &stats->n_missed;
 		goto out;
 	}
@@ -274,6 +292,9 @@ int ovs_dp_upcall(struct datapath *dp, struct sk_buff *skb,
 {
 	struct dp_stats_percpu *stats;
 	int err;
+
+	if (trace_ovs_dp_upcall_enabled())
+		trace_ovs_dp_upcall(dp, skb, key, upcall_info);
 
 	if (upcall_info->portid == 0) {
 		err = -ENOTCONN;
@@ -537,8 +558,9 @@ static int queue_userspace_packet(struct datapath *dp, struct sk_buff *skb,
 out:
 	if (err)
 		skb_tx_error(skb);
-	kfree_skb(user_skb);
-	kfree_skb(nskb);
+	consume_skb(user_skb);
+	consume_skb(nskb);
+
 	return err;
 }
 
@@ -670,6 +692,7 @@ static struct genl_family dp_packet_genl_family __ro_after_init = {
 	.parallel_ops = true,
 	.small_ops = dp_packet_genl_ops,
 	.n_small_ops = ARRAY_SIZE(dp_packet_genl_ops),
+	.resv_start_op = OVS_PACKET_CMD_EXECUTE + 1,
 	.module = THIS_MODULE,
 };
 
@@ -1487,6 +1510,7 @@ static struct genl_family dp_flow_genl_family __ro_after_init = {
 	.parallel_ops = true,
 	.small_ops = dp_flow_genl_ops,
 	.n_small_ops = ARRAY_SIZE(dp_flow_genl_ops),
+	.resv_start_op = OVS_FLOW_CMD_SET + 1,
 	.mcgrps = &ovs_dp_flow_multicast_group,
 	.n_mcgrps = 1,
 	.module = THIS_MODULE,
@@ -1501,6 +1525,7 @@ static size_t ovs_dp_cmd_msg_size(void)
 	msgsize += nla_total_size_64bit(sizeof(struct ovs_dp_megaflow_stats));
 	msgsize += nla_total_size(sizeof(u32)); /* OVS_DP_ATTR_USER_FEATURES */
 	msgsize += nla_total_size(sizeof(u32)); /* OVS_DP_ATTR_MASKS_CACHE_SIZE */
+	msgsize += nla_total_size(sizeof(u32) * nr_cpu_ids); /* OVS_DP_ATTR_PER_CPU_PIDS */
 
 	return msgsize;
 }
@@ -1512,7 +1537,8 @@ static int ovs_dp_cmd_fill_info(struct datapath *dp, struct sk_buff *skb,
 	struct ovs_header *ovs_header;
 	struct ovs_dp_stats dp_stats;
 	struct ovs_dp_megaflow_stats dp_megaflow_stats;
-	int err;
+	struct dp_nlsk_pids *pids = ovsl_dereference(dp->upcall_portids);
+	int err, pids_len;
 
 	ovs_header = genlmsg_put(skb, portid, seq, &dp_datapath_genl_family,
 				 flags, cmd);
@@ -1541,6 +1567,12 @@ static int ovs_dp_cmd_fill_info(struct datapath *dp, struct sk_buff *skb,
 	if (nla_put_u32(skb, OVS_DP_ATTR_MASKS_CACHE_SIZE,
 			ovs_flow_tbl_masks_cache_size(&dp->table)))
 		goto nla_put_failure;
+
+	if (dp->user_features & OVS_DP_F_DISPATCH_UPCALL_PER_CPU && pids) {
+		pids_len = min(pids->n_pids, nr_cpu_ids) * sizeof(u32);
+		if (nla_put(skb, OVS_DP_ATTR_PER_CPU_PIDS, pids_len, &pids->pids))
+			goto nla_put_failure;
+	}
 
 	genlmsg_end(skb, ovs_header);
 	return 0;
@@ -1584,22 +1616,75 @@ static void ovs_dp_reset_user_features(struct sk_buff *skb,
 	if (IS_ERR(dp))
 		return;
 
-	WARN(dp->user_features, "Dropping previously announced user features\n");
+	pr_warn("%s: Dropping previously announced user features\n",
+		ovs_dp_name(dp));
 	dp->user_features = 0;
 }
 
-DEFINE_STATIC_KEY_FALSE(tc_recirc_sharing_support);
+static int ovs_dp_set_upcall_portids(struct datapath *dp,
+			      const struct nlattr *ids)
+{
+	struct dp_nlsk_pids *old, *dp_nlsk_pids;
+
+	if (!nla_len(ids) || nla_len(ids) % sizeof(u32))
+		return -EINVAL;
+
+	old = ovsl_dereference(dp->upcall_portids);
+
+	dp_nlsk_pids = kmalloc(sizeof(*dp_nlsk_pids) + nla_len(ids),
+			       GFP_KERNEL);
+	if (!dp_nlsk_pids)
+		return -ENOMEM;
+
+	dp_nlsk_pids->n_pids = nla_len(ids) / sizeof(u32);
+	nla_memcpy(dp_nlsk_pids->pids, ids, nla_len(ids));
+
+	rcu_assign_pointer(dp->upcall_portids, dp_nlsk_pids);
+
+	kfree_rcu(old, rcu);
+
+	return 0;
+}
+
+u32 ovs_dp_get_upcall_portid(const struct datapath *dp, uint32_t cpu_id)
+{
+	struct dp_nlsk_pids *dp_nlsk_pids;
+
+	dp_nlsk_pids = rcu_dereference(dp->upcall_portids);
+
+	if (dp_nlsk_pids) {
+		if (cpu_id < dp_nlsk_pids->n_pids) {
+			return dp_nlsk_pids->pids[cpu_id];
+		} else if (dp_nlsk_pids->n_pids > 0 &&
+			   cpu_id >= dp_nlsk_pids->n_pids) {
+			/* If the number of netlink PIDs is mismatched with
+			 * the number of CPUs as seen by the kernel, log this
+			 * and send the upcall to an arbitrary socket (0) in
+			 * order to not drop packets
+			 */
+			pr_info_ratelimited("cpu_id mismatch with handler threads");
+			return dp_nlsk_pids->pids[cpu_id %
+						  dp_nlsk_pids->n_pids];
+		} else {
+			return 0;
+		}
+	} else {
+		return 0;
+	}
+}
 
 static int ovs_dp_change(struct datapath *dp, struct nlattr *a[])
 {
-	u32 user_features = 0;
+	u32 user_features = 0, old_features = dp->user_features;
+	int err;
 
 	if (a[OVS_DP_ATTR_USER_FEATURES]) {
 		user_features = nla_get_u32(a[OVS_DP_ATTR_USER_FEATURES]);
 
 		if (user_features & ~(OVS_DP_F_VPORT_PIDS |
 				      OVS_DP_F_UNALIGNED |
-				      OVS_DP_F_TC_RECIRC_SHARING))
+				      OVS_DP_F_TC_RECIRC_SHARING |
+				      OVS_DP_F_DISPATCH_UPCALL_PER_CPU))
 			return -EOPNOTSUPP;
 
 #if !IS_ENABLED(CONFIG_NET_TC_SKB_EXT)
@@ -1620,10 +1705,21 @@ static int ovs_dp_change(struct datapath *dp, struct nlattr *a[])
 
 	dp->user_features = user_features;
 
-	if (dp->user_features & OVS_DP_F_TC_RECIRC_SHARING)
-		static_branch_enable(&tc_recirc_sharing_support);
-	else
-		static_branch_disable(&tc_recirc_sharing_support);
+	if (dp->user_features & OVS_DP_F_DISPATCH_UPCALL_PER_CPU &&
+	    a[OVS_DP_ATTR_PER_CPU_PIDS]) {
+		/* Upcall Netlink Port IDs have been updated */
+		err = ovs_dp_set_upcall_portids(dp,
+						a[OVS_DP_ATTR_PER_CPU_PIDS]);
+		if (err)
+			return err;
+	}
+
+	if ((dp->user_features & OVS_DP_F_TC_RECIRC_SHARING) &&
+	    !(old_features & OVS_DP_F_TC_RECIRC_SHARING))
+		tc_skb_ext_tc_enable();
+	else if (!(dp->user_features & OVS_DP_F_TC_RECIRC_SHARING) &&
+		 (old_features & OVS_DP_F_TC_RECIRC_SHARING))
+		tc_skb_ext_tc_disable();
 
 	return 0;
 }
@@ -1702,6 +1798,8 @@ static int ovs_dp_cmd_new(struct sk_buff *skb, struct genl_info *info)
 	parms.dp = dp;
 	parms.port_no = OVSP_LOCAL;
 	parms.upcall_portids = a[OVS_DP_ATTR_UPCALL_PID];
+	parms.desired_ifindex = a[OVS_DP_ATTR_IFINDEX]
+		? nla_get_u32(a[OVS_DP_ATTR_IFINDEX]) : 0;
 
 	/* So far only local changes have been made, now need the lock. */
 	ovs_lock();
@@ -1725,7 +1823,7 @@ static int ovs_dp_cmd_new(struct sk_buff *skb, struct genl_info *info)
 				ovs_dp_reset_user_features(skb, info);
 		}
 
-		goto err_unlock_and_destroy_meters;
+		goto err_destroy_portids;
 	}
 
 	err = ovs_dp_cmd_fill_info(dp, reply, info->snd_portid,
@@ -1740,6 +1838,8 @@ static int ovs_dp_cmd_new(struct sk_buff *skb, struct genl_info *info)
 	ovs_notify(&dp_datapath_genl_family, reply, info);
 	return 0;
 
+err_destroy_portids:
+	kfree(rcu_dereference_raw(dp->upcall_portids));
 err_unlock_and_destroy_meters:
 	ovs_unlock();
 	ovs_meters_exit(dp);
@@ -1762,6 +1862,9 @@ static void __dp_destroy(struct datapath *dp)
 {
 	struct flow_table *table = &dp->table;
 	int i;
+
+	if (dp->user_features & OVS_DP_F_TC_RECIRC_SHARING)
+		tc_skb_ext_tc_disable();
 
 	for (i = 0; i < DP_VPORT_HASH_BUCKETS; i++) {
 		struct vport *vport;
@@ -1916,6 +2019,7 @@ static const struct nla_policy datapath_policy[OVS_DP_ATTR_MAX + 1] = {
 	[OVS_DP_ATTR_USER_FEATURES] = { .type = NLA_U32 },
 	[OVS_DP_ATTR_MASKS_CACHE_SIZE] =  NLA_POLICY_RANGE(NLA_U32, 0,
 		PCPU_MIN_UNIT_SIZE / sizeof(struct mask_cache_entry)),
+	[OVS_DP_ATTR_IFINDEX] = {.type = NLA_U32 },
 };
 
 static const struct genl_small_ops dp_datapath_genl_ops[] = {
@@ -1952,6 +2056,7 @@ static struct genl_family dp_datapath_genl_family __ro_after_init = {
 	.parallel_ops = true,
 	.small_ops = dp_datapath_genl_ops,
 	.n_small_ops = ARRAY_SIZE(dp_datapath_genl_ops),
+	.resv_start_op = OVS_DP_CMD_SET + 1,
 	.mcgrps = &ovs_dp_datapath_multicast_group,
 	.n_mcgrps = 1,
 	.module = THIS_MODULE,
@@ -2119,7 +2224,10 @@ static int ovs_vport_cmd_new(struct sk_buff *skb, struct genl_info *info)
 	if (!a[OVS_VPORT_ATTR_NAME] || !a[OVS_VPORT_ATTR_TYPE] ||
 	    !a[OVS_VPORT_ATTR_UPCALL_PID])
 		return -EINVAL;
-	if (a[OVS_VPORT_ATTR_IFINDEX])
+
+	parms.type = nla_get_u32(a[OVS_VPORT_ATTR_TYPE]);
+
+	if (a[OVS_VPORT_ATTR_IFINDEX] && parms.type != OVS_VPORT_TYPE_INTERNAL)
 		return -EOPNOTSUPP;
 
 	port_no = a[OVS_VPORT_ATTR_PORT_NO]
@@ -2156,11 +2264,12 @@ restart:
 	}
 
 	parms.name = nla_data(a[OVS_VPORT_ATTR_NAME]);
-	parms.type = nla_get_u32(a[OVS_VPORT_ATTR_TYPE]);
 	parms.options = a[OVS_VPORT_ATTR_OPTIONS];
 	parms.dp = dp;
 	parms.port_no = port_no;
 	parms.upcall_portids = a[OVS_VPORT_ATTR_UPCALL_PID];
+	parms.desired_ifindex = a[OVS_VPORT_ATTR_IFINDEX]
+		? nla_get_u32(a[OVS_VPORT_ATTR_IFINDEX]) : 0;
 
 	vport = new_vport(&parms);
 	err = PTR_ERR(vport);
@@ -2435,6 +2544,7 @@ struct genl_family dp_vport_genl_family __ro_after_init = {
 	.parallel_ops = true,
 	.small_ops = dp_vport_genl_ops,
 	.n_small_ops = ARRAY_SIZE(dp_vport_genl_ops),
+	.resv_start_op = OVS_VPORT_CMD_SET + 1,
 	.mcgrps = &ovs_dp_vport_multicast_group,
 	.n_mcgrps = 1,
 	.module = THIS_MODULE,

@@ -727,7 +727,7 @@ static long am65_cpts_ts_work(struct ptp_clock_info *ptp)
 /**
  * am65_cpts_rx_enable - enable rx timestamping
  * @cpts: cpts handle
- * @skb: packet
+ * @en: enable
  *
  * This functions enables rx packets timestamping. The CPTS can timestamp all
  * rx packets.
@@ -943,9 +943,7 @@ struct am65_cpts *am65_cpts_create(struct device *dev, void __iomem *regs,
 	cpts->irq = of_irq_get_byname(node, "cpts");
 	if (cpts->irq <= 0) {
 		ret = cpts->irq ?: -ENXIO;
-		if (ret != -EPROBE_DEFER)
-			dev_err(dev, "Failed to get IRQ number (err = %d)\n",
-				ret);
+		dev_err_probe(dev, ret, "Failed to get IRQ number\n");
 		return ERR_PTR(ret);
 	}
 
@@ -965,8 +963,7 @@ struct am65_cpts *am65_cpts_create(struct device *dev, void __iomem *regs,
 	cpts->refclk = devm_get_clk_from_child(dev, node, "cpts");
 	if (IS_ERR(cpts->refclk)) {
 		ret = PTR_ERR(cpts->refclk);
-		if (ret != -EPROBE_DEFER)
-			dev_err(dev, "Failed to get refclk %d\n", ret);
+		dev_err_probe(dev, ret, "Failed to get refclk\n");
 		return ERR_PTR(ret);
 	}
 
@@ -1037,11 +1034,9 @@ static int am65_cpts_probe(struct platform_device *pdev)
 	struct device_node *node = pdev->dev.of_node;
 	struct device *dev = &pdev->dev;
 	struct am65_cpts *cpts;
-	struct resource *res;
 	void __iomem *base;
 
-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "cpts");
-	base = devm_ioremap_resource(dev, res);
+	base = devm_platform_ioremap_resource_byname(pdev, "cpts");
 	if (IS_ERR(base))
 		return PTR_ERR(base);
 

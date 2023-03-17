@@ -4351,7 +4351,7 @@ static int wm8994_component_probe(struct snd_soc_component *component)
 	}
 	if ((reg & WM8994_GPN_FN_MASK) != WM8994_GP_FN_PIN_SPECIFIC) {
 		wm8994->lrclk_shared[0] = 1;
-		wm8994_dai[0].symmetric_rates = 1;
+		wm8994_dai[0].symmetric_rate = 1;
 	} else {
 		wm8994->lrclk_shared[0] = 0;
 	}
@@ -4363,7 +4363,7 @@ static int wm8994_component_probe(struct snd_soc_component *component)
 	}
 	if ((reg & WM8994_GPN_FN_MASK) != WM8994_GP_FN_PIN_SPECIFIC) {
 		wm8994->lrclk_shared[1] = 1;
-		wm8994_dai[1].symmetric_rates = 1;
+		wm8994_dai[1].symmetric_rate = 1;
 	} else {
 		wm8994->lrclk_shared[1] = 0;
 	}
@@ -4614,7 +4614,6 @@ static const struct snd_soc_component_driver soc_component_dev_wm8994 = {
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static int wm8994_probe(struct platform_device *pdev)
@@ -4645,8 +4644,12 @@ static int wm8994_probe(struct platform_device *pdev)
 	pm_runtime_enable(&pdev->dev);
 	pm_runtime_idle(&pdev->dev);
 
-	return devm_snd_soc_register_component(&pdev->dev, &soc_component_dev_wm8994,
+	ret = devm_snd_soc_register_component(&pdev->dev, &soc_component_dev_wm8994,
 			wm8994_dai, ARRAY_SIZE(wm8994_dai));
+	if (ret < 0)
+		pm_runtime_disable(&pdev->dev);
+
+	return ret;
 }
 
 static int wm8994_remove(struct platform_device *pdev)

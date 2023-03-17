@@ -225,7 +225,7 @@ static int hiface_pcm_stream_start(struct pcm_runtime *rt)
 			}
 		}
 
-		/* wait for first out urb to return (sent in in urb handler) */
+		/* wait for first out urb to return (sent in urb handler) */
 		wait_event_timeout(rt->stream_wait_queue, rt->stream_wait_cond,
 				   HZ);
 		if (rt->stream_wait_cond) {
@@ -594,7 +594,7 @@ int hiface_pcm_init(struct hiface_chip *chip, u8 extra_freq)
 	pcm->private_data = rt;
 	pcm->private_free = hiface_pcm_free;
 
-	strlcpy(pcm->name, "USB-SPDIF Audio", sizeof(pcm->name));
+	strscpy(pcm->name, "USB-SPDIF Audio", sizeof(pcm->name));
 	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_PLAYBACK, &pcm_ops);
 	snd_pcm_set_managed_buffer_all(pcm, SNDRV_DMA_TYPE_VMALLOC,
 				       NULL, 0, 0);

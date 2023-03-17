@@ -145,12 +145,13 @@ int aa_af_perm(struct aa_label *label, const char *op, u32 request, u16 family,
 static int aa_label_sk_perm(struct aa_label *label, const char *op, u32 request,
 			    struct sock *sk)
 {
+	struct aa_sk_ctx *ctx = SK_CTX(sk);
 	int error = 0;
 
 	AA_BUG(!label);
 	AA_BUG(!sk);
 
-	if (!unconfined(label)) {
+	if (ctx->label != kernel_t && !unconfined(label)) {
 		struct aa_profile *profile;
 		DEFINE_AUDIT_SK(sa, op, sk);
 
@@ -211,7 +212,7 @@ static int apparmor_secmark_init(struct aa_secmark *secmark)
 }
 
 static int aa_secmark_perm(struct aa_profile *profile, u32 request, u32 secid,
-			   struct common_audit_data *sa, struct sock *sk)
+			   struct common_audit_data *sa)
 {
 	int i, ret;
 	struct aa_perms perms = { };
@@ -244,13 +245,13 @@ static int aa_secmark_perm(struct aa_profile *profile, u32 request, u32 secid,
 }
 
 int apparmor_secmark_check(struct aa_label *label, char *op, u32 request,
-			   u32 secid, struct sock *sk)
+			   u32 secid, const struct sock *sk)
 {
 	struct aa_profile *profile;
 	DEFINE_AUDIT_SK(sa, op, sk);
 
 	return fn_for_each_confined(label, profile,
 				    aa_secmark_perm(profile, request, secid,
-						    &sa, sk));
+						    &sa));
 }
 #endif

@@ -9,13 +9,13 @@
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <net/genetlink.h>
+#include <net/gro.h>
 #include <net/gue.h>
 #include <net/fou.h>
 #include <net/ip.h>
 #include <net/protocol.h>
 #include <net/udp.h>
 #include <net/udp_tunnel.h>
-#include <net/xfrm.h>
 #include <uapi/linux/fou.h>
 #include <uapi/linux/genetlink.h>
 
@@ -230,8 +230,8 @@ static struct sk_buff *fou_gro_receive(struct sock *sk,
 				       struct list_head *head,
 				       struct sk_buff *skb)
 {
+	const struct net_offload __rcu **offloads;
 	u8 proto = fou_from_sock(sk)->protocol;
-	const struct net_offload **offloads;
 	const struct net_offload *ops;
 	struct sk_buff *pp = NULL;
 
@@ -246,41 +246,35 @@ static struct sk_buff *fou_gro_receive(struct sock *sk,
 	/* Flag this frame as already having an outer encap header */
 	NAPI_GRO_CB(skb)->is_fou = 1;
 
-	rcu_read_lock();
 	offloads = NAPI_GRO_CB(skb)->is_ipv6 ? inet6_offloads : inet_offloads;
 	ops = rcu_dereference(offloads[proto]);
 	if (!ops || !ops->callbacks.gro_receive)
-		goto out_unlock;
+		goto out;
 
 	pp = call_gro_receive(ops->callbacks.gro_receive, head, skb);
 
-out_unlock:
-	rcu_read_unlock();
-
+out:
 	return pp;
 }
 
 static int fou_gro_complete(struct sock *sk, struct sk_buff *skb,
 			    int nhoff)
 {
-	const struct net_offload *ops;
+	const struct net_offload __rcu **offloads;
 	u8 proto = fou_from_sock(sk)->protocol;
+	const struct net_offload *ops;
 	int err = -ENOSYS;
-	const struct net_offload **offloads;
 
-	rcu_read_lock();
 	offloads = NAPI_GRO_CB(skb)->is_ipv6 ? inet6_offloads : inet_offloads;
 	ops = rcu_dereference(offloads[proto]);
 	if (WARN_ON(!ops || !ops->callbacks.gro_complete))
-		goto out_unlock;
+		goto out;
 
 	err = ops->callbacks.gro_complete(skb, nhoff);
 
 	skb_set_inner_mac_header(skb, nhoff);
 
-out_unlock:
-	rcu_read_unlock();
-
+out:
 	return err;
 }
 
@@ -311,7 +305,7 @@ static struct sk_buff *gue_gro_receive(struct sock *sk,
 				       struct list_head *head,
 				       struct sk_buff *skb)
 {
-	const struct net_offload **offloads;
+	const struct net_offload __rcu **offloads;
 	const struct net_offload *ops;
 	struct sk_buff *pp = NULL;
 	struct sk_buff *p;
@@ -329,12 +323,9 @@ static struct sk_buff *gue_gro_receive(struct sock *sk,
 	off = skb_gro_offset(skb);
 	len = off + sizeof(*guehdr);
 
-	guehdr = skb_gro_header_fast(skb, off);
-	if (skb_gro_header_hard(skb, len)) {
-		guehdr = skb_gro_header_slow(skb, len, off);
-		if (unlikely(!guehdr))
-			goto out;
-	}
+	guehdr = skb_gro_header(skb, len, off);
+	if (unlikely(!guehdr))
+		goto out;
 
 	switch (guehdr->version) {
 	case 0:
@@ -438,17 +429,14 @@ next_proto:
 	/* Flag this frame as already having an outer encap header */
 	NAPI_GRO_CB(skb)->is_fou = 1;
 
-	rcu_read_lock();
 	offloads = NAPI_GRO_CB(skb)->is_ipv6 ? inet6_offloads : inet_offloads;
 	ops = rcu_dereference(offloads[proto]);
 	if (WARN_ON_ONCE(!ops || !ops->callbacks.gro_receive))
-		goto out_unlock;
+		goto out;
 
 	pp = call_gro_receive(ops->callbacks.gro_receive, head, skb);
 	flush = 0;
 
-out_unlock:
-	rcu_read_unlock();
 out:
 	skb_gro_flush_final_remcsum(skb, pp, flush, &grc);
 
@@ -457,8 +445,8 @@ out:
 
 static int gue_gro_complete(struct sock *sk, struct sk_buff *skb, int nhoff)
 {
-	const struct net_offload **offloads;
 	struct guehdr *guehdr = (struct guehdr *)(skb->data + nhoff);
+	const struct net_offload __rcu **offloads;
 	const struct net_offload *ops;
 	unsigned int guehlen = 0;
 	u8 proto;
@@ -485,18 +473,16 @@ static int gue_gro_complete(struct sock *sk, struct sk_buff *skb, int nhoff)
 		return err;
 	}
 
-	rcu_read_lock();
 	offloads = NAPI_GRO_CB(skb)->is_ipv6 ? inet6_offloads : inet_offloads;
 	ops = rcu_dereference(offloads[proto]);
 	if (WARN_ON(!ops || !ops->callbacks.gro_complete))
-		goto out_unlock;
+		goto out;
 
 	err = ops->callbacks.gro_complete(skb, nhoff + guehlen);
 
 	skb_set_inner_mac_header(skb, nhoff + guehlen);
 
-out_unlock:
-	rcu_read_unlock();
+out:
 	return err;
 }
 
@@ -942,6 +928,7 @@ static struct genl_family fou_nl_family __ro_after_init = {
 	.module		= THIS_MODULE,
 	.small_ops	= fou_nl_ops,
 	.n_small_ops	= ARRAY_SIZE(fou_nl_ops),
+	.resv_start_op	= FOU_CMD_GET + 1,
 };
 
 size_t fou_encap_hlen(struct ip_tunnel_encap *e)

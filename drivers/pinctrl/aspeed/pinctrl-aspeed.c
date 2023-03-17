@@ -92,23 +92,15 @@ static int aspeed_sig_expr_enable(struct aspeed_pinmux_data *ctx,
 static int aspeed_sig_expr_disable(struct aspeed_pinmux_data *ctx,
 				   const struct aspeed_sig_expr *expr)
 {
-	int ret;
-
 	pr_debug("Disabling signal %s for %s\n", expr->signal,
 		 expr->function);
 
-	ret = aspeed_sig_expr_eval(ctx, expr, true);
-	if (ret < 0)
-		return ret;
-
-	if (ret)
-		return aspeed_sig_expr_set(ctx, expr, false);
-
-	return 0;
+	return aspeed_sig_expr_set(ctx, expr, false);
 }
 
 /**
- * Disable a signal on a pin by disabling all provided signal expressions.
+ * aspeed_disable_sig() - Disable a signal on a pin by disabling all provided
+ * signal expressions.
  *
  * @ctx: The pinmux context
  * @exprs: The list of signal expressions (from a priority level on a pin)
@@ -132,8 +124,8 @@ static int aspeed_disable_sig(struct aspeed_pinmux_data *ctx,
 }
 
 /**
- * Search for the signal expression needed to enable the pin's signal for the
- * requested function.
+ * aspeed_find_expr_by_name - Search for the signal expression needed to
+ * enable the pin's signal for the requested function.
  *
  * @exprs: List of signal expressions (haystack)
  * @name: The name of the requested function (needle)
@@ -235,10 +227,10 @@ int aspeed_pinmux_set_mux(struct pinctrl_dev *pctldev, unsigned int function,
 		const struct aspeed_sig_expr **funcs;
 		const struct aspeed_sig_expr ***prios;
 
-		pr_debug("Muxing pin %s for %s\n", pdesc->name, pfunc->name);
-
 		if (!pdesc)
 			return -EINVAL;
+
+		pr_debug("Muxing pin %s for %s\n", pdesc->name, pfunc->name);
 
 		prios = pdesc->prios;
 

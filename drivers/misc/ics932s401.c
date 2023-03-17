@@ -93,7 +93,7 @@ static int ics932s401_probe(struct i2c_client *client,
 			 const struct i2c_device_id *id);
 static int ics932s401_detect(struct i2c_client *client,
 			  struct i2c_board_info *info);
-static int ics932s401_remove(struct i2c_client *client);
+static void ics932s401_remove(struct i2c_client *client);
 
 static const struct i2c_device_id ics932s401_id[] = {
 	{ "ics932s401", 0 },
@@ -134,7 +134,7 @@ static struct ics932s401_data *ics932s401_update_device(struct device *dev)
 	for (i = 0; i < NUM_MIRRORED_REGS; i++) {
 		temp = i2c_smbus_read_word_data(client, regs_to_copy[i]);
 		if (temp < 0)
-			data->regs[regs_to_copy[i]] = 0;
+			temp = 0;
 		data->regs[regs_to_copy[i]] = temp >> 8;
 	}
 
@@ -424,7 +424,7 @@ static int ics932s401_detect(struct i2c_client *client,
 	if (revision != ICS932S401_REV)
 		dev_info(&adapter->dev, "Unknown revision %d\n", revision);
 
-	strlcpy(info->type, "ics932s401", I2C_NAME_SIZE);
+	strscpy(info->type, "ics932s401", I2C_NAME_SIZE);
 
 	return 0;
 }
@@ -460,13 +460,12 @@ exit:
 	return err;
 }
 
-static int ics932s401_remove(struct i2c_client *client)
+static void ics932s401_remove(struct i2c_client *client)
 {
 	struct ics932s401_data *data = i2c_get_clientdata(client);
 
 	sysfs_remove_group(&client->dev.kobj, &data->attrs);
 	kfree(data);
-	return 0;
 }
 
 module_i2c_driver(ics932s401_driver);

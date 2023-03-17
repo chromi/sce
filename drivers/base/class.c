@@ -16,7 +16,7 @@
 #include <linux/kdev_t.h>
 #include <linux/err.h>
 #include <linux/slab.h>
-#include <linux/genhd.h>
+#include <linux/blkdev.h>
 #include <linux/mutex.h>
 #include "base.h"
 
@@ -210,7 +210,7 @@ static void class_create_release(struct class *cls)
 }
 
 /**
- * class_create - create a struct class structure
+ * __class_create - create a struct class structure
  * @owner: pointer to the module that is to "own" this struct class
  * @name: pointer to a string for the name of this class.
  * @key: the lock_class_key for this class; used by mutex lock debugging
@@ -260,7 +260,7 @@ EXPORT_SYMBOL_GPL(__class_create);
  */
 void class_destroy(struct class *cls)
 {
-	if ((cls == NULL) || (IS_ERR(cls)))
+	if (IS_ERR_OR_NULL(cls))
 		return;
 
 	class_unregister(cls);

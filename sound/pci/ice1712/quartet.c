@@ -566,7 +566,7 @@ static int qtet_ain12_sw_put(struct snd_kcontrol *kcontrol,
 {
 	struct snd_ice1712 *ice = snd_kcontrol_chip(kcontrol);
 	unsigned int old, new, tmp, masked_old;
-	old = new = get_scr(ice);
+	old = get_scr(ice);
 	masked_old = old & (SCR_AIN12_SEL1 | SCR_AIN12_SEL0);
 	tmp = ucontrol->value.integer.value[0];
 	if (tmp == 2)
@@ -771,7 +771,7 @@ static struct snd_kcontrol *ctl_find(struct snd_card *card,
 {
 	struct snd_ctl_elem_id sid = {0};
 
-	strlcpy(sid.name, name, sizeof(sid.name));
+	strscpy(sid.name, name, sizeof(sid.name));
 	sid.iface = SNDRV_CTL_ELEM_IFACE_MIXER;
 	return snd_ctl_find_id(card, &sid);
 }

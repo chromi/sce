@@ -485,10 +485,10 @@ static int mace_read(mace_private *lp, unsigned int ioaddr, int reg)
   unsigned long flags;
 
   switch (reg >> 4) {
-    case 0: /* register 0-15 */
+  case 0: /* register 0-15 */
       data = inb(ioaddr + AM2150_MACE_BASE + reg);
       break;
-    case 1: /* register 16-31 */
+  case 1: /* register 16-31 */
       spin_lock_irqsave(&lp->bank_lock, flags);
       MACEBANK(1);
       data = inb(ioaddr + AM2150_MACE_BASE + (reg & 0x0F));
@@ -512,10 +512,10 @@ static void mace_write(mace_private *lp, unsigned int ioaddr, int reg,
   unsigned long flags;
 
   switch (reg >> 4) {
-    case 0: /* register 0-15 */
+  case 0: /* register 0-15 */
       outb(data & 0xFF, ioaddr + AM2150_MACE_BASE + reg);
       break;
-    case 1: /* register 16-31 */
+  case 1: /* register 16-31 */
       spin_lock_irqsave(&lp->bank_lock, flags);
       MACEBANK(1);
       outb(data & 0xFF, ioaddr + AM2150_MACE_BASE + (reg & 0x0F));
@@ -529,7 +529,8 @@ static void mace_write(mace_private *lp, unsigned int ioaddr, int reg,
 mace_init
 	Resets the MACE chip.
 ---------------------------------------------------------------------------- */
-static int mace_init(mace_private *lp, unsigned int ioaddr, char *enet_addr)
+static int mace_init(mace_private *lp, unsigned int ioaddr,
+		     const char *enet_addr)
 {
   int i;
   int ct = 0;
@@ -541,7 +542,7 @@ static int mace_init(mace_private *lp, unsigned int ioaddr, char *enet_addr)
     if(++ct > 500)
     {
 	pr_err("reset failed, card removed?\n");
-    	return -1;
+	return -1;
     }
     udelay(1);
   }
@@ -566,13 +567,13 @@ static int mace_init(mace_private *lp, unsigned int ioaddr, char *enet_addr)
    * Or just set ASEL in PHYCC below!
    */
   switch (if_port) {
-    case 1:
+  case 1:
       mace_write(lp, ioaddr, MACE_PLSCC, 0x02);
       break;
-    case 2:
+  case 2:
       mace_write(lp, ioaddr, MACE_PLSCC, 0x00);
       break;
-    default:
+  default:
       mace_write(lp, ioaddr, MACE_PHYCC, /* ASEL */ 4);
       /* ASEL Auto Select.  When set, the PORTSEL[1-0] bits are overridden,
 	 and the MACE device will automatically select the operating media
@@ -585,11 +586,11 @@ static int mace_init(mace_private *lp, unsigned int ioaddr, char *enet_addr)
   ct = 0;
   while (mace_read(lp, ioaddr, MACE_IAC) & MACE_IAC_ADDRCHG)
   {
-  	if(++ ct > 500)
-  	{
+	if(++ ct > 500)
+	{
 		pr_err("ADDRCHG timeout, card removed?\n");
-  		return -1;
-  	}
+		return -1;
+	}
   }
   /* Set PADR register */
   for (i = 0; i < ETH_ALEN; i++)
@@ -635,7 +636,7 @@ static int nmclan_config(struct pcmcia_device *link)
 	  kfree(buf);
 	  goto failed;
   }
-  memcpy(dev->dev_addr, buf, ETH_ALEN);
+  eth_hw_addr_set(dev, buf);
   kfree(buf);
 
   /* Verify configuration by reading the MACE ID. */
@@ -655,7 +656,7 @@ static int nmclan_config(struct pcmcia_device *link)
   }
 
   if(mace_init(lp, ioaddr, dev->dev_addr) == -1)
-  	goto failed;
+	goto failed;
 
   /* The if_port symbol can be set when the module is loaded */
   if (if_port <= 2)
@@ -814,7 +815,7 @@ static int mace_close(struct net_device *dev)
 static void netdev_get_drvinfo(struct net_device *dev,
 			       struct ethtool_drvinfo *info)
 {
-	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
+	strscpy(info->driver, DRV_NAME, sizeof(info->driver));
 	snprintf(info->bus_info, sizeof(info->bus_info),
 		"PCMCIA 0x%lx", dev->base_addr);
 }
@@ -917,7 +918,7 @@ static irqreturn_t mace_interrupt(int irq, void *dev_id)
   int status;
   int IntrCnt = MACE_MAX_IR_ITERATIONS;
 
-  if (dev == NULL) {
+  if (!dev) {
     pr_debug("mace_interrupt(): irq 0x%X for unknown device.\n",
 	  irq);
     return IRQ_NONE;
@@ -1101,7 +1102,7 @@ static int mace_rx(struct net_device *dev, unsigned char RxCnt)
 
       skb = netdev_alloc_skb(dev, pkt_len + 2);
 
-      if (skb != NULL) {
+      if (skb) {
 	skb_reserve(skb, 2);
 	insw(ioaddr + AM2150_RCV, skb_put(skb, pkt_len), pkt_len>>1);
 	if (pkt_len & 1)

@@ -11,8 +11,7 @@
 
 int hl_asid_init(struct hl_device *hdev)
 {
-	hdev->asid_bitmap = kcalloc(BITS_TO_LONGS(hdev->asic_prop.max_asid),
-					sizeof(*hdev->asid_bitmap), GFP_KERNEL);
+	hdev->asid_bitmap = bitmap_zalloc(hdev->asic_prop.max_asid, GFP_KERNEL);
 	if (!hdev->asid_bitmap)
 		return -ENOMEM;
 
@@ -27,7 +26,7 @@ int hl_asid_init(struct hl_device *hdev)
 void hl_asid_fini(struct hl_device *hdev)
 {
 	mutex_destroy(&hdev->asid_mutex);
-	kfree(hdev->asid_bitmap);
+	bitmap_free(hdev->asid_bitmap);
 }
 
 unsigned long hl_asid_alloc(struct hl_device *hdev)
@@ -50,8 +49,10 @@ unsigned long hl_asid_alloc(struct hl_device *hdev)
 
 void hl_asid_free(struct hl_device *hdev, unsigned long asid)
 {
-	if (WARN((asid == 0 || asid >= hdev->asic_prop.max_asid),
-						"Invalid ASID %lu", asid))
+	if (asid == HL_KERNEL_ASID_ID || asid >= hdev->asic_prop.max_asid) {
+		dev_crit(hdev->dev, "Invalid ASID %lu", asid);
 		return;
+	}
+
 	clear_bit(asid, hdev->asid_bitmap);
 }

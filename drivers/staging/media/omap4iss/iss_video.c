@@ -190,7 +190,7 @@ iss_video_remote_subdev(struct iss_video *video, u32 *pad)
 {
 	struct media_pad *remote;
 
-	remote = media_entity_remote_pad(&video->pad);
+	remote = media_pad_remote_pad_first(&video->pad);
 
 	if (!remote || !is_media_entity_v4l2_subdev(remote->entity))
 		return NULL;
@@ -399,7 +399,7 @@ static void iss_video_buf_queue(struct vb2_buffer *vb)
 
 		if (start)
 			omap4iss_pipeline_set_stream(pipe,
-						ISS_PIPELINE_STREAM_SINGLESHOT);
+						     ISS_PIPELINE_STREAM_SINGLESHOT);
 	}
 }
 
@@ -843,7 +843,7 @@ iss_video_dqbuf(struct file *file, void *fh, struct v4l2_buffer *b)
  * processing might be possible but requires more testing.
  *
  * Stream start must be delayed until buffers are available at both the input
- * and output. The pipeline must be started in the videobuf queue callback with
+ * and output. The pipeline must be started in the vb2 queue callback with
  * the buffers queue spinlock held. The modules subdev set stream operation must
  * not sleep.
  */
@@ -854,6 +854,7 @@ iss_video_streamon(struct file *file, void *fh, enum v4l2_buf_type type)
 	struct iss_video *video = video_drvdata(file);
 	struct media_graph graph;
 	struct media_entity *entity = &video->video.entity;
+	struct media_device *mdev = entity->graph_obj.mdev;
 	enum iss_pipeline_state state;
 	struct iss_pipeline *pipe;
 	struct iss_video *far_end;
@@ -869,8 +870,7 @@ iss_video_streamon(struct file *file, void *fh, enum v4l2_buf_type type)
 	 * Start streaming on the pipeline. No link touching an entity in the
 	 * pipeline can be activated or deactivated once streaming is started.
 	 */
-	pipe = entity->pipe
-	     ? to_iss_pipeline(entity) : &video->pipe;
+	pipe = to_iss_pipeline(&video->video.entity) ? : &video->pipe;
 	pipe->external = NULL;
 	pipe->external_rate = 0;
 	pipe->external_bpp = 0;
@@ -886,13 +886,15 @@ iss_video_streamon(struct file *file, void *fh, enum v4l2_buf_type type)
 	if (video->iss->pdata->set_constraints)
 		video->iss->pdata->set_constraints(video->iss, true);
 
-	ret = media_pipeline_start(entity, &pipe->pipe);
+	ret = video_device_pipeline_start(&video->video, &pipe->pipe);
 	if (ret < 0)
 		goto err_media_pipeline_start;
 
+	mutex_lock(&mdev->graph_mutex);
 	media_graph_walk_start(&graph, entity);
 	while ((entity = media_graph_walk_next(&graph)))
 		media_entity_enum_set(&pipe->ent_enum, entity);
+	mutex_unlock(&mdev->graph_mutex);
 
 	/*
 	 * Verify that the currently configured format matches the output of
@@ -957,7 +959,7 @@ iss_video_streamon(struct file *file, void *fh, enum v4l2_buf_type type)
 		unsigned long flags;
 
 		ret = omap4iss_pipeline_set_stream(pipe,
-					      ISS_PIPELINE_STREAM_CONTINUOUS);
+						   ISS_PIPELINE_STREAM_CONTINUOUS);
 		if (ret < 0)
 			goto err_omap4iss_set_stream;
 		spin_lock_irqsave(&video->qlock, flags);
@@ -975,7 +977,7 @@ iss_video_streamon(struct file *file, void *fh, enum v4l2_buf_type type)
 err_omap4iss_set_stream:
 	vb2_streamoff(&vfh->queue, type);
 err_iss_video_check_format:
-	media_pipeline_stop(&video->video.entity);
+	video_device_pipeline_stop(&video->video);
 err_media_pipeline_start:
 	if (video->iss->pdata->set_constraints)
 		video->iss->pdata->set_constraints(video->iss, false);
@@ -1029,7 +1031,7 @@ iss_video_streamoff(struct file *file, void *fh, enum v4l2_buf_type type)
 
 	if (video->iss->pdata->set_constraints)
 		video->iss->pdata->set_constraints(video->iss, false);
-	media_pipeline_stop(&video->video.entity);
+	video_device_pipeline_stop(&video->video);
 
 done:
 	mutex_unlock(&video->stream_lock);

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2003-2019, Intel Corporation. All rights reserved.
+ * Copyright (c) 2003-2022, Intel Corporation. All rights reserved.
  * Intel Management Engine Interface (Intel MEI) Linux driver
  */
 
@@ -57,8 +57,24 @@ enum mei_dev_state {
 	MEI_DEV_ENABLED,
 	MEI_DEV_RESETTING,
 	MEI_DEV_DISABLED,
+	MEI_DEV_POWERING_DOWN,
 	MEI_DEV_POWER_DOWN,
 	MEI_DEV_POWER_UP
+};
+
+/**
+ * enum mei_dev_pxp_mode - MEI PXP mode state
+ *
+ * @MEI_DEV_PXP_DEFAULT: PCH based device, no initailization required
+ * @MEI_DEV_PXP_INIT:    device requires initialization, send setup message to firmware
+ * @MEI_DEV_PXP_SETUP:   device is in setup stage, waiting for firmware repsonse
+ * @MEI_DEV_PXP_READY:   device initialized
+ */
+enum mei_dev_pxp_mode {
+	MEI_DEV_PXP_DEFAULT = 0,
+	MEI_DEV_PXP_INIT    = 1,
+	MEI_DEV_PXP_SETUP   = 2,
+	MEI_DEV_PXP_READY   = 3,
 };
 
 const char *mei_dev_state_str(int state);
@@ -78,6 +94,8 @@ enum mei_file_transaction_states {
  * @MEI_FOP_DISCONNECT_RSP: disconnect response
  * @MEI_FOP_NOTIFY_START:   start notification
  * @MEI_FOP_NOTIFY_STOP:    stop notification
+ * @MEI_FOP_DMA_MAP:   request client dma map
+ * @MEI_FOP_DMA_UNMAP: request client dma unmap
  */
 enum mei_cb_file_ops {
 	MEI_FOP_READ = 0,
@@ -87,6 +105,8 @@ enum mei_cb_file_ops {
 	MEI_FOP_DISCONNECT_RSP,
 	MEI_FOP_NOTIFY_START,
 	MEI_FOP_NOTIFY_STOP,
+	MEI_FOP_DMA_MAP,
+	MEI_FOP_DMA_UNMAP,
 };
 
 /**
@@ -110,6 +130,13 @@ enum mei_cl_io_mode {
 struct mei_msg_data {
 	size_t size;
 	unsigned char *data;
+};
+
+struct mei_dma_data {
+	u8 buffer_id;
+	void *vaddr;
+	dma_addr_t daddr;
+	size_t size;
 };
 
 /**
@@ -235,6 +262,8 @@ struct mei_cl_vtag {
  * @rd_pending: pending read credits
  * @rd_completed_lock: protects rd_completed queue
  * @rd_completed: completed read
+ * @dma: dma settings
+ * @dma_mapped: dma buffer is currently mapped.
  *
  * @cldev: device on the mei client bus
  */
@@ -262,6 +291,8 @@ struct mei_cl {
 	struct list_head rd_pending;
 	spinlock_t rd_completed_lock; /* protects rd_completed queue */
 	struct list_head rd_completed;
+	struct mei_dma_data dma;
+	u8 dma_mapped;
 
 	struct mei_cl_device *cldev;
 };
@@ -340,9 +371,9 @@ struct mei_hw_ops {
 /* MEI bus API*/
 void mei_cl_bus_rescan_work(struct work_struct *work);
 void mei_cl_bus_dev_fixup(struct mei_cl_device *dev);
-ssize_t __mei_cl_send(struct mei_cl *cl, u8 *buf, size_t length,
+ssize_t __mei_cl_send(struct mei_cl *cl, const u8 *buf, size_t length, u8 vtag,
 		      unsigned int mode);
-ssize_t __mei_cl_recv(struct mei_cl *cl, u8 *buf, size_t length,
+ssize_t __mei_cl_recv(struct mei_cl *cl, u8 *buf, size_t length, u8 *vtag,
 		      unsigned int mode, unsigned long timeout);
 bool mei_cl_bus_rx_event(struct mei_cl *cl);
 bool mei_cl_bus_notify_event(struct mei_cl *cl);
@@ -399,6 +430,17 @@ struct mei_fw_version {
 
 #define MEI_MAX_FW_VER_BLOCKS 3
 
+struct mei_dev_timeouts {
+	unsigned long hw_ready; /* Timeout on ready message, in jiffies */
+	int connect; /* HPS: at least 2 seconds, in seconds */
+	unsigned long cl_connect; /* HPS: Client Connect Timeout, in jiffies */
+	int client_init; /* HPS: Clients Enumeration Timeout, in seconds */
+	unsigned long pgi; /* PG Isolation time response, in jiffies */
+	unsigned int d0i3; /* D0i3 set/unset max response time, in jiffies */
+	unsigned long hbm; /* HBM operation timeout, in jiffies */
+	unsigned long mkhi_recv; /* receive timeout, in jiffies */
+};
+
 /**
  * struct mei_device -  MEI private device struct
  *
@@ -427,6 +469,7 @@ struct mei_fw_version {
  * @reset_count : number of consecutive resets
  * @dev_state   : device state
  * @hbm_state   : state of host bus message protocol
+ * @pxp_mode    : PXP device mode
  * @init_clients_timer : HBM init handshake timeout
  *
  * @pg_event    : power gating event
@@ -450,6 +493,7 @@ struct mei_fw_version {
  * @hbm_f_dr_supported  : hbm feature dma ring supported
  * @hbm_f_vt_supported  : hbm feature vtag supported
  * @hbm_f_cap_supported : hbm feature capabilities message supported
+ * @hbm_f_cd_supported  : hbm feature client dma supported
  *
  * @fw_ver : FW versions
  *
@@ -462,6 +506,8 @@ struct mei_fw_version {
  *
  * @allow_fixed_address: allow user space to connect a fixed client
  * @override_fixed_address: force allow fixed address behavior
+ *
+ * @timeouts: actual timeout values
  *
  * @reset_work  : work item for the device reset
  * @bus_rescan_work : work item for the bus rescan
@@ -507,6 +553,7 @@ struct mei_device {
 	unsigned long reset_count;
 	enum mei_dev_state dev_state;
 	enum mei_hbm_state hbm_state;
+	enum mei_dev_pxp_mode pxp_mode;
 	u16 init_clients_timer;
 
 	/*
@@ -537,6 +584,7 @@ struct mei_device {
 	unsigned int hbm_f_dr_supported:1;
 	unsigned int hbm_f_vt_supported:1;
 	unsigned int hbm_f_cap_supported:1;
+	unsigned int hbm_f_cd_supported:1;
 
 	struct mei_fw_version fw_ver[MEI_MAX_FW_VER_BLOCKS];
 
@@ -549,6 +597,8 @@ struct mei_device {
 
 	bool allow_fixed_address;
 	bool override_fixed_address;
+
+	struct mei_dev_timeouts timeouts;
 
 	struct work_struct reset_work;
 	struct work_struct bus_rescan_work;
@@ -614,6 +664,7 @@ static inline u32 mei_slots2data(int slots)
  */
 void mei_device_init(struct mei_device *dev,
 		     struct device *device,
+		     bool slow_fw,
 		     const struct mei_hw_ops *hw_ops);
 int mei_reset(struct mei_device *dev);
 int mei_start(struct mei_device *dev);

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 
 /* Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
- * Copyright (C) 2018-2020 Linaro Ltd.
+ * Copyright (C) 2018-2022 Linaro Ltd.
  */
 #ifndef _IPA_INTERRUPT_H_
 #define _IPA_INTERRUPT_H_
@@ -11,22 +11,6 @@
 
 struct ipa;
 struct ipa_interrupt;
-
-/**
- * enum ipa_irq_id - IPA interrupt type
- * @IPA_IRQ_UC_0:	Microcontroller event interrupt
- * @IPA_IRQ_UC_1:	Microcontroller response interrupt
- * @IPA_IRQ_TX_SUSPEND:	Data ready interrupt
- *
- * The data ready interrupt is signaled if data has arrived that is destined
- * for an AP RX endpoint whose underlying GSI channel is suspended/stopped.
- */
-enum ipa_irq_id {
-	IPA_IRQ_UC_0		= 2,
-	IPA_IRQ_UC_1		= 3,
-	IPA_IRQ_TX_SUSPEND	= 14,
-	IPA_IRQ_COUNT,		/* Number of interrupt types (not an index) */
-};
 
 /**
  * typedef ipa_irq_handler_t - IPA interrupt handler function type
@@ -40,6 +24,7 @@ typedef void (*ipa_irq_handler_t)(struct ipa *ipa, enum ipa_irq_id irq_id);
 
 /**
  * ipa_interrupt_add() - Register a handler for an IPA interrupt type
+ * @interrupt:	IPA interrupt structure
  * @irq_id:	IPA interrupt type
  * @handler:	Handler function for the interrupt
  *
@@ -101,17 +86,17 @@ void ipa_interrupt_suspend_clear_all(struct ipa_interrupt *interrupt);
 void ipa_interrupt_simulate_suspend(struct ipa_interrupt *interrupt);
 
 /**
- * ipa_interrupt_setup() - Set up the IPA interrupt framework
+ * ipa_interrupt_config() - Configure the IPA interrupt framework
  * @ipa:	IPA pointer
  *
  * Return:	Pointer to IPA SMP2P info, or a pointer-coded error
  */
-struct ipa_interrupt *ipa_interrupt_setup(struct ipa *ipa);
+struct ipa_interrupt *ipa_interrupt_config(struct ipa *ipa);
 
 /**
- * ipa_interrupt_teardown() - Tear down the IPA interrupt framework
+ * ipa_interrupt_deconfig() - Inverse of ipa_interrupt_config()
  * @interrupt:	IPA interrupt structure
  */
-void ipa_interrupt_teardown(struct ipa_interrupt *interrupt);
+void ipa_interrupt_deconfig(struct ipa_interrupt *interrupt);
 
 #endif /* _IPA_INTERRUPT_H_ */

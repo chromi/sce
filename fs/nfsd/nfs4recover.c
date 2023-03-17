@@ -233,7 +233,7 @@ nfsd4_create_clid_dir(struct nfs4_client *clp)
 		 * as well be forgiving and just succeed silently.
 		 */
 		goto out_put;
-	status = vfs_mkdir(d_inode(dir), dentry, S_IRWXU);
+	status = vfs_mkdir(&init_user_ns, d_inode(dir), dentry, S_IRWXU);
 out_put:
 	dput(dentry);
 out_unlock:
@@ -266,7 +266,7 @@ struct nfs4_dir_ctx {
 	struct list_head names;
 };
 
-static int
+static bool
 nfsd4_build_namelist(struct dir_context *__ctx, const char *name, int namlen,
 		loff_t offset, u64 ino, unsigned int d_type)
 {
@@ -275,14 +275,14 @@ nfsd4_build_namelist(struct dir_context *__ctx, const char *name, int namlen,
 	struct name_list *entry;
 
 	if (namlen != HEXDIR_LEN - 1)
-		return 0;
+		return true;
 	entry = kmalloc(sizeof(struct name_list), GFP_KERNEL);
 	if (entry == NULL)
-		return -ENOMEM;
+		return false;
 	memcpy(entry->name, name, HEXDIR_LEN - 1);
 	entry->name[HEXDIR_LEN - 1] = '\0';
 	list_add(&entry->list, &ctx->names);
-	return 0;
+	return true;
 }
 
 static int
@@ -353,7 +353,7 @@ nfsd4_unlink_clid_dir(char *name, int namlen, struct nfsd_net *nn)
 	status = -ENOENT;
 	if (d_really_is_negative(dentry))
 		goto out;
-	status = vfs_rmdir(d_inode(dir), dentry);
+	status = vfs_rmdir(&init_user_ns, d_inode(dir), dentry);
 out:
 	dput(dentry);
 out_unlock:
@@ -443,7 +443,7 @@ purge_old(struct dentry *parent, struct dentry *child, struct nfsd_net *nn)
 	if (nfs4_has_reclaimed_state(name, nn))
 		goto out_free;
 
-	status = vfs_rmdir(d_inode(parent), child);
+	status = vfs_rmdir(&init_user_ns, d_inode(parent), child);
 	if (status)
 		printk("failed to remove client recovery directory %pd\n",
 				child);
@@ -626,7 +626,7 @@ nfsd4_legacy_tracking_init(struct net *net)
 	status = nfsd4_load_reboot_recovery_data(net);
 	if (status)
 		goto err;
-	printk("NFSD: Using legacy client tracking operations.\n");
+	pr_info("NFSD: Using legacy client tracking operations.\n");
 	return 0;
 
 err:
@@ -807,16 +807,18 @@ __cld_pipe_inprogress_downcall(const struct cld_msg_v2 __user *cmsg,
 			if (get_user(namelen, &ci->cc_name.cn_len))
 				return -EFAULT;
 			name.data = memdup_user(&ci->cc_name.cn_id, namelen);
-			if (IS_ERR_OR_NULL(name.data))
-				return -EFAULT;
+			if (IS_ERR(name.data))
+				return PTR_ERR(name.data);
 			name.len = namelen;
 			get_user(princhashlen, &ci->cc_princhash.cp_len);
 			if (princhashlen > 0) {
 				princhash.data = memdup_user(
 						&ci->cc_princhash.cp_data,
 						princhashlen);
-				if (IS_ERR_OR_NULL(princhash.data))
-					return -EFAULT;
+				if (IS_ERR(princhash.data)) {
+					kfree(name.data);
+					return PTR_ERR(princhash.data);
+				}
 				princhash.len = princhashlen;
 			} else
 				princhash.len = 0;
@@ -827,8 +829,8 @@ __cld_pipe_inprogress_downcall(const struct cld_msg_v2 __user *cmsg,
 			if (get_user(namelen, &cnm->cn_len))
 				return -EFAULT;
 			name.data = memdup_user(&cnm->cn_id, namelen);
-			if (IS_ERR_OR_NULL(name.data))
-				return -EFAULT;
+			if (IS_ERR(name.data))
+				return PTR_ERR(name.data);
 			name.len = namelen;
 		}
 		if (name.len > 5 && memcmp(name.data, "hash:", 5) == 0) {
@@ -1028,7 +1030,7 @@ nfsd4_init_cld_pipe(struct net *net)
 
 	status = __nfsd4_init_cld_pipe(net);
 	if (!status)
-		printk("NFSD: Using old nfsdcld client tracking operations.\n");
+		pr_info("NFSD: Using old nfsdcld client tracking operations.\n");
 	return status;
 }
 
@@ -1605,7 +1607,7 @@ nfsd4_cld_tracking_init(struct net *net)
 		nfs4_release_reclaim(nn);
 		goto err_remove;
 	} else
-		printk("NFSD: Using nfsdcld client tracking operations.\n");
+		pr_info("NFSD: Using nfsdcld client tracking operations.\n");
 	return 0;
 
 err_remove:
@@ -1864,7 +1866,7 @@ nfsd4_umh_cltrack_init(struct net *net)
 	ret = nfsd4_umh_cltrack_upcall("init", NULL, grace_start, NULL);
 	kfree(grace_start);
 	if (!ret)
-		printk("NFSD: Using UMH upcall client tracking operations.\n");
+		pr_info("NFSD: Using UMH upcall client tracking operations.\n");
 	return ret;
 }
 
@@ -2156,6 +2158,7 @@ static struct notifier_block nfsd4_cld_block = {
 int
 register_cld_notifier(void)
 {
+	WARN_ON(!nfsd_net_id);
 	return rpc_pipefs_notifier_register(&nfsd4_cld_block);
 }
 
