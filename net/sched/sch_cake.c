@@ -596,8 +596,8 @@ static bool cobalt_should_drop(struct cobalt_vars *vars,
 			((((s64) sojourn) - p->target  ) * p->sce_ramp_hi + p->sce_ramp_knee):
 			((((s64) sojourn) - p->target/2) * p->sce_ramp_lo);
 
-		if (prob > 0xFFFFFFFF || (prob > 0 && prandom_u32() < prob))
-			vars->sce_marked = INET_ECN_set_sce(skb);
+		if (prob > 0xFFFFFFFF || (prob > 0 && get_random_u32() < prob))
+			vars->sce_marked = INET_ECN_set_ect1(skb);
 	}
 
 	/* Overload the drop_next field as an activity timeout */
