@@ -535,13 +535,16 @@ int sfp_parse_port(struct sfp_bus *bus, const struct sfp_eeprom_id *id,
 		   unsigned long *support);
 bool sfp_may_have_phy(struct sfp_bus *bus, const struct sfp_eeprom_id *id);
 void sfp_parse_support(struct sfp_bus *bus, const struct sfp_eeprom_id *id,
-		       unsigned long *support);
+		       unsigned long *support, unsigned long *interfaces);
 phy_interface_t sfp_select_interface(struct sfp_bus *bus,
 				     unsigned long *link_modes);
 
 int sfp_get_module_info(struct sfp_bus *bus, struct ethtool_modinfo *modinfo);
 int sfp_get_module_eeprom(struct sfp_bus *bus, struct ethtool_eeprom *ee,
 			  u8 *data);
+int sfp_get_module_eeprom_by_page(struct sfp_bus *bus,
+				  const struct ethtool_module_eeprom *page,
+				  struct netlink_ext_ack *extack);
 void sfp_upstream_start(struct sfp_bus *bus);
 void sfp_upstream_stop(struct sfp_bus *bus);
 void sfp_bus_put(struct sfp_bus *bus);
@@ -565,7 +568,8 @@ static inline bool sfp_may_have_phy(struct sfp_bus *bus,
 
 static inline void sfp_parse_support(struct sfp_bus *bus,
 				     const struct sfp_eeprom_id *id,
-				     unsigned long *support)
+				     unsigned long *support,
+				     unsigned long *interfaces)
 {
 }
 
@@ -583,6 +587,13 @@ static inline int sfp_get_module_info(struct sfp_bus *bus,
 
 static inline int sfp_get_module_eeprom(struct sfp_bus *bus,
 					struct ethtool_eeprom *ee, u8 *data)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline int sfp_get_module_eeprom_by_page(struct sfp_bus *bus,
+						const struct ethtool_module_eeprom *page,
+						struct netlink_ext_ack *extack)
 {
 	return -EOPNOTSUPP;
 }

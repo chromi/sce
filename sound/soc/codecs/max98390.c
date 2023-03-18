@@ -10,7 +10,7 @@
 #include <linux/cdev.h>
 #include <linux/dmi.h>
 #include <linux/firmware.h>
-#include <linux/gpio.h>
+#include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
 #include <linux/of_gpio.h>
@@ -161,8 +161,6 @@ static struct reg_default max98390_reg_defaults[] = {
 	{MAX98390_R23FF_GLOBAL_EN, 0x00},
 };
 
-static int max98390_dsm_calibrate(struct snd_soc_component *component);
-
 static int max98390_dai_set_fmt(struct snd_soc_dai *codec_dai, unsigned int fmt)
 {
 	struct snd_soc_component *component = codec_dai->component;
@@ -174,12 +172,12 @@ static int max98390_dai_set_fmt(struct snd_soc_dai *codec_dai, unsigned int fmt)
 
 	dev_dbg(component->dev, "%s: fmt 0x%08X\n", __func__, fmt);
 
-	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBS_CFS:
+	switch (fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) {
+	case SND_SOC_DAIFMT_CBC_CFC:
 		mode = MAX98390_PCM_MASTER_MODE_SLAVE;
 		break;
-	case SND_SOC_DAIFMT_CBM_CFM:
-		max98390->master = true;
+	case SND_SOC_DAIFMT_CBP_CFP:
+		max98390->provider = true;
 		mode = MAX98390_PCM_MASTER_MODE_MASTER;
 		break;
 	default:
@@ -265,7 +263,7 @@ static int max98390_set_clock(struct snd_soc_component *component,
 		* snd_pcm_format_width(params_format(params));
 	int value;
 
-	if (max98390->master) {
+	if (max98390->provider) {
 		int i;
 		/* match rate to closest value */
 		for (i = 0; i < ARRAY_SIZE(rate_table); i++) {
@@ -635,10 +633,48 @@ static int max98390_dsm_calib_get(struct snd_kcontrol *kcontrol,
 static int max98390_dsm_calib_put(struct snd_kcontrol *kcontrol,
 		struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component =
-		snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+	struct max98390_priv *max98390 = snd_soc_component_get_drvdata(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(component);
+	unsigned int rdc, rdc_cal_result, rdc_integer, rdc_factor, temp, val;
 
-	max98390_dsm_calibrate(component);
+	snd_soc_dapm_mutex_lock(dapm);
+
+	regmap_read(max98390->regmap, MAX98390_R23FF_GLOBAL_EN, &val);
+	if (!val) {
+		/* Enable the codec for the duration of calibration readout */
+		regmap_update_bits(max98390->regmap, MAX98390_R203A_AMP_EN,
+				   MAX98390_AMP_EN_MASK, 1);
+		regmap_update_bits(max98390->regmap, MAX98390_R23FF_GLOBAL_EN,
+				   MAX98390_GLOBAL_EN_MASK, 1);
+	}
+
+	regmap_read(max98390->regmap, THERMAL_RDC_RD_BACK_BYTE1, &rdc);
+	regmap_read(max98390->regmap, THERMAL_RDC_RD_BACK_BYTE0, &rdc_cal_result);
+	regmap_read(max98390->regmap, MAX98390_MEAS_ADC_CH2_READ, &temp);
+
+	if (!val) {
+		/* Disable the codec if it was disabled */
+		regmap_update_bits(max98390->regmap, MAX98390_R23FF_GLOBAL_EN,
+				   MAX98390_GLOBAL_EN_MASK, 0);
+		regmap_update_bits(max98390->regmap, MAX98390_R203A_AMP_EN,
+				   MAX98390_AMP_EN_MASK, 0);
+	}
+
+	snd_soc_dapm_mutex_unlock(dapm);
+
+	rdc_cal_result |= (rdc << 8) & 0x0000FFFF;
+	if (rdc_cal_result)
+		max98390->ref_rdc_value = 268435456U / rdc_cal_result;
+
+	max98390->ambient_temp_value = temp * 52 - 1188;
+
+	rdc_integer =  rdc_cal_result * 937  / 65536;
+	rdc_factor = ((rdc_cal_result * 937 * 100) / 65536) - (rdc_integer * 100);
+
+	dev_info(component->dev,
+		 "rdc resistance about %d.%02d ohm, reg=0x%X temp reg=0x%X\n",
+		 rdc_integer, rdc_factor, rdc_cal_result, temp);
 
 	return 0;
 }
@@ -765,17 +801,26 @@ static int max98390_dsm_init(struct snd_soc_component *component)
 	vendor = dmi_get_system_info(DMI_SYS_VENDOR);
 	product = dmi_get_system_info(DMI_PRODUCT_NAME);
 
-	if (vendor && product) {
-		snprintf(filename, sizeof(filename), "dsm_param_%s_%s.bin",
-			vendor, product);
+	if (!strcmp(max98390->dsm_param_name, "default")) {
+		if (vendor && product) {
+			snprintf(filename, sizeof(filename),
+				"dsm_param_%s_%s.bin", vendor, product);
+		} else {
+			sprintf(filename, "dsm_param.bin");
+		}
 	} else {
-		sprintf(filename, "dsm_param.bin");
+		snprintf(filename, sizeof(filename), "%s",
+			max98390->dsm_param_name);
 	}
 	ret = request_firmware(&fw, filename, component->dev);
 	if (ret) {
 		ret = request_firmware(&fw, "dsm_param.bin", component->dev);
-		if (ret)
-			goto err;
+		if (ret) {
+			ret = request_firmware(&fw, "dsmparam.bin",
+				component->dev);
+			if (ret)
+				goto err;
+		}
 	}
 
 	dev_dbg(component->dev,
@@ -784,6 +829,7 @@ static int max98390_dsm_init(struct snd_soc_component *component)
 	if (fw->size < MAX98390_DSM_PARAM_MIN_SIZE) {
 		dev_err(component->dev,
 			"param fw is invalid.\n");
+		ret = -EINVAL;
 		goto err_alloc;
 	}
 	dsm_param = (char *)fw->data;
@@ -794,6 +840,7 @@ static int max98390_dsm_init(struct snd_soc_component *component)
 		fw->size < param_size + MAX98390_DSM_PAYLOAD_OFFSET) {
 		dev_err(component->dev,
 			"param fw is invalid.\n");
+		ret = -EINVAL;
 		goto err_alloc;
 	}
 	regmap_write(max98390->regmap, MAX98390_R203A_AMP_EN, 0x80);
@@ -808,40 +855,6 @@ err:
 	return ret;
 }
 
-static int max98390_dsm_calibrate(struct snd_soc_component *component)
-{
-	unsigned int rdc, rdc_cal_result, temp;
-	unsigned int rdc_integer, rdc_factor;
-	struct max98390_priv *max98390 =
-		snd_soc_component_get_drvdata(component);
-
-	regmap_write(max98390->regmap, MAX98390_R203A_AMP_EN, 0x81);
-	regmap_write(max98390->regmap, MAX98390_R23FF_GLOBAL_EN, 0x01);
-
-	regmap_read(max98390->regmap,
-		THERMAL_RDC_RD_BACK_BYTE1, &rdc);
-	regmap_read(max98390->regmap,
-		THERMAL_RDC_RD_BACK_BYTE0, &rdc_cal_result);
-	rdc_cal_result |= (rdc << 8) & 0x0000FFFF;
-	if (rdc_cal_result)
-		max98390->ref_rdc_value = 268435456U / rdc_cal_result;
-
-	regmap_read(max98390->regmap, MAX98390_MEAS_ADC_CH2_READ, &temp);
-	max98390->ambient_temp_value = temp * 52 - 1188;
-
-	rdc_integer =  rdc_cal_result * 937  / 65536;
-	rdc_factor = ((rdc_cal_result * 937 * 100) / 65536)
-					- (rdc_integer * 100);
-
-	dev_info(component->dev, "rdc resistance about %d.%02d ohm, reg=0x%X temp reg=0x%X\n",
-		 rdc_integer, rdc_factor, rdc_cal_result, temp);
-
-	regmap_write(max98390->regmap, MAX98390_R23FF_GLOBAL_EN, 0x00);
-	regmap_write(max98390->regmap, MAX98390_R203A_AMP_EN, 0x80);
-
-	return 0;
-}
-
 static void max98390_init_regs(struct snd_soc_component *component)
 {
 	struct max98390_priv *max98390 =
@@ -854,6 +867,48 @@ static void max98390_init_regs(struct snd_soc_component *component)
 	regmap_write(max98390->regmap, MAX98390_ENV_TRACK_VOUT_HEADROOM, 0x0e);
 	regmap_write(max98390->regmap, MAX98390_BOOST_BYPASS1, 0x46);
 	regmap_write(max98390->regmap, MAX98390_FET_SCALING3, 0x03);
+
+	/* voltage, current slot configuration */
+	regmap_write(max98390->regmap,
+		MAX98390_PCM_CH_SRC_2,
+		(max98390->i_l_slot << 4 |
+		max98390->v_l_slot)&0xFF);
+
+	if (max98390->v_l_slot < 8) {
+		regmap_update_bits(max98390->regmap,
+			MAX98390_PCM_TX_HIZ_CTRL_A,
+			1 << max98390->v_l_slot, 0);
+		regmap_update_bits(max98390->regmap,
+			MAX98390_PCM_TX_EN_A,
+			1 << max98390->v_l_slot,
+			1 << max98390->v_l_slot);
+	} else {
+		regmap_update_bits(max98390->regmap,
+			MAX98390_PCM_TX_HIZ_CTRL_B,
+			1 << (max98390->v_l_slot - 8), 0);
+		regmap_update_bits(max98390->regmap,
+			MAX98390_PCM_TX_EN_B,
+			1 << (max98390->v_l_slot - 8),
+			1 << (max98390->v_l_slot - 8));
+	}
+
+	if (max98390->i_l_slot < 8) {
+		regmap_update_bits(max98390->regmap,
+			MAX98390_PCM_TX_HIZ_CTRL_A,
+			1 << max98390->i_l_slot, 0);
+		regmap_update_bits(max98390->regmap,
+			MAX98390_PCM_TX_EN_A,
+			1 << max98390->i_l_slot,
+			1 << max98390->i_l_slot);
+	} else {
+		regmap_update_bits(max98390->regmap,
+			MAX98390_PCM_TX_HIZ_CTRL_B,
+			1 << (max98390->i_l_slot - 8), 0);
+		regmap_update_bits(max98390->regmap,
+			MAX98390_PCM_TX_EN_B,
+			1 << (max98390->i_l_slot - 8),
+			1 << (max98390->i_l_slot - 8));
+	}
 }
 
 static int max98390_probe(struct snd_soc_component *component)
@@ -930,7 +985,6 @@ static const struct snd_soc_component_driver soc_codec_dev_max98390 = {
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct regmap_config max98390_regmap = {
@@ -944,14 +998,31 @@ static const struct regmap_config max98390_regmap = {
 	.cache_type       = REGCACHE_RBTREE,
 };
 
-static int max98390_i2c_probe(struct i2c_client *i2c,
-		const struct i2c_device_id *id)
+static void max98390_slot_config(struct i2c_client *i2c,
+	struct max98390_priv *max98390)
+{
+	int value;
+	struct device *dev = &i2c->dev;
+
+	if (!device_property_read_u32(dev, "maxim,vmon-slot-no", &value))
+		max98390->v_l_slot = value & 0xF;
+	else
+		max98390->v_l_slot = 0;
+
+	if (!device_property_read_u32(dev, "maxim,imon-slot-no", &value))
+		max98390->i_l_slot = value & 0xF;
+	else
+		max98390->i_l_slot = 1;
+}
+
+static int max98390_i2c_probe(struct i2c_client *i2c)
 {
 	int ret = 0;
 	int reg = 0;
 
 	struct max98390_priv *max98390 = NULL;
-	struct i2c_adapter *adapter = to_i2c_adapter(i2c->dev.parent);
+	struct i2c_adapter *adapter = i2c->adapter;
+	struct gpio_desc *reset_gpio;
 
 	ret = i2c_check_functionality(adapter,
 		I2C_FUNC_SMBUS_BYTE
@@ -986,6 +1057,14 @@ static int max98390_i2c_probe(struct i2c_client *i2c,
 		__func__, max98390->ref_rdc_value,
 		max98390->ambient_temp_value);
 
+	ret = device_property_read_string(&i2c->dev, "maxim,dsm_param_name",
+				       &max98390->dsm_param_name);
+	if (ret)
+		max98390->dsm_param_name = "default";
+
+	/* voltage/current slot configuration */
+	max98390_slot_config(i2c, max98390);
+
 	/* regmap initialization */
 	max98390->regmap = devm_regmap_init_i2c(i2c, &max98390_regmap);
 	if (IS_ERR(max98390->regmap)) {
@@ -993,6 +1072,17 @@ static int max98390_i2c_probe(struct i2c_client *i2c,
 		dev_err(&i2c->dev,
 			"Failed to allocate regmap: %d\n", ret);
 		return ret;
+	}
+
+	reset_gpio = devm_gpiod_get_optional(&i2c->dev,
+					     "reset", GPIOD_OUT_HIGH);
+
+	/* Power on device */
+	if (reset_gpio) {
+		usleep_range(1000, 2000);
+		/* bring out of reset */
+		gpiod_set_value_cansleep(reset_gpio, 0);
+		usleep_range(1000, 2000);
 	}
 
 	/* Check Revision ID */
@@ -1043,7 +1133,7 @@ static struct i2c_driver max98390_i2c_driver = {
 		.acpi_match_table = ACPI_PTR(max98390_acpi_match),
 		.pm = &max98390_pm,
 	},
-	.probe = max98390_i2c_probe,
+	.probe_new = max98390_i2c_probe,
 	.id_table = max98390_i2c_id,
 };
 

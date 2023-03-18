@@ -85,14 +85,14 @@
 #define LP8860_NAME			"lp8860"
 
 /**
- * struct lp8860_led -
- * @lock - Lock for reading/writing the device
- * @client - Pointer to the I2C client
- * @led_dev - led class device pointer
- * @regmap - Devices register map
- * @eeprom_regmap - EEPROM register map
- * @enable_gpio - VDDIO/EN gpio to enable communication interface
- * @regulator - LED supply regulator pointer
+ * struct lp8860_led
+ * @lock: Lock for reading/writing the device
+ * @client: Pointer to the I2C client
+ * @led_dev: led class device pointer
+ * @regmap: Devices register map
+ * @eeprom_regmap: EEPROM register map
+ * @enable_gpio: VDDIO/EN gpio to enable communication interface
+ * @regulator: LED supply regulator pointer
  */
 struct lp8860_led {
 	struct mutex lock;
@@ -445,7 +445,7 @@ static int lp8860_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int lp8860_remove(struct i2c_client *client)
+static void lp8860_remove(struct i2c_client *client)
 {
 	struct lp8860_led *led = i2c_get_clientdata(client);
 	int ret;
@@ -461,8 +461,6 @@ static int lp8860_remove(struct i2c_client *client)
 	}
 
 	mutex_destroy(&led->lock);
-
-	return 0;
 }
 
 static const struct i2c_device_id lp8860_id[] = {

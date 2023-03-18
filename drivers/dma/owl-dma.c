@@ -193,7 +193,7 @@ struct owl_dma_pchan {
 
 /**
  * struct owl_dma_pchan - Wrapper for DMA ENGINE channel
- * @vc: wrappped virtual channel
+ * @vc: wrapped virtual channel
  * @pchan: the physical channel utilized by this channel
  * @txd: active transaction on this channel
  * @cfg: slave configuration for this channel
@@ -1080,8 +1080,9 @@ static struct dma_chan *owl_dma_of_xlate(struct of_phandle_args *dma_spec,
 }
 
 static const struct of_device_id owl_dma_match[] = {
-	{ .compatible = "actions,s900-dma", .data = (void *)S900_DMA,},
+	{ .compatible = "actions,s500-dma", .data = (void *)S900_DMA,},
 	{ .compatible = "actions,s700-dma", .data = (void *)S700_DMA,},
+	{ .compatible = "actions,s900-dma", .data = (void *)S900_DMA,},
 	{ /* sentinel */ },
 };
 MODULE_DEVICE_TABLE(of, owl_dma_match);
@@ -1245,6 +1246,7 @@ static int owl_dma_remove(struct platform_device *pdev)
 	owl_dma_free(od);
 
 	clk_disable_unprepare(od->clk);
+	dma_pool_destroy(od->lli_pool);
 
 	return 0;
 }

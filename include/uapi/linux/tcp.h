@@ -28,8 +28,7 @@ struct tcphdr {
 	__be32	seq;
 	__be32	ack_seq;
 #if defined(__LITTLE_ENDIAN_BITFIELD)
-	__u16	esce:1,
-		res1:3,
+	__u16	res1:4,
 		doff:4,
 		fin:1,
 		syn:1,
@@ -41,8 +40,7 @@ struct tcphdr {
 		cwr:1;
 #elif defined(__BIG_ENDIAN_BITFIELD)
 	__u16	doff:4,
-		res1:3,
-		esce:1,
+		res1:4,
 		cwr:1,
 		ece:1,
 		urg:1,
@@ -66,10 +64,10 @@ struct tcphdr {
  */
 union tcp_word_hdr {
 	struct tcphdr hdr;
-	__be32 		  words[5];
+	__be32        words[5];
 };
 
-#define tcp_flag_word(tp) ( ((union tcp_word_hdr *)(tp))->words [3])
+#define tcp_flag_word(tp) (((union tcp_word_hdr *)(tp))->words[3])
 
 enum {
 	TCP_FLAG_ESCE = __constant_cpu_to_be32(0x01000000),
@@ -106,8 +104,8 @@ enum {
 #define TCP_QUICKACK		12	/* Block/reenable quick acks */
 #define TCP_CONGESTION		13	/* Congestion control algorithm */
 #define TCP_MD5SIG		14	/* TCP MD5 Signature (RFC2385) */
-#define TCP_THIN_LINEAR_TIMEOUTS 16      /* Use linear timeouts for thin streams*/
-#define TCP_THIN_DUPACK         17      /* Fast retrans. after 1 dupack */
+#define TCP_THIN_LINEAR_TIMEOUTS 16	/* Use linear timeouts for thin streams*/
+#define TCP_THIN_DUPACK		17	/* Fast retrans. after 1 dupack */
 #define TCP_USER_TIMEOUT	18	/* How long for loss retry before timeout */
 #define TCP_REPAIR		19	/* TCP sock is under repair right now */
 #define TCP_REPAIR_QUEUE	20
@@ -317,6 +315,7 @@ enum {
 	TCP_NLA_TIMEOUT_REHASH, /* Timeout-triggered rehash attempts */
 	TCP_NLA_BYTES_NOTSENT,	/* Bytes in write queue not yet sent */
 	TCP_NLA_EDT,		/* Earliest departure time (CLOCK_MONOTONIC) */
+	TCP_NLA_TTL,		/* TTL or hop limit of a packet received */
 };
 
 /* for TCP_MD5SIG socket option */
@@ -346,11 +345,19 @@ struct tcp_diag_md5sig {
 
 /* setsockopt(fd, IPPROTO_TCP, TCP_ZEROCOPY_RECEIVE, ...) */
 
+#define TCP_RECEIVE_ZEROCOPY_FLAG_TLB_CLEAN_HINT 0x1
 struct tcp_zerocopy_receive {
 	__u64 address;		/* in: address of mapping */
 	__u32 length;		/* in/out: number of bytes to map/mapped */
 	__u32 recv_skip_hint;	/* out: amount of bytes to skip */
 	__u32 inq; /* out: amount of bytes in read queue */
 	__s32 err; /* out: socket error */
+	__u64 copybuf_address;	/* in: copybuf address (small reads) */
+	__s32 copybuf_len; /* in/out: copybuf bytes avail/used or error */
+	__u32 flags; /* in: flags */
+	__u64 msg_control; /* ancillary data */
+	__u64 msg_controllen;
+	__u32 msg_flags;
+	__u32 reserved; /* set to 0 for now */
 };
 #endif /* _UAPI_LINUX_TCP_H */

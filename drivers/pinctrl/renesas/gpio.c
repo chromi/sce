@@ -8,7 +8,6 @@
 
 #include <linux/device.h>
 #include <linux/gpio/driver.h>
-#include <linux/init.h>
 #include <linux/module.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/slab.h>
@@ -328,7 +327,7 @@ int sh_pfc_register_gpiochip(struct sh_pfc *pfc)
 	if (pfc->info->data_regs == NULL)
 		return 0;
 
-	/* Find the memory window that contain the GPIO registers. Boards that
+	/* Find the memory window that contains the GPIO registers. Boards that
 	 * register a separate GPIO device will not supply a memory resource
 	 * that covers the data registers. In that case don't try to handle
 	 * GPIOs.

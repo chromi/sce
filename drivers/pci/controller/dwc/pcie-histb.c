@@ -74,7 +74,7 @@ static void histb_pcie_writel(struct histb_pcie *histb_pcie, u32 reg, u32 val)
 	writel(val, histb_pcie->ctrl + reg);
 }
 
-static void histb_pcie_dbi_w_mode(struct pcie_port *pp, bool enable)
+static void histb_pcie_dbi_w_mode(struct dw_pcie_rp *pp, bool enable)
 {
 	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
 	struct histb_pcie *hipcie = to_histb_pcie(pci);
@@ -88,7 +88,7 @@ static void histb_pcie_dbi_w_mode(struct pcie_port *pp, bool enable)
 	histb_pcie_writel(hipcie, PCIE_SYS_CTRL0, val);
 }
 
-static void histb_pcie_dbi_r_mode(struct pcie_port *pp, bool enable)
+static void histb_pcie_dbi_r_mode(struct dw_pcie_rp *pp, bool enable)
 {
 	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
 	struct histb_pcie *hipcie = to_histb_pcie(pci);
@@ -127,10 +127,8 @@ static int histb_pcie_rd_own_conf(struct pci_bus *bus, unsigned int devfn,
 {
 	struct dw_pcie *pci = to_dw_pcie_from_pp(bus->sysdata);
 
-	if (PCI_SLOT(devfn)) {
-		*val = ~0;
+	if (PCI_SLOT(devfn))
 		return PCIBIOS_DEVICE_NOT_FOUND;
-	}
 
 	*val = dw_pcie_read_dbi(pci, where, size);
 	return PCIBIOS_SUCCESSFUL;
@@ -169,40 +167,32 @@ static int histb_pcie_link_up(struct dw_pcie *pci)
 	return 0;
 }
 
-static int histb_pcie_establish_link(struct pcie_port *pp)
+static int histb_pcie_start_link(struct dw_pcie *pci)
 {
-	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
 	struct histb_pcie *hipcie = to_histb_pcie(pci);
 	u32 regval;
-
-	if (dw_pcie_link_up(pci)) {
-		dev_info(pci->dev, "Link already up\n");
-		return 0;
-	}
-
-	/* PCIe RC work mode */
-	regval = histb_pcie_readl(hipcie, PCIE_SYS_CTRL0);
-	regval &= ~PCIE_DEVICE_TYPE_MASK;
-	regval |= PCIE_WM_RC;
-	histb_pcie_writel(hipcie, PCIE_SYS_CTRL0, regval);
-
-	/* setup root complex */
-	dw_pcie_setup_rc(pp);
 
 	/* assert LTSSM enable */
 	regval = histb_pcie_readl(hipcie, PCIE_SYS_CTRL7);
 	regval |= PCIE_APP_LTSSM_ENABLE;
 	histb_pcie_writel(hipcie, PCIE_SYS_CTRL7, regval);
 
-	return dw_pcie_wait_for_link(pci);
+	return 0;
 }
 
-static int histb_pcie_host_init(struct pcie_port *pp)
+static int histb_pcie_host_init(struct dw_pcie_rp *pp)
 {
+	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
+	struct histb_pcie *hipcie = to_histb_pcie(pci);
+	u32 regval;
+
 	pp->bridge->ops = &histb_pci_ops;
 
-	histb_pcie_establish_link(pp);
-	dw_pcie_msi_init(pp);
+	/* PCIe RC work mode */
+	regval = histb_pcie_readl(hipcie, PCIE_SYS_CTRL0);
+	regval &= ~PCIE_DEVICE_TYPE_MASK;
+	regval |= PCIE_WM_RC;
+	histb_pcie_writel(hipcie, PCIE_SYS_CTRL0, regval);
 
 	return 0;
 }
@@ -229,7 +219,7 @@ static void histb_pcie_host_disable(struct histb_pcie *hipcie)
 		regulator_disable(hipcie->vpcie);
 }
 
-static int histb_pcie_host_enable(struct pcie_port *pp)
+static int histb_pcie_host_enable(struct dw_pcie_rp *pp)
 {
 	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
 	struct histb_pcie *hipcie = to_histb_pcie(pci);
@@ -300,13 +290,14 @@ static const struct dw_pcie_ops dw_pcie_ops = {
 	.read_dbi = histb_pcie_read_dbi,
 	.write_dbi = histb_pcie_write_dbi,
 	.link_up = histb_pcie_link_up,
+	.start_link = histb_pcie_start_link,
 };
 
 static int histb_pcie_probe(struct platform_device *pdev)
 {
 	struct histb_pcie *hipcie;
 	struct dw_pcie *pci;
-	struct pcie_port *pp;
+	struct dw_pcie_rp *pp;
 	struct device_node *np = pdev->dev.of_node;
 	struct device *dev = &pdev->dev;
 	enum of_gpio_flags of_flags;
@@ -398,12 +389,6 @@ static int histb_pcie_probe(struct platform_device *pdev)
 	if (IS_ERR(hipcie->bus_reset)) {
 		dev_err(dev, "couldn't get bus reset\n");
 		return PTR_ERR(hipcie->bus_reset);
-	}
-
-	if (IS_ENABLED(CONFIG_PCI_MSI)) {
-		pp->msi_irq = platform_get_irq_byname(pdev, "msi");
-		if (pp->msi_irq < 0)
-			return pp->msi_irq;
 	}
 
 	hipcie->phy = devm_phy_get(dev, "phy");

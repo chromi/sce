@@ -1039,6 +1039,7 @@ static unsigned int ibmvmc_poll(struct file *file, poll_table *wait)
 static ssize_t ibmvmc_write(struct file *file, const char *buffer,
 			    size_t count, loff_t *ppos)
 {
+	struct inode *inode;
 	struct ibmvmc_buffer *vmc_buffer;
 	struct ibmvmc_file_session *session;
 	struct crq_server_adapter *adapter;
@@ -1122,8 +1123,9 @@ static ssize_t ibmvmc_write(struct file *file, const char *buffer,
 	if (p == buffer)
 		goto out;
 
-	file->f_path.dentry->d_inode->i_mtime = current_time(file_inode(file));
-	mark_inode_dirty(file->f_path.dentry->d_inode);
+	inode = file_inode(file);
+	inode->i_mtime = current_time(inode);
+	mark_inode_dirty(inode);
 
 	dev_dbg(adapter->dev, "write: file = 0x%lx, count = 0x%lx\n",
 		(unsigned long)file, (unsigned long)count);
@@ -2288,15 +2290,13 @@ crq_failed:
 	return -EPERM;
 }
 
-static int ibmvmc_remove(struct vio_dev *vdev)
+static void ibmvmc_remove(struct vio_dev *vdev)
 {
 	struct crq_server_adapter *adapter = dev_get_drvdata(&vdev->dev);
 
 	dev_info(adapter->dev, "Entering remove for UA 0x%x\n",
 		 vdev->unit_address);
 	ibmvmc_release_crq_queue(adapter);
-
-	return 0;
 }
 
 static struct vio_device_id ibmvmc_device_table[] = {

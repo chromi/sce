@@ -30,20 +30,9 @@ static inline int INET_ECN_is_not_ect(__u8 dsfield)
 	return (dsfield & INET_ECN_MASK) == INET_ECN_NOT_ECT;
 }
 
-static inline int INET_ECN_is_ect0(__u8 dsfield)
-{
-	return (dsfield & INET_ECN_MASK) == INET_ECN_ECT_0;
-}
-
-static inline int INET_ECN_is_ect1(__u8 dsfield)
-{
-	return (dsfield & INET_ECN_MASK) == INET_ECN_ECT_1;
-}
-
 static inline int INET_ECN_is_capable(__u8 dsfield)
 {
-	// The ECT(0), ECT(1) and CE codepoints each designate an ECN Capable transport.
-	return !!(dsfield & INET_ECN_MASK);
+	return dsfield & INET_ECN_ECT_0;
 }
 
 /*
@@ -88,7 +77,7 @@ static inline void INET_ECN_dontxmit(struct sock *sk)
 static inline int IP_ECN_set_ce(struct iphdr *iph)
 {
 	u32 ecn = (iph->tos + 1) & INET_ECN_MASK;
-	u16 check_add;
+	__be16 check_add;
 
 	/*
 	 * After the last operation we have (in binary):
@@ -105,7 +94,8 @@ static inline int IP_ECN_set_ce(struct iphdr *iph)
 	 * INET_ECN_ECT_1 => check += htons(0xFFFD)
 	 * INET_ECN_ECT_0 => check += htons(0xFFFE)
 	 */
-	check_add = htons(0xFFFB) + htons(ecn);
+	check_add = (__force __be16)((__force u16)htons(0xFFFB) +
+				     (__force u16)htons(ecn));
 
 	iph->check = csum16_add(iph->check, check_add);
 	iph->tos |= INET_ECN_CE;
@@ -114,14 +104,10 @@ static inline int IP_ECN_set_ce(struct iphdr *iph)
 
 static inline int IP_ECN_set_ect1(struct iphdr *iph)
 {
-	u32 check = (__force u32)(iph->check);
-
 	if ((iph->tos & INET_ECN_MASK) != INET_ECN_ECT_0)
 		return 0;
 
-	check += (__force u16)htons(0x1);
-
-	iph->check = (__force __sum16)(check + (check>=0xFFFF));
+	iph->check = csum16_add(iph->check, htons(0x1));
 	iph->tos ^= INET_ECN_MASK;
 	return 1;
 }
@@ -200,6 +186,23 @@ static inline int INET_ECN_set_ce(struct sk_buff *skb)
 	}
 
 	return 0;
+}
+
+static inline int skb_get_dsfield(struct sk_buff *skb)
+{
+	switch (skb_protocol(skb, true)) {
+	case cpu_to_be16(ETH_P_IP):
+		if (!pskb_network_may_pull(skb, sizeof(struct iphdr)))
+			break;
+		return ipv4_get_dsfield(ip_hdr(skb));
+
+	case cpu_to_be16(ETH_P_IPV6):
+		if (!pskb_network_may_pull(skb, sizeof(struct ipv6hdr)))
+			break;
+		return ipv6_get_dsfield(ipv6_hdr(skb));
+	}
+
+	return -1;
 }
 
 static inline int INET_ECN_set_ect1(struct sk_buff *skb)

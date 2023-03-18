@@ -107,6 +107,8 @@ static void stmp3xxx_wdt_register(struct platform_device *rtc_pdev)
 		wdt_pdev->dev.parent = &rtc_pdev->dev;
 		wdt_pdev->dev.platform_data = &wdt_pdata;
 		rc = platform_device_add(wdt_pdev);
+		if (rc)
+			platform_device_put(wdt_pdev);
 	}
 
 	if (rc)
@@ -366,7 +368,7 @@ static int stmp3xxx_rtc_probe(struct platform_device *pdev)
 	rtc_data->rtc->ops = &stmp3xxx_rtc_ops;
 	rtc_data->rtc->range_max = U32_MAX;
 
-	err = rtc_register_device(rtc_data->rtc);
+	err = devm_rtc_register_device(rtc_data->rtc);
 	if (err)
 		return err;
 

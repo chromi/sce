@@ -54,8 +54,6 @@ dasd_ioctl_enable(struct block_device *bdev)
 		return -ENODEV;
 
 	dasd_enable_device(base);
-	/* Formatting the dasd device can change the capacity. */
-	bd_set_nr_sectors(bdev, get_capacity(base->block->gdp));
 	dasd_put_device(base);
 	return 0;
 }
@@ -88,7 +86,7 @@ dasd_ioctl_disable(struct block_device *bdev)
 	 * Set i_size to zero, since read, write, etc. check against this
 	 * value.
 	 */
-	bd_set_nr_sectors(bdev, 0);
+	set_capacity(bdev->bd_disk, 0);
 	dasd_put_device(base);
 	return 0;
 }
@@ -222,9 +220,8 @@ dasd_format(struct dasd_block *block, struct format_data_t *fdata)
 	 * enabling the device later.
 	 */
 	if (fdata->start_unit == 0) {
-		struct block_device *bdev = bdget_disk(block->gdp, 0);
-		bdev->bd_inode->i_blkbits = blksize_bits(fdata->blksize);
-		bdput(bdev);
+		block->gdp->part0->bd_inode->i_blkbits =
+			blksize_bits(fdata->blksize);
 	}
 
 	rc = base->discipline->format_device(base, fdata, 1);
@@ -382,6 +379,56 @@ out_err:
 	return rc;
 }
 
+/*
+ * Swap driver iternal copy relation.
+ */
+static int
+dasd_ioctl_copy_pair_swap(struct block_device *bdev, void __user *argp)
+{
+	struct dasd_copypair_swap_data_t data;
+	struct dasd_device *device;
+	int rc;
+
+	if (!capable(CAP_SYS_ADMIN))
+		return -EACCES;
+
+	device = dasd_device_from_gendisk(bdev->bd_disk);
+	if (!device)
+		return -ENODEV;
+
+	if (copy_from_user(&data, argp, sizeof(struct dasd_copypair_swap_data_t))) {
+		dasd_put_device(device);
+		return -EFAULT;
+	}
+	if (memchr_inv(data.reserved, 0, sizeof(data.reserved))) {
+		pr_warn("%s: Invalid swap data specified\n",
+			dev_name(&device->cdev->dev));
+		dasd_put_device(device);
+		return DASD_COPYPAIRSWAP_INVALID;
+	}
+	if (bdev_is_partition(bdev)) {
+		pr_warn("%s: The specified DASD is a partition and cannot be swapped\n",
+			dev_name(&device->cdev->dev));
+		dasd_put_device(device);
+		return DASD_COPYPAIRSWAP_INVALID;
+	}
+	if (!device->copy) {
+		pr_warn("%s: The specified DASD has no copy pair set up\n",
+			dev_name(&device->cdev->dev));
+		dasd_put_device(device);
+		return -ENODEV;
+	}
+	if (!device->discipline->copy_pair_swap) {
+		dasd_put_device(device);
+		return -EOPNOTSUPP;
+	}
+	rc = device->discipline->copy_pair_swap(device, data.primary,
+						data.secondary);
+	dasd_put_device(device);
+
+	return rc;
+}
+
 #ifdef CONFIG_DASD_PROFILE
 /*
  * Reset device profile information
@@ -532,28 +579,22 @@ static int dasd_ioctl_information(struct dasd_block *block, void __user *argp,
 /*
  * Set read only
  */
-static int
-dasd_ioctl_set_ro(struct block_device *bdev, void __user *argp)
+int dasd_set_read_only(struct block_device *bdev, bool ro)
 {
 	struct dasd_device *base;
-	int intval, rc;
+	int rc;
 
-	if (!capable(CAP_SYS_ADMIN))
-		return -EACCES;
+	/* do not manipulate hardware state for partitions */
 	if (bdev_is_partition(bdev))
-		// ro setting is not allowed for partitions
-		return -EINVAL;
-	if (get_user(intval, (int __user *)argp))
-		return -EFAULT;
+		return 0;
+
 	base = dasd_device_from_gendisk(bdev->bd_disk);
 	if (!base)
 		return -ENODEV;
-	if (!intval && test_bit(DASD_FLAG_DEVICE_RO, &base->flags)) {
-		dasd_put_device(base);
-		return -EROFS;
-	}
-	set_disk_ro(bdev->bd_disk, intval);
-	rc = dasd_set_feature(base->cdev, DASD_FEATURE_READONLY, intval);
+	if (!ro && test_bit(DASD_FLAG_DEVICE_RO, &base->flags))
+		rc = -EROFS;
+	else
+		rc = dasd_set_feature(base->cdev, DASD_FEATURE_READONLY, ro);
 	dasd_put_device(base);
 	return rc;
 }
@@ -584,10 +625,8 @@ int dasd_ioctl(struct block_device *bdev, fmode_t mode,
 	else
 		argp = (void __user *)arg;
 
-	if ((_IOC_DIR(cmd) != _IOC_NONE) && !arg) {
-		PRINT_DEBUG("empty data ptr");
+	if ((_IOC_DIR(cmd) != _IOC_NONE) && !arg)
 		return -EINVAL;
-	}
 
 	base = dasd_device_from_gendisk(bdev->bd_disk);
 	if (!base)
@@ -633,9 +672,6 @@ int dasd_ioctl(struct block_device *bdev, fmode_t mode,
 	case BIODASDPRRST:
 		rc = dasd_ioctl_reset_profile(block);
 		break;
-	case BLKROSET:
-		rc = dasd_ioctl_set_ro(bdev, argp);
-		break;
 	case DASDAPIVER:
 		rc = dasd_ioctl_api_version(argp);
 		break;
@@ -651,6 +687,9 @@ int dasd_ioctl(struct block_device *bdev, fmode_t mode,
 	case BIODASDRAS:
 		rc = dasd_ioctl_release_space(bdev, argp);
 		break;
+	case BIODASDCOPYPAIRSWAP:
+		rc = dasd_ioctl_copy_pair_swap(bdev, argp);
+		break;
 	default:
 		/* if the discipline has an ioctl method try it. */
 		rc = -ENOTTY;
@@ -664,8 +703,8 @@ int dasd_ioctl(struct block_device *bdev, fmode_t mode,
 
 /**
  * dasd_biodasdinfo() - fill out the dasd information structure
- * @disk [in]: pointer to gendisk structure that references a DASD
- * @info [out]: pointer to the dasd_information2_t structure
+ * @disk: [in] pointer to gendisk structure that references a DASD
+ * @info: [out] pointer to the dasd_information2_t structure
  *
  * Provide access to DASD specific information.
  * The gendisk structure is checked if it belongs to the DASD driver by

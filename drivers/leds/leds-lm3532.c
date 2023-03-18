@@ -586,7 +586,6 @@ static int lm3532_parse_node(struct lm3532_data *priv)
 		ret = fwnode_property_read_u32(child, "reg", &control_bank);
 		if (ret) {
 			dev_err(&priv->client->dev, "reg property missing\n");
-			fwnode_handle_put(child);
 			goto child_out;
 		}
 
@@ -601,7 +600,6 @@ static int lm3532_parse_node(struct lm3532_data *priv)
 					       &led->mode);
 		if (ret) {
 			dev_err(&priv->client->dev, "ti,led-mode property missing\n");
-			fwnode_handle_put(child);
 			goto child_out;
 		}
 
@@ -636,7 +634,6 @@ static int lm3532_parse_node(struct lm3532_data *priv)
 						    led->num_leds);
 		if (ret) {
 			dev_err(&priv->client->dev, "led-sources property missing\n");
-			fwnode_handle_put(child);
 			goto child_out;
 		}
 
@@ -647,7 +644,6 @@ static int lm3532_parse_node(struct lm3532_data *priv)
 		if (ret) {
 			dev_err(&priv->client->dev, "led register err: %d\n",
 				ret);
-			fwnode_handle_put(child);
 			goto child_out;
 		}
 
@@ -655,14 +651,15 @@ static int lm3532_parse_node(struct lm3532_data *priv)
 		if (ret) {
 			dev_err(&priv->client->dev, "register init err: %d\n",
 				ret);
-			fwnode_handle_put(child);
 			goto child_out;
 		}
 
 		i++;
 	}
+	return 0;
 
 child_out:
+	fwnode_handle_put(child);
 	return ret;
 }
 
@@ -707,7 +704,7 @@ static int lm3532_probe(struct i2c_client *client,
 	return ret;
 }
 
-static int lm3532_remove(struct i2c_client *client)
+static void lm3532_remove(struct i2c_client *client)
 {
 	struct lm3532_data *drvdata = i2c_get_clientdata(client);
 
@@ -715,8 +712,6 @@ static int lm3532_remove(struct i2c_client *client)
 
 	if (drvdata->enable_gpio)
 		gpiod_direction_output(drvdata->enable_gpio, 0);
-
-	return 0;
 }
 
 static const struct of_device_id of_lm3532_leds_match[] = {
