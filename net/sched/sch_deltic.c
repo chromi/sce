@@ -202,8 +202,7 @@ static s32 deltic_enqueue(struct sk_buff *skb, struct Qdisc *sch, struct sk_buff
 		if (IS_ERR_OR_NULL(segs))
 			return qdisc_drop(skb, sch, to_free);
 
-		while(segs) {
-			nskb = segs->next;
+		skb_list_walk_safe(segs, segs, nskb) {
 			skb_mark_not_on_list(segs);
 
 			qdisc_skb_cb(segs)->pkt_len = segs->len;
@@ -211,7 +210,6 @@ static s32 deltic_enqueue(struct sk_buff *skb, struct Qdisc *sch, struct sk_buff
 			numsegs++;
 
 			deltic_enqueue(segs, sch, to_free);
-			segs = nskb;
 		}
 
 		qdisc_tree_reduce_backlog(sch, 1-numsegs, len-slen);
