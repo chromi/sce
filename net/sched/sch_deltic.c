@@ -261,7 +261,10 @@ static struct sk_buff* deltic_dequeue(struct Qdisc *sch)
 		if(!INET_ECN_set_ce(skb))
 			drop = true;
 
-	if (drop) {
+	/* We can't call qdisc_tree_reduce_backlog() if our qlen is 0 or HTB crashes.
+	 * Defer it for the next round.
+	 */
+	if (drop && sch->q.qlen) {
 		/* drop packet, and try again with the next one */
 		qdisc_tree_reduce_backlog(sch, 1, len);
 		qdisc_qstats_drop(sch);
