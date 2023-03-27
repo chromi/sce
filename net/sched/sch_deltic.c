@@ -314,13 +314,13 @@ static int deltic_change(struct Qdisc *sch, struct nlattr *opt,
 		q->sig_freq = nla_get_u16(tb[TCA_DELTIC_FREQ_SIGNAL]);
 
 	if (tb[TCA_DELTIC_FREQ_DROP])
-		deltic_parameterise(&q->drp_params, nla_get_u32(tb[TCA_DELTIC_FREQ_DROP]), q->sig_freq);
+		deltic_parameterise(&q->drp_params, nla_get_u16(tb[TCA_DELTIC_FREQ_DROP]), q->sig_freq);
 
 	if (tb[TCA_DELTIC_FREQ_ECN])
-		deltic_parameterise(&q->ecn_params, nla_get_u32(tb[TCA_DELTIC_FREQ_ECN]), q->sig_freq);
+		deltic_parameterise(&q->ecn_params, nla_get_u16(tb[TCA_DELTIC_FREQ_ECN]), q->sig_freq);
 
 	if (tb[TCA_DELTIC_FREQ_SCE])
-		deltic_parameterise(&q->sce_params, nla_get_u32(tb[TCA_DELTIC_FREQ_SCE]), q->sig_freq);
+		deltic_parameterise(&q->sce_params, nla_get_u16(tb[TCA_DELTIC_FREQ_SCE]), q->sig_freq);
 
 	/* unlimited mode */
 	sch->flags |= TCQ_F_CAN_BYPASS;
@@ -337,16 +337,16 @@ static int deltic_dump(struct Qdisc *sch, struct sk_buff *skb)
 	if (!opts)
 		goto nla_put_failure;
 
-	if (nla_put_u32(skb, TCA_DELTIC_FREQ_SIGNAL, q->sig_freq))
+	if (nla_put_u16(skb, TCA_DELTIC_FREQ_SIGNAL, q->sig_freq))
 		goto nla_put_failure;
 
-	if (nla_put_u32(skb, TCA_DELTIC_FREQ_DROP, q->drp_params.resonance))
+	if (nla_put_u16(skb, TCA_DELTIC_FREQ_DROP, q->drp_params.resonance))
 		goto nla_put_failure;
 
-	if (nla_put_u32(skb, TCA_DELTIC_FREQ_ECN, q->ecn_params.resonance))
+	if (nla_put_u16(skb, TCA_DELTIC_FREQ_ECN, q->ecn_params.resonance))
 		goto nla_put_failure;
 
-	if (nla_put_u32(skb, TCA_DELTIC_FREQ_SCE, q->sce_params.resonance))
+	if (nla_put_u16(skb, TCA_DELTIC_FREQ_SCE, q->sce_params.resonance))
 		goto nla_put_failure;
 
 	return nla_nest_end(skb, opts);
