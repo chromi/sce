@@ -364,6 +364,16 @@ config NET_SCH_LFQ_COBALT
 
 	  If unsure, say N.
 
+config NET_SCH_QUARTZ
+	tristate "Quartz AQM"
+	help
+	  Say Y here if you want to use the Quartz AQM.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called sch_quartz.
+
+	  If unsure, say N.
+
 config NET_SCH_FQ
 	tristate "Fair Queue"
 	help
