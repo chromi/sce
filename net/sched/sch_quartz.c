@@ -15,14 +15,18 @@
 
 // TODO remove hard-coding of AQM parameters
 
-//#define DEFAULT_QUARTZ_LIMIT 1000
-#define DEFAULT_QUARTZ_LIMIT 83 // 20 ms @ 50 Mbps
-#define DEFAULT_BURST 0*NSEC_PER_MSEC
+//#define DEFAULT_LIMIT 1000
+#define DEFAULT_LIMIT 83 // 20 ms @ 50 Mbps
+
+// Quartz AQM defaults
+#define DEFAULT_FLOOR 0
+#define DEFAULT_CEIL 1
 #define DEFAULT_IDLE_SHIFT -1
 #define DEFAULT_WALL_SHIFT 2 // wall == 2^30 ns (~1.07 sec)
 
 struct quartz_params {
-	u32 burst_ns;
+	u32 floor; // floor must be < ceil
+	u32 ceil; // ceil must be > floor
 	s8 idle_shift;
 	u8 wall_shift;
 };
@@ -30,38 +34,52 @@ struct quartz_params {
 struct quartz_sched_data {
 	struct quartz_params params;
 
-	ktime_t busy;
-	ktime_t prior;
-	ktime_t idle;
 	u32 wall;
 	s64 mark; // TODO consider making mark 32-bit
+	ktime_t prior;
 };
+
+static void update_idle(ktime_t now, struct quartz_params *p,
+			struct quartz_sched_data *q) {
+	ktime_t i = ktime_sub(now, q->prior);
+	if (p->idle_shift > 0) {
+		i >>= p->idle_shift;
+	} else if (p->idle_shift < 0) {
+		i <<= -p->idle_shift;
+	}
+	q->mark -= ktime_to_ns(i);
+	if (q->mark < 0) {
+		q->mark = 0;
+	}
+}
+
+static void update_busy(ktime_t now, struct quartz_params *p,
+			struct quartz_sched_data *q) {
+	q->mark += ktime_to_ns(ktime_sub(now, q->prior));
+	if (q->mark > q->wall) {
+		q->mark = q->wall;
+	}
+}
 
 static s32 quartz_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 			  struct sk_buff **to_free)
 {
+	ktime_t now = ktime_get();
 	struct quartz_sched_data *q = qdisc_priv(sch);
+	struct quartz_params *p = &q->params;
+	int qlen = qdisc_qlen(sch);
 
-	if (unlikely(sch->q.qlen >= sch->limit))
+	if (unlikely(qlen >= sch->limit))
 		return qdisc_drop(skb, sch, to_free);
 
-	if (!sch->q.qlen) {
-		ktime_t now = ktime_get();
-		q->busy = now;
+	if (unlikely(!q->prior && qlen <= p->floor)) {
 		q->prior = now;
-		if (q->idle) {
-			ktime_t d = ktime_sub(now, q->idle);
-			struct quartz_params *p = &q->params;
-			if (p->idle_shift > 0) {
-				d >>= p->idle_shift;
-			} else if (p->idle_shift < 0) {
-				d <<= -p->idle_shift;
-			}
-			q->mark -= ktime_to_ns(d);
-			if (q->mark < 0) {
-				q->mark = 0;
-			}
-		}
+	} else if (qlen == p->floor) {
+		update_idle(now, p, q);
+	}
+
+	if (qlen == p->ceil) {
+		q->prior = now;
 	}
 
 	return qdisc_enqueue_tail(skb, sch);
@@ -69,27 +87,30 @@ static s32 quartz_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 
 static struct sk_buff* quartz_dequeue(struct Qdisc *sch)
 {
-	struct quartz_sched_data *q = qdisc_priv(sch);
-	struct sk_buff *skb = qdisc_dequeue_head(sch);
 	ktime_t now = ktime_get();
-	ktime_t b = ktime_sub(now, q->busy);
+	struct quartz_sched_data *q = qdisc_priv(sch);
 	struct quartz_params *p = &q->params;
+	struct sk_buff *skb;
+	int qlen = qdisc_qlen(sch);
 
+	if (qlen >= p->ceil) {
+		update_busy(now, p, q);
+		q->prior = now;
+	}
+
+	if (qlen == p->floor + 1) {
+		q->prior = now;
+	} else if (qlen <= p->floor) {
+		update_idle(now, p, q);
+		q->prior = now;
+	}
+
+	skb = qdisc_dequeue_head(sch);
 	if (unlikely(!skb)) {
 		WARN_ON(!skb);
-		q->idle = now;
 		return NULL;
 	}
-	if (!sch->q.qlen) {
-		q->idle = now;
-	}
-	if (ktime_to_ns(b) > p->burst_ns) {
-		q->mark += ktime_to_ns(ktime_sub(now, q->prior));
-		if (q->mark > q->wall) {
-			q->mark = q->wall;
-		}
-	}
-	q->prior = now;
+
 	if (get_random_u32() >> p->wall_shift <= q->mark) {
 		INET_ECN_set_ect1(skb);
 	}
@@ -103,12 +124,13 @@ static int quartz_init(struct Qdisc *sch, struct nlattr *opt,
 	struct quartz_sched_data *q = qdisc_priv(sch);
 
 	memset(q, 0, sizeof(*q));
-	q->params.burst_ns = DEFAULT_BURST;
+	q->params.floor = DEFAULT_FLOOR;
+	q->params.ceil = DEFAULT_CEIL;
 	q->params.idle_shift = DEFAULT_IDLE_SHIFT;
 	q->params.wall_shift = DEFAULT_WALL_SHIFT;
 	q->wall = ~0 >> q->params.wall_shift;
 
-	sch->limit = DEFAULT_QUARTZ_LIMIT;
+	sch->limit = DEFAULT_LIMIT;
 
 	/*
 	 * TODO What should I do with TCQ_F_CAN_BYPASS?
