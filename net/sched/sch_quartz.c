@@ -21,7 +21,7 @@
 // Quartz AQM defaults
 #define DEFAULT_FLOOR 0
 #define DEFAULT_CEIL 1
-#define DEFAULT_IDLE_SHIFT -1
+#define DEFAULT_IDLE_SHIFT -3
 #define DEFAULT_WALL_SHIFT 2 // wall == 2^30 ns (~1.07 sec)
 
 struct quartz_params {
@@ -51,6 +51,7 @@ static void update_idle(ktime_t now, struct quartz_params *p,
 	if (q->mark < 0) {
 		q->mark = 0;
 	}
+	q->prior = now;
 }
 
 static void update_busy(ktime_t now, struct quartz_params *p,
@@ -59,6 +60,7 @@ static void update_busy(ktime_t now, struct quartz_params *p,
 	if (q->mark > q->wall) {
 		q->mark = q->wall;
 	}
+	q->prior = now;
 }
 
 static s32 quartz_enqueue(struct sk_buff *skb, struct Qdisc *sch,
@@ -95,14 +97,12 @@ static struct sk_buff* quartz_dequeue(struct Qdisc *sch)
 
 	if (qlen >= p->ceil) {
 		update_busy(now, p, q);
-		q->prior = now;
 	}
 
 	if (qlen == p->floor + 1) {
 		q->prior = now;
 	} else if (qlen <= p->floor) {
 		update_idle(now, p, q);
-		q->prior = now;
 	}
 
 	skb = qdisc_dequeue_head(sch);
