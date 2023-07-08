@@ -4,26 +4,20 @@
  *
  * Copyright (C) 2023 Pete Heist <pete@heistp.net>
  *
- * Quartz is an AQM that modulates a signaling frequency using queue busy and
- * idle time.
+ * Quartz is an AQM that modulates an SCE marking probability proportionally to
+ * queue busy and idle time, converging on an operating point with low delay
+ * and high utilization.
  */
 
-#include <linux/printk.h> // debug
 #include <net/pkt_sched.h>
 #include <net/pkt_cls.h>
 #include <net/inet_ecn.h>
 
-// TODO remove hard-coding of AQM parameters
-// TODO re-implement burst correctly
-// TODO figure out why reno-sce cwnd starts exploding above 100 Mbps
-// TODO figure out why dctcp-sce RTT and cwnd oscillates
-// TODO write function and parameter doc
-
 //#define DEFAULT_LIMIT 1000
-#define DEFAULT_LIMIT 25 // ~25 ms @ 50 Mbps (aggregated)
+#define DEFAULT_LIMIT 25
 
-// Quartz AQM defaults
-#define DEFAULT_RESPONSIVENESS 3 // wall == 2^29 ns (~537 ms)
+/* Quartz AQM defaults */
+#define DEFAULT_RESPONSIVENESS 3
 #define DEFAULT_UTILIZATION 0
 #define DEFAULT_TARGET 0
 #define DEFAULT_FLOOR DEFAULT_TARGET
@@ -31,15 +25,15 @@
 
 struct quartz_params {
 	u8 responsiveness;
-	s8 utilization; // idle shift
-	u8 floor; // floor must be < ceil
-	u8 ceil; // ceil must be > floor
+	s8 utilization;
+	u8 floor;
+	u8 ceil;
 };
 
 struct quartz_sched_data {
 	struct quartz_params params;
 
-	s64 mark; // TODO consider making mark 32-bit
+	s32 mark;
 	u32 wall;
 	ktime_t prior;
 	u8 ceil_minus_one;
@@ -47,25 +41,20 @@ struct quartz_sched_data {
 
 static void update_idle(ktime_t now, struct quartz_params *p,
 			struct quartz_sched_data *q) {
-	ktime_t i = ktime_sub(now, q->prior);
+	s64 i = ktime_to_ns(ktime_sub(now, q->prior));
 	if (p->utilization > 0) {
 		i <<= p->utilization;
 	} else if (p->utilization < 0) {
 		i >>= -p->utilization;
 	}
-	q->mark -= ktime_to_ns(i);
-	if (q->mark < 0) {
-		q->mark = 0;
-	}
+	q->mark = (i > q->mark) ? 0 : q->mark - i;
 	q->prior = now;
 }
 
 static void update_busy(ktime_t now, struct quartz_params *p,
 			struct quartz_sched_data *q) {
-	q->mark += ktime_to_ns(ktime_sub(now, q->prior));
-	if (q->mark > q->wall) {
-		q->mark = q->wall;
-	}
+	s64 b = ktime_to_ns(ktime_sub(now, q->prior));
+	q->mark = (q->mark + b > q->wall) ? q->wall : q->mark + b;
 	q->prior = now;
 }
 
@@ -138,13 +127,6 @@ static int quartz_init(struct Qdisc *sch, struct nlattr *opt,
 
 	sch->limit = DEFAULT_LIMIT;
 
-	/*
-	 * TODO What should I do with TCQ_F_CAN_BYPASS?
-	 * It is not clear to me what this is for. It's set by codel, but only
-	 * if limit is >= 1. It's not set by red or sfb. For now, I'll use
-	 * codel's behavior until I understand it better. And why wouldn't
-	 * codel do this in codel_change? Can't the limit change?
-	 */
 	if (sch->limit >= 1)
 		sch->flags |= TCQ_F_CAN_BYPASS;
 	else
@@ -179,14 +161,6 @@ nla_put_failure:
 	nla_nest_cancel(skb, opts);
 	return -1;
 }
-
-/*
- * TODO Is it correct to use qdisc_peek_dequeued?
- * Since we are marking SCE in the dequeue function, I think we actually need
- * to call dequeue to get a packet for peeking. Now, the documentation for
- * qdisc_peek_dequeued says it's for non-work-conserving qdiscs, yet I think
- * there are many work-conserving qdiscs using it. So, this is confusing.
- */
 
 struct Qdisc_ops quartz_qdisc_ops __read_mostly = {
 	.id		=	"quartz",
