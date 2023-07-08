@@ -31,28 +31,30 @@ struct quartz_params {
 struct quartz_sched_data {
 	struct quartz_params params;
 
-	s32 mark;
+	u32 mark;
 	u32 wall;
 	ktime_t prior;
 	u8 ceil_minus_one;
 };
 
 static void update_idle(ktime_t now, struct quartz_params *p,
-			struct quartz_sched_data *q) {
+			struct quartz_sched_data *q)
+{
 	s64 i = ktime_to_ns(ktime_sub(now, q->prior));
-	if (p->utilization > 0) {
+	if (p->utilization > 0)
 		i <<= p->utilization;
-	} else if (p->utilization < 0) {
+	else if (p->utilization < 0)
 		i >>= -p->utilization;
-	}
-	q->mark = (i > q->mark) ? 0 : q->mark - i;
+	q->mark = (i >= q->mark) ? 0 : q->mark - i;
 	q->prior = now;
 }
 
 static void update_busy(ktime_t now, struct quartz_params *p,
-			struct quartz_sched_data *q) {
+			struct quartz_sched_data *q)
+{
 	s64 b = ktime_to_ns(ktime_sub(now, q->prior));
-	q->mark = (q->mark + b > q->wall) ? q->wall : q->mark + b;
+	u64 m = q->mark + b;
+	q->mark = (m > q->wall) ? q->wall : m;
 	q->prior = now;
 }
 
@@ -67,11 +69,10 @@ static s32 quartz_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 	if (unlikely(qlen >= sch->limit))
 		return qdisc_drop(skb, sch, to_free);
 
-	if (qlen == p->floor) {
+	if (qlen == p->floor)
 		update_idle(now, p, q);
-	} else if (qlen == p->ceil) {
+	else if (qlen == p->ceil)
 		q->prior = now;
-	}
 
 	return qdisc_enqueue_tail(skb, sch);
 }
@@ -92,19 +93,16 @@ static struct sk_buff* quartz_dequeue(struct Qdisc *sch)
 
 	qlen = qdisc_qlen(sch);
 
-	if (qlen >= q->ceil_minus_one) {
+	if (qlen >= q->ceil_minus_one)
 		update_busy(now, p, q);
-	}
 
-	if (qlen == p->floor) {
+	if (qlen == p->floor)
 		q->prior = now;
-	} else if (qlen < p->floor) {
+	else if (qlen < p->floor)
 		update_idle(now, p, q);
-	}
 
-	if (get_random_u32() >> p->responsiveness <= q->mark) {
+	if (get_random_u32() >> p->responsiveness <= q->mark)
 		INET_ECN_set_ect1(skb);
-	}
 
 	return skb;
 }
