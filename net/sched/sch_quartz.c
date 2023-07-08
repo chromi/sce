@@ -14,38 +14,44 @@
 #include <net/inet_ecn.h>
 
 // TODO remove hard-coding of AQM parameters
+// TODO re-implement burst correctly
+// TODO figure out why reno-sce cwnd starts exploding above 100 Mbps
+// TODO figure out why dctcp-sce RTT and cwnd oscillates
+// TODO write function and parameter doc
 
 //#define DEFAULT_LIMIT 1000
-#define DEFAULT_LIMIT 83 // 20 ms @ 50 Mbps
+#define DEFAULT_LIMIT 25 // ~25 ms @ 50 Mbps (aggregated)
 
 // Quartz AQM defaults
-#define DEFAULT_FLOOR 0
-#define DEFAULT_CEIL 1
-#define DEFAULT_IDLE_SHIFT -3
-#define DEFAULT_WALL_SHIFT 2 // wall == 2^30 ns (~1.07 sec)
+#define DEFAULT_RESPONSIVENESS 3 // wall == 2^29 ns (~537 ms)
+#define DEFAULT_UTILIZATION 0
+#define DEFAULT_TARGET 0
+#define DEFAULT_FLOOR DEFAULT_TARGET
+#define DEFAULT_CEIL DEFAULT_TARGET + 1
 
 struct quartz_params {
-	u32 floor; // floor must be < ceil
-	u32 ceil; // ceil must be > floor
-	s8 idle_shift;
-	u8 wall_shift;
+	u8 responsiveness;
+	s8 utilization; // idle shift
+	u8 floor; // floor must be < ceil
+	u8 ceil; // ceil must be > floor
 };
 
 struct quartz_sched_data {
 	struct quartz_params params;
 
-	u32 wall;
 	s64 mark; // TODO consider making mark 32-bit
+	u32 wall;
 	ktime_t prior;
+	u8 ceil_minus_one;
 };
 
 static void update_idle(ktime_t now, struct quartz_params *p,
 			struct quartz_sched_data *q) {
 	ktime_t i = ktime_sub(now, q->prior);
-	if (p->idle_shift > 0) {
-		i >>= p->idle_shift;
-	} else if (p->idle_shift < 0) {
-		i <<= -p->idle_shift;
+	if (p->utilization > 0) {
+		i <<= p->utilization;
+	} else if (p->utilization < 0) {
+		i >>= -p->utilization;
 	}
 	q->mark -= ktime_to_ns(i);
 	if (q->mark < 0) {
@@ -74,13 +80,9 @@ static s32 quartz_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 	if (unlikely(qlen >= sch->limit))
 		return qdisc_drop(skb, sch, to_free);
 
-	if (unlikely(!q->prior && qlen <= p->floor)) {
-		q->prior = now;
-	} else if (qlen == p->floor) {
+	if (qlen == p->floor) {
 		update_idle(now, p, q);
-	}
-
-	if (qlen == p->ceil) {
+	} else if (qlen == p->ceil) {
 		q->prior = now;
 	}
 
@@ -93,17 +95,7 @@ static struct sk_buff* quartz_dequeue(struct Qdisc *sch)
 	struct quartz_sched_data *q = qdisc_priv(sch);
 	struct quartz_params *p = &q->params;
 	struct sk_buff *skb;
-	int qlen = qdisc_qlen(sch);
-
-	if (qlen >= p->ceil) {
-		update_busy(now, p, q);
-	}
-
-	if (qlen == p->floor + 1) {
-		q->prior = now;
-	} else if (qlen <= p->floor) {
-		update_idle(now, p, q);
-	}
+	int qlen;
 
 	skb = qdisc_dequeue_head(sch);
 	if (unlikely(!skb)) {
@@ -111,7 +103,19 @@ static struct sk_buff* quartz_dequeue(struct Qdisc *sch)
 		return NULL;
 	}
 
-	if (get_random_u32() >> p->wall_shift <= q->mark) {
+	qlen = qdisc_qlen(sch);
+
+	if (qlen >= q->ceil_minus_one) {
+		update_busy(now, p, q);
+	}
+
+	if (qlen == p->floor) {
+		q->prior = now;
+	} else if (qlen < p->floor) {
+		update_idle(now, p, q);
+	}
+
+	if (get_random_u32() >> p->responsiveness <= q->mark) {
 		INET_ECN_set_ect1(skb);
 	}
 
@@ -124,11 +128,13 @@ static int quartz_init(struct Qdisc *sch, struct nlattr *opt,
 	struct quartz_sched_data *q = qdisc_priv(sch);
 
 	memset(q, 0, sizeof(*q));
+	q->params.responsiveness = DEFAULT_RESPONSIVENESS;
+	q->params.utilization = DEFAULT_UTILIZATION;
 	q->params.floor = DEFAULT_FLOOR;
 	q->params.ceil = DEFAULT_CEIL;
-	q->params.idle_shift = DEFAULT_IDLE_SHIFT;
-	q->params.wall_shift = DEFAULT_WALL_SHIFT;
-	q->wall = ~0 >> q->params.wall_shift;
+	q->wall = ~0 >> q->params.responsiveness;
+	q->prior = ktime_get();
+	q->ceil_minus_one = q->params.ceil - 1;
 
 	sch->limit = DEFAULT_LIMIT;
 
