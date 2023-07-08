@@ -30,7 +30,6 @@ struct quartz_params {
 
 struct quartz_sched_data {
 	struct quartz_params params;
-
 	u32 mark;
 	u32 wall;
 	ktime_t prior;
@@ -101,7 +100,7 @@ static struct sk_buff* quartz_dequeue(struct Qdisc *sch)
 	else if (qlen < p->floor)
 		update_idle(now, p, q);
 
-	if (get_random_u32() >> p->responsiveness <= q->mark)
+	if (get_random_u32() >> p->responsiveness < q->mark)
 		INET_ECN_set_ect1(skb);
 
 	return skb;
