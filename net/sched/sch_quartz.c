@@ -13,10 +13,8 @@
 #include <net/pkt_cls.h>
 #include <net/inet_ecn.h>
 
-//#define DEFAULT_LIMIT 1000
+/* AQM defaults (temporary until config code is in place) */
 #define DEFAULT_LIMIT 25
-
-/* Quartz AQM defaults */
 #define DEFAULT_RESPONSIVENESS 3
 #define DEFAULT_UTILIZATION 0
 #define DEFAULT_TARGET 0
@@ -143,8 +141,6 @@ static void quartz_reset(struct Qdisc *sch)
 static int quartz_change(struct Qdisc *sch, struct nlattr *opt,
 		      struct netlink_ext_ack *extack)
 {
-	//struct quartz_sched_data *q = qdisc_priv(sch);
-
 	return 0;
 }
 
