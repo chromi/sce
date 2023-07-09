@@ -13,37 +13,47 @@
 #include <net/pkt_cls.h>
 #include <net/inet_ecn.h>
 
+/**
+ * Responsiveness:
+ * 0: 4.29s
+ * 1: 2.15s
+ * 2: 1.07s
+ * 3: 537ms
+ * 4: 268ms
+ * 5: 134ms
+ * 6: 67ms
+ * 7: 33ms
+ * 8: 17ms
+ */
+
 /* AQM defaults (temporary until config code is in place) */
 #define DEFAULT_LIMIT 25
 #define DEFAULT_RESPONSIVENESS 3
-#define DEFAULT_UTILIZATION 0
-#define DEFAULT_TARGET 0
-#define DEFAULT_FLOOR DEFAULT_TARGET
-#define DEFAULT_CEIL DEFAULT_TARGET + 1
+#define DEFAULT_BOOST 0
+#define DEFAULT_FLOOR 0
 
 struct quartz_params {
 	u8 responsiveness;
-	s8 utilization;
+	s8 boost;
 	u8 floor;
-	u8 ceil;
 };
 
 struct quartz_sched_data {
 	struct quartz_params params;
 	u32 mark;
 	u32 wall;
+	u8 ceil;
 	ktime_t prior;
-	u8 ceil_minus_one;
 };
 
 static void update_idle(ktime_t now, struct quartz_params *p,
 			struct quartz_sched_data *q)
 {
 	s64 i = ktime_to_ns(ktime_sub(now, q->prior));
-	if (p->utilization > 0)
-		i <<= p->utilization;
-	else if (p->utilization < 0)
-		i >>= -p->utilization;
+	if (p->boost > 0)
+		i <<= p->boost;
+	else if (p->boost < 0)
+		i >>= -p->boost;
 	q->mark = (i >= q->mark) ? 0 : q->mark - i;
 	q->prior = now;
 }
@@ -63,17 +73,26 @@ static s32 quartz_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 	ktime_t now = ktime_get();
 	struct quartz_sched_data *q = qdisc_priv(sch);
 	struct quartz_params *p = &q->params;
-	int qlen = qdisc_qlen(sch);
+	int l0 = qdisc_qlen(sch), l1;
+	int r;
 
-	if (unlikely(qlen >= sch->limit))
+	if (unlikely(l0 >= sch->limit))
 		return qdisc_drop(skb, sch, to_free);
 
-	if (qlen == p->floor)
+	r = qdisc_enqueue_tail(skb, sch);
+	if (r != NET_XMIT_SUCCESS)
+		return r;
+	l1 = qdisc_qlen(sch);
+
+	if (l0 == p->floor)
 		update_idle(now, p, q);
-	else if (qlen == p->ceil)
+	else if (l0 == q->ceil)
 		q->prior = now;
 
-	return qdisc_enqueue_tail(skb, sch);
+	//printk("%.*s\n", l1,
+	//	"##################################################");
+
+	return NET_XMIT_SUCCESS;
 }
 
 static struct sk_buff* quartz_dequeue(struct Qdisc *sch)
@@ -82,7 +101,7 @@ static struct sk_buff* quartz_dequeue(struct Qdisc *sch)
 	struct quartz_sched_data *q = qdisc_priv(sch);
 	struct quartz_params *p = &q->params;
 	struct sk_buff *skb;
-	int qlen;
+	int l0 = qdisc_qlen(sch), l1;
 
 	skb = qdisc_dequeue_head(sch);
 	if (unlikely(!skb)) {
@@ -90,18 +109,28 @@ static struct sk_buff* quartz_dequeue(struct Qdisc *sch)
 		return NULL;
 	}
 
-	qlen = qdisc_qlen(sch);
+	l1 = qdisc_qlen(sch);
 
-	if (qlen >= q->ceil_minus_one)
+	if (l0 >= q->ceil)
 		update_busy(now, p, q);
 
-	if (qlen == p->floor)
+	if (l1 == p->floor)
 		q->prior = now;
-	else if (qlen < p->floor)
+	else if (l1 < p->floor)
 		update_idle(now, p, q);
 
-	if (get_random_u32() >> p->responsiveness < q->mark)
+	//printk("mark %x\n", q->mark);
+	if (q->mark && get_random_u32() >> p->responsiveness < q->mark)
 		INET_ECN_set_ect1(skb);
+
+	/*
+	if (l1) {
+		printk("%.*s\n", l1,
+			"##################################################");
+	} else {
+		printk(".\n");
+	}
+	*/
 
 	return skb;
 }
@@ -113,12 +142,11 @@ static int quartz_init(struct Qdisc *sch, struct nlattr *opt,
 
 	memset(q, 0, sizeof(*q));
 	q->params.responsiveness = DEFAULT_RESPONSIVENESS;
-	q->params.utilization = DEFAULT_UTILIZATION;
+	q->params.boost = DEFAULT_BOOST;
 	q->params.floor = DEFAULT_FLOOR;
-	q->params.ceil = DEFAULT_CEIL;
-	q->wall = ~0 >> q->params.responsiveness;
+	q->ceil = q->params.floor + 1;
+	q->wall = U32_MAX >> q->params.responsiveness;
 	q->prior = ktime_get();
-	q->ceil_minus_one = q->params.ceil - 1;
 
 	sch->limit = DEFAULT_LIMIT;
 
