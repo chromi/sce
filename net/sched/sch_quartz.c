@@ -7,24 +7,10 @@
  * Quartz is an AQM that marks SCE in proportion to queue busy (non-empty)
  * time, converging on an operating point with low delay and high utilization.
  *
- * Aside from the hard limit, Quartz has a single parameter, responsiveness,
- * which controls how fast the marking frequency increases when the queue is
- * busy. This should be left at the default for Internet traffic, and may be
- * increased or decreased for low RTT or high RTT environments, respectively.
- * The following table maps responsiveness values to the length of time the
- * queue is busy until 100% SCE marking is reached:
- *
- *     Responsiveness Busy Time until 100% SCE Marking
- *     -------------- --------------------------------
- *     0              4.29s
- *     1              2.15s
- *     2              1.07s
- *     3              537ms (default, for Internet traffic)
- *     4              268ms
- *     5              134ms
- *     6              67ms
- *     7              33ms
- *     8              17ms
+ * Aside from the hard limit, Quartz has a single parameter, the target,
+ * representing the target time for the queue to return to busy before
+ * returning to idle. It can also be thought of as the maximum tolerable burst
+ * before utilization may be impacted.
  */
 
 #include <net/pkt_sched.h>
@@ -33,20 +19,26 @@
 
 /* AQM defaults (temporary until config code is in place) */
 #define DEFAULT_LIMIT 25
-#define DEFAULT_RESPONSIVENESS 3
+#define DEFAULT_TARGET 1 * NSEC_PER_MSEC
 
 /* Debugging */
-//#define PRINT_BAR 1
-//#define PRINT_MARK 1
+//#define PRINT_BAR
+//#define PRINT_MARK
+//#define PRINT_RESPONSIVENESS
 
 struct quartz_params {
-	u8 responsiveness;
+	u32 target;
 };
 
 struct quartz_sched_data {
 	struct quartz_params params;
+	u32 target_floor;
+	u32 target_ceil;
+	u8 responsiveness;
+	u8 max_responsiveness;
 	u32 mark;
 	u32 wall;
+	ktime_t start;
 	ktime_t prior;
 };
 
@@ -63,7 +55,13 @@ static void print_bar(int len) {
 
 static void print_mark(u32 mark) {
 #ifdef PRINT_MARK
-	printk("mark %x\n", q->mark);
+	printk("mark %x\n", mark);
+#endif
+}
+
+static void print_responsiveness(u8 responsiveness) {
+#ifdef PRINT_RESPONSIVENESS
+	printk("responsiveness %u\n", responsiveness);
 #endif
 }
 
@@ -82,19 +80,37 @@ static s32 quartz_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 	if (r != NET_XMIT_SUCCESS)
 		return r;
 
-	if (!l0)
+	if (!l0) {
+		q->start = now;
 		q->prior = now;
+	}
 
 	print_bar(qdisc_qlen(sch));
 
 	return NET_XMIT_SUCCESS;
 }
 
+static void handle_idle(struct quartz_sched_data *q, ktime_t now, s64 busy_ns) {
+	if (busy_ns < q->target_floor) {
+		if (q->responsiveness) {
+			q->responsiveness--;
+			q->wall = U32_MAX >> q->responsiveness;
+			print_responsiveness(q->responsiveness);
+		}
+	} else if (busy_ns > q->target_ceil) {
+		if (q->responsiveness < q->max_responsiveness) {
+			q->responsiveness++;
+			q->wall = U32_MAX >> q->responsiveness;
+			print_responsiveness(q->responsiveness);
+		}
+	}
+	q->mark = 0;
+}
+
 static struct sk_buff* quartz_dequeue(struct Qdisc *sch)
 {
 	ktime_t now = ktime_get();
 	struct quartz_sched_data *q = qdisc_priv(sch);
-	struct quartz_params *p = &q->params;
 	struct sk_buff *skb;
 
 	skb = qdisc_dequeue_head(sch);
@@ -104,14 +120,15 @@ static struct sk_buff* quartz_dequeue(struct Qdisc *sch)
 	}
 
 	if (!qdisc_qlen(sch)) {
-		q->mark = 0;
+		handle_idle(q, now, ktime_to_ns(ktime_sub(now, q->start)));
 	} else {
 		u64 m = q->mark + ktime_to_ns(ktime_sub(now, q->prior));
 		q->mark = (m > q->wall) ? q->wall : m;
 		q->prior = now;
 	}
 
-	if (q->mark && get_random_u32() >> p->responsiveness < q->mark)
+	// TODO optimize get random for responsiveness
+	if (q->mark && (get_random_u32() >> q->responsiveness < q->mark))
 		INET_ECN_set_ect1(skb);
 
 	print_mark(q->mark);
@@ -126,8 +143,15 @@ static int quartz_init(struct Qdisc *sch, struct nlattr *opt,
 	struct quartz_sched_data *q = qdisc_priv(sch);
 
 	memset(q, 0, sizeof(*q));
-	q->params.responsiveness = DEFAULT_RESPONSIVENESS;
-	q->wall = U32_MAX >> q->params.responsiveness;
+	q->params.target = DEFAULT_TARGET;
+	// more subtle adjustment has no obvious benefit
+	//q->target_floor = q->params.target * 2 / 3;
+	//q->target_ceil = q->params.target * 4 / 3;
+	q->target_floor = q->params.target;
+	q->target_ceil = q->params.target;
+	q->max_responsiveness = ilog2(q->params.target);
+	q->responsiveness = q->max_responsiveness / 2;
+	q->wall = U32_MAX >> q->responsiveness;
 	q->prior = ktime_get();
 
 	sch->limit = DEFAULT_LIMIT;
