@@ -10,7 +10,7 @@
  *
  * Quartz has a single parameter, target, representing the target busy time
  * before returning to idle. This may also be thought of as the maximum
- * tolerable burst before utilization may be impacted.
+ * burst before utilization may be impacted.
  */
 
 #include <net/pkt_sched.h>
@@ -20,6 +20,10 @@
 /* AQM defaults (temporary until config code is in place) */
 #define DEFAULT_LIMIT 25
 #define DEFAULT_TARGET 5 * NSEC_PER_MSEC
+
+/* hard defines */
+#define RAMP_BASE 32
+#define TARGET_CEILING_FACTOR 2
 
 /* Debugging */
 //#define PRINT_BAR
@@ -32,25 +36,26 @@ struct quartz_params {
 
 struct quartz_sched_data {
 	struct quartz_params params;
-	u32 target_floor;
-	u32 target_ceil;
-	u8 ramp;
-	u8 max_ramp;
-	u32 mark;
-	u32 wall;
-	ktime_t start;
-	ktime_t prior;
-	bool over_target;
+
+	u32	target_floor;
+	u32	target_ceil;
+	bool	over_target;
+	u8	ramp;
+	u8	ramp_shift;
+	u8	ramp_max;
+	u64	mark;
+	u64	wall;
+	ktime_t	start;
+	ktime_t	prior;
 };
 
 static void print_bar(int len) {
 #ifdef PRINT_BAR
 #define BAR "##################################################"
-	if (len) {
+	if (len)
 		printk("%.*s\n", len, BAR);
-	} else {
+	else
 		printk(".\n");
-	}
 #endif
 }
 
@@ -90,15 +95,14 @@ static void set_ramp(struct quartz_sched_data *q, u8 ramp) {
 		printk("ramp -> %u\n", ramp);
 #endif
 	q->ramp = ramp;
-	q->wall = U32_MAX >> ramp;
+	q->ramp_shift = RAMP_BASE + ramp;
+	q->wall = U64_MAX >> q->ramp_shift;
 }
 
-static void set_mark(struct quartz_sched_data *q, u32 mark) {
+static void set_mark(struct quartz_sched_data *q, u64 mark) {
 #ifdef PRINT_EVENTS
-	//if (q->mark && !mark)
-	//	printk("mark -> 0\n");
 	if (q->mark < q->wall && mark >= q->wall)
-		printk("mark -> %x\n", mark);
+		printk("mark -> %llx\n", mark);
 #endif
 	q->mark = mark;
 }
@@ -123,7 +127,7 @@ static void on_busy(struct quartz_sched_data *q, ktime_t now, s64 busy_ns,
 		s64 c = busy_ns - q->target_ceil;
 		printk("over target (+%lld ns, ceil +%lld ns)\n", t, c);
 #endif
-		if (q->ramp < q->max_ramp) {
+		if (q->ramp < q->ramp_max) {
 			set_ramp(q, q->ramp + 1);
 			set_mark(q, q->mark >> 1);
 		}
@@ -135,9 +139,9 @@ static void on_busy(struct quartz_sched_data *q, ktime_t now, s64 busy_ns,
 	q->prior = now;
 }
 
-static u32 rand_mark(struct quartz_sched_data *q) {
+static u64 rand_mark(struct quartz_sched_data *q) {
 	// TODO optimize get random for ramp
-	return get_random_u32() >> q->ramp;
+	return get_random_u64() >> q->ramp_shift;
 }
 
 static struct sk_buff* quartz_dequeue(struct Qdisc *sch)
@@ -175,12 +179,10 @@ static int quartz_init(struct Qdisc *sch, struct nlattr *opt,
 
 	memset(q, 0, sizeof(*q));
 	q->params.target = DEFAULT_TARGET;
-	q->target_floor = q->params.target / 2;
-	q->target_ceil = q->params.target * 2;
-	q->max_ramp = ilog2(q->params.target);
-	q->ramp = q->max_ramp / 2;
-	q->wall = U32_MAX >> q->ramp;
-	q->prior = ktime_get();
+	q->target_floor = q->params.target / TARGET_CEILING_FACTOR;
+	q->target_ceil = q->params.target * TARGET_CEILING_FACTOR;
+	q->ramp_max = ilog2(q->params.target);
+	set_ramp(q, q->ramp_max / 2);
 
 	sch->limit = DEFAULT_LIMIT;
 
