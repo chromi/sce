@@ -11,6 +11,9 @@
  * Quartz has a single parameter, target, representing the target busy time
  * before returning to idle. This may also be thought of as the maximum
  * burst before utilization may be impacted.
+ *
+ * TODO
+ * - possibly return ramp to 32 bit
  */
 
 #include <net/pkt_sched.h>
@@ -182,7 +185,7 @@ static int quartz_init(struct Qdisc *sch, struct nlattr *opt,
 	q->target_floor = q->params.target / CEILING_FACTOR;
 	q->target_ceil = q->params.target * CEILING_FACTOR;
 	q->ramp_max = ilog2(q->params.target);
-	set_ramp(q, q->ramp_max / 2);
+	set_ramp(q, 0);
 
 	sch->limit = DEFAULT_LIMIT;
 
