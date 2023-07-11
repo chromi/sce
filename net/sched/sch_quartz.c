@@ -23,7 +23,7 @@
 
 /* hard defines */
 #define RAMP_BASE 32
-#define TARGET_CEILING_FACTOR 2
+#define CEILING_FACTOR 2
 
 /* Debugging */
 //#define PRINT_BAR
@@ -179,8 +179,8 @@ static int quartz_init(struct Qdisc *sch, struct nlattr *opt,
 
 	memset(q, 0, sizeof(*q));
 	q->params.target = DEFAULT_TARGET;
-	q->target_floor = q->params.target / TARGET_CEILING_FACTOR;
-	q->target_ceil = q->params.target * TARGET_CEILING_FACTOR;
+	q->target_floor = q->params.target / CEILING_FACTOR;
+	q->target_ceil = q->params.target * CEILING_FACTOR;
 	q->ramp_max = ilog2(q->params.target);
 	set_ramp(q, q->ramp_max / 2);
 
