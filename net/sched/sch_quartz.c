@@ -4,13 +4,13 @@
  *
  * Copyright (C) 2023 Pete Heist <pete@heistp.net>
  *
- * Quartz is an AQM that marks SCE in proportion to queue busy (non-empty)
- * time, converging on an operating point with low delay and high utilization.
+ * Quartz is an AQM that marks SCE in an automatically adjusted proportion of
+ * queue busy (non-empty) time, converging on an operating point with low delay
+ * and high utilization.
  *
- * Aside from the hard limit, Quartz has a single parameter, the target,
- * representing the target time for the queue to return to busy before
- * returning to idle. It can also be thought of as the maximum tolerable burst
- * before utilization may be impacted.
+ * Quartz has a single parameter, target, representing the target busy time
+ * before returning to idle. This may also be thought of as the maximum
+ * tolerable burst before utilization may be impacted.
  */
 
 #include <net/pkt_sched.h>
@@ -19,12 +19,12 @@
 
 /* AQM defaults (temporary until config code is in place) */
 #define DEFAULT_LIMIT 25
-#define DEFAULT_TARGET 1 * NSEC_PER_MSEC
+#define DEFAULT_TARGET 5 * NSEC_PER_MSEC
 
 /* Debugging */
 //#define PRINT_BAR
-//#define PRINT_MARK
-//#define PRINT_RESPONSIVENESS
+//#define PRINT_IDLE
+//#define PRINT_EVENTS
 
 struct quartz_params {
 	u32 target;
@@ -34,12 +34,13 @@ struct quartz_sched_data {
 	struct quartz_params params;
 	u32 target_floor;
 	u32 target_ceil;
-	u8 responsiveness;
-	u8 max_responsiveness;
+	u8 ramp;
+	u8 max_ramp;
 	u32 mark;
 	u32 wall;
 	ktime_t start;
 	ktime_t prior;
+	bool over_target;
 };
 
 static void print_bar(int len) {
@@ -53,18 +54,6 @@ static void print_bar(int len) {
 #endif
 }
 
-static void print_mark(u32 mark) {
-#ifdef PRINT_MARK
-	printk("mark %x\n", mark);
-#endif
-}
-
-static void print_responsiveness(u8 responsiveness) {
-#ifdef PRINT_RESPONSIVENESS
-	printk("responsiveness %u\n", responsiveness);
-#endif
-}
-
 static s32 quartz_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 			  struct sk_buff **to_free)
 {
@@ -73,8 +62,12 @@ static s32 quartz_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 	int l0 = qdisc_qlen(sch);
 	int r;
 
-	if (unlikely(l0 >= sch->limit))
+	if (unlikely(l0 >= sch->limit)) {
+#ifdef PRINT_EVENTS
+	printk("drop (limit %u)\n", sch->limit);
+#endif
 		return qdisc_drop(skb, sch, to_free);
+	}
 
 	r = qdisc_enqueue_tail(skb, sch);
 	if (r != NET_XMIT_SUCCESS)
@@ -83,6 +76,7 @@ static s32 quartz_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 	if (!l0) {
 		q->start = now;
 		q->prior = now;
+		q->over_target = false;
 	}
 
 	print_bar(qdisc_qlen(sch));
@@ -90,21 +84,60 @@ static s32 quartz_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 	return NET_XMIT_SUCCESS;
 }
 
-static void handle_idle(struct quartz_sched_data *q, ktime_t now, s64 busy_ns) {
-	if (busy_ns < q->target_floor) {
-		if (q->responsiveness) {
-			q->responsiveness--;
-			q->wall = U32_MAX >> q->responsiveness;
-			print_responsiveness(q->responsiveness);
+static void set_ramp(struct quartz_sched_data *q, u8 ramp) {
+#ifdef PRINT_EVENTS
+	if (ramp != q->ramp)
+		printk("ramp -> %u\n", ramp);
+#endif
+	q->ramp = ramp;
+	q->wall = U32_MAX >> ramp;
+}
+
+static void set_mark(struct quartz_sched_data *q, u32 mark) {
+#ifdef PRINT_EVENTS
+	//if (q->mark && !mark)
+	//	printk("mark -> 0\n");
+	if (q->mark < q->wall && mark >= q->wall)
+		printk("mark -> %x\n", mark);
+#endif
+	q->mark = mark;
+}
+
+static void on_idle(struct quartz_sched_data *q, ktime_t now, s64 busy_ns) {
+	if (busy_ns < q->target_floor && q->ramp)
+		set_ramp(q, q->ramp - 1);
+	set_mark(q, 0);
+#ifdef PRINT_IDLE
+	printk("idle busy_ns=%-16lld delta=%lld\n", busy_ns,
+		busy_ns - q->params.target);
+#endif
+}
+
+static void on_busy(struct quartz_sched_data *q, ktime_t now, s64 busy_ns,
+		s64 since_ns) {
+	u64 m;
+
+	if (!q->over_target && busy_ns > q->target_ceil) {
+#ifdef PRINT_EVENTS
+		s64 t = busy_ns - q->params.target;
+		s64 c = busy_ns - q->target_ceil;
+		printk("over target (+%lld ns, ceil +%lld ns)\n", t, c);
+#endif
+		if (q->ramp < q->max_ramp) {
+			set_ramp(q, q->ramp + 1);
+			set_mark(q, q->mark >> 1);
 		}
-	} else if (busy_ns > q->target_ceil) {
-		if (q->responsiveness < q->max_responsiveness) {
-			q->responsiveness++;
-			q->wall = U32_MAX >> q->responsiveness;
-			print_responsiveness(q->responsiveness);
-		}
+		q->over_target = true;
 	}
-	q->mark = 0;
+
+	m = q->mark + since_ns;
+	set_mark(q, m > q->wall ? q->wall : m);
+	q->prior = now;
+}
+
+static u32 rand_mark(struct quartz_sched_data *q) {
+	// TODO optimize get random for ramp
+	return get_random_u32() >> q->ramp;
 }
 
 static struct sk_buff* quartz_dequeue(struct Qdisc *sch)
@@ -112,6 +145,7 @@ static struct sk_buff* quartz_dequeue(struct Qdisc *sch)
 	ktime_t now = ktime_get();
 	struct quartz_sched_data *q = qdisc_priv(sch);
 	struct sk_buff *skb;
+	s64 busy_ns, since_ns;
 
 	skb = qdisc_dequeue_head(sch);
 	if (unlikely(!skb)) {
@@ -119,19 +153,16 @@ static struct sk_buff* quartz_dequeue(struct Qdisc *sch)
 		return NULL;
 	}
 
-	if (!qdisc_qlen(sch)) {
-		handle_idle(q, now, ktime_to_ns(ktime_sub(now, q->start)));
-	} else {
-		u64 m = q->mark + ktime_to_ns(ktime_sub(now, q->prior));
-		q->mark = (m > q->wall) ? q->wall : m;
-		q->prior = now;
-	}
+	busy_ns = ktime_to_ns(ktime_sub(now, q->start));
+	since_ns = ktime_to_ns(ktime_sub(now, q->prior));
+	if (!qdisc_qlen(sch))
+		on_idle(q, now, busy_ns);
+	else
+		on_busy(q, now, busy_ns, since_ns);
 
-	// TODO optimize get random for responsiveness
-	if (q->mark && (get_random_u32() >> q->responsiveness < q->mark))
+	if (q->mark && (rand_mark(q) < q->mark))
 		INET_ECN_set_ect1(skb);
 
-	print_mark(q->mark);
 	print_bar(qdisc_qlen(sch));
 
 	return skb;
@@ -144,14 +175,11 @@ static int quartz_init(struct Qdisc *sch, struct nlattr *opt,
 
 	memset(q, 0, sizeof(*q));
 	q->params.target = DEFAULT_TARGET;
-	// more subtle adjustment has no obvious benefit
-	//q->target_floor = q->params.target * 2 / 3;
-	//q->target_ceil = q->params.target * 4 / 3;
-	q->target_floor = q->params.target;
-	q->target_ceil = q->params.target;
-	q->max_responsiveness = ilog2(q->params.target);
-	q->responsiveness = q->max_responsiveness / 2;
-	q->wall = U32_MAX >> q->responsiveness;
+	q->target_floor = q->params.target / 2;
+	q->target_ceil = q->params.target * 2;
+	q->max_ramp = ilog2(q->params.target);
+	q->ramp = q->max_ramp / 2;
+	q->wall = U32_MAX >> q->ramp;
 	q->prior = ktime_get();
 
 	sch->limit = DEFAULT_LIMIT;
