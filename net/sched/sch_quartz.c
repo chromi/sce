@@ -17,7 +17,6 @@
  *   limit      hard limit, in packets
  *
  * TODO
- * - make sure mark and ramp can't overflow in any way
  * - possibly return ramp to 32 bit
  * - check wisdom of resetting busy_held and idle_held in set_ramp
  * - optimize get_random call for size of ramp
@@ -54,15 +53,15 @@ struct quartz_sched_data {
 
 	u32	target_floor;
 	u32	target_ceil;
-	ktime_t busy_held;
-	ktime_t idle_held;
 	u8	ramp;
 	u8	ramp_shift;
 	u8	ramp_max;
 	u64	mark;
 	u64	wall;
-	ktime_t	start;
-	ktime_t	prior;
+	ktime_t	busy_start;
+	ktime_t	busy_prior;
+	ktime_t busy_held;
+	ktime_t idle_held;
 #ifdef PRINT_TARGET
 	u8	busy_hold_n;
 #endif
@@ -99,8 +98,8 @@ static s32 quartz_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 		return r;
 
 	if (!l0) {
-		q->start = now;
-		q->prior = now;
+		q->busy_start = now;
+		q->busy_prior = now;
 		q->busy_held = ktime_add(now, ns_to_ktime(q->target_ceil));
 #ifdef PRINT_TARGET
 		q->busy_hold_n = 1;
@@ -176,10 +175,10 @@ static void on_busy(struct quartz_sched_data *q, ktime_t now, s64 busy_ns)
 	}
 
 	if (q->ramp) {
-		u64 m = q->mark + ktime_to_ns(ktime_sub(now, q->prior));
+		u64 m = q->mark + ktime_to_ns(ktime_sub(now, q->busy_prior));
 		set_mark(q, m > q->wall ? q->wall : m);
 	}
-	q->prior = now;
+	q->busy_prior = now;
 }
 
 static u64 rand_mark(struct quartz_sched_data *q)
@@ -191,7 +190,7 @@ static struct sk_buff* quartz_dequeue(struct Qdisc *sch)
 {
 	ktime_t now = ktime_get();
 	struct quartz_sched_data *q = qdisc_priv(sch);
-	s64 busy_ns = ktime_to_ns(ktime_sub(now, q->start));
+	s64 busy_ns = ktime_to_ns(ktime_sub(now, q->busy_start));
 	struct sk_buff *skb;
 
 	skb = qdisc_dequeue_head(sch);
