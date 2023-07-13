@@ -68,7 +68,8 @@ struct quartz_sched_data {
 #endif
 };
 
-static void print_bar(int len) {
+static void print_bar(int len)
+{
 #ifdef PRINT_BAR
 #define BAR "##################################################"
 	if (len)
