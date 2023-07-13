@@ -7,7 +7,7 @@
  * Quartz is an AQM that marks SCE in proportion to queue busy (non-empty)
  * time. The ramp is adjusted based on the specified busy time target,
  * converging on an operating point with low delay and high utilization. Quartz
- * pays no attention to the queue depth, other than to enforce a hard limit.
+ * pays no attention to the queue length, other than to enforce a hard limit.
  *
  * Parameters:
  *
@@ -111,7 +111,8 @@ static s32 quartz_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 	return NET_XMIT_SUCCESS;
 }
 
-static void set_ramp(struct quartz_sched_data *q, u8 ramp, ktime_t now) {
+static void set_ramp(struct quartz_sched_data *q, u8 ramp, ktime_t now)
+{
 #ifdef PRINT_EVENTS
 	if (ramp != q->ramp)
 		printk("ramp -> %u\n", ramp);
@@ -127,7 +128,8 @@ static void set_ramp(struct quartz_sched_data *q, u8 ramp, ktime_t now) {
 	*/
 }
 
-static void set_mark(struct quartz_sched_data *q, u64 mark) {
+static void set_mark(struct quartz_sched_data *q, u64 mark)
+{
 #ifdef PRINT_EVENTS
 	if (q->mark < q->wall && mark >= q->wall)
 		printk("mark -> %llx\n", mark);
@@ -135,7 +137,8 @@ static void set_mark(struct quartz_sched_data *q, u64 mark) {
 	q->mark = mark;
 }
 
-static void on_idle(struct quartz_sched_data *q, ktime_t now, s64 busy_ns) {
+static void on_idle(struct quartz_sched_data *q, ktime_t now, s64 busy_ns)
+{
 	if (busy_ns < q->target_floor && ktime_after(now, q->idle_held)) {
 #ifdef PRINT_TARGET
 		s64 t = q->target_floor - busy_ns;
@@ -154,10 +157,8 @@ static void on_idle(struct quartz_sched_data *q, ktime_t now, s64 busy_ns) {
 #endif
 }
 
-static void on_busy(struct quartz_sched_data *q, ktime_t now, s64 busy_ns,
-		s64 since_ns) {
-	u64 m;
-
+static void on_busy(struct quartz_sched_data *q, ktime_t now, s64 busy_ns)
+{
 	if (ktime_after(now, q->busy_held)) {
 #ifdef PRINT_TARGET
 		s64 t = busy_ns - q->params.target;
@@ -174,13 +175,14 @@ static void on_busy(struct quartz_sched_data *q, ktime_t now, s64 busy_ns,
 	}
 
 	if (q->ramp) {
-		m = q->mark + since_ns;
+		u64 m = q->mark + ktime_to_ns(ktime_sub(now, q->prior));
 		set_mark(q, m > q->wall ? q->wall : m);
 	}
 	q->prior = now;
 }
 
-static u64 rand_mark(struct quartz_sched_data *q) {
+static u64 rand_mark(struct quartz_sched_data *q)
+{
 	return get_random_u64() >> q->ramp_shift;
 }
 
@@ -188,8 +190,8 @@ static struct sk_buff* quartz_dequeue(struct Qdisc *sch)
 {
 	ktime_t now = ktime_get();
 	struct quartz_sched_data *q = qdisc_priv(sch);
+	s64 busy_ns = ktime_to_ns(ktime_sub(now, q->start));
 	struct sk_buff *skb;
-	s64 busy_ns, since_ns;
 
 	skb = qdisc_dequeue_head(sch);
 	if (unlikely(!skb)) {
@@ -197,12 +199,10 @@ static struct sk_buff* quartz_dequeue(struct Qdisc *sch)
 		return NULL;
 	}
 
-	busy_ns = ktime_to_ns(ktime_sub(now, q->start));
-	since_ns = ktime_to_ns(ktime_sub(now, q->prior));
 	if (!qdisc_qlen(sch))
 		on_idle(q, now, busy_ns);
 	else
-		on_busy(q, now, busy_ns, since_ns);
+		on_busy(q, now, busy_ns);
 
 	if (q->mark && (rand_mark(q) < q->mark))
 		INET_ECN_set_ect1(skb);
