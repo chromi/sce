@@ -17,6 +17,7 @@
  *   limit     hard limit, in packets
  *
  * TODO
+ * - implement marking strategy generically for easier experimentation
  * - possibly return ramp to 32 bit
  * - optimize get_random call for size of ramp
  */
@@ -198,7 +199,7 @@ static s32 quartz_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 	int l0 = qdisc_qlen(sch);
 	int r;
 
-	if (unlikely(l0 >= sch->limit)) {
+	if (unlikely(sch->limit && l0 >= sch->limit)) {
 #ifdef PRINT_EVENTS
 		printk("drop (limit %u)\n", sch->limit);
 #endif
@@ -257,11 +258,7 @@ static int quartz_init(struct Qdisc *sch, struct nlattr *opt,
 	set_ramp(q, 0, 0);
 
 	sch->limit = DEFAULT_LIMIT;
-
-	if (sch->limit >= 1)
-		sch->flags |= TCQ_F_CAN_BYPASS;
-	else
-		sch->flags &= ~TCQ_F_CAN_BYPASS;
+	sch->flags &= ~TCQ_F_CAN_BYPASS;
 
 	return 0;
 }
