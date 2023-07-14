@@ -17,7 +17,6 @@
  *   limit     hard limit, in packets
  *
  * TODO
- * - implement marking strategy generically for easier experimentation
  * - possibly return ramp to 32 bit
  * - optimize get_random call for size of ramp
  */
@@ -27,12 +26,19 @@
 #include <net/inet_ecn.h>
 
 /* AQM defaults (temporary until config code is in place) */
-#define DEFAULT_LIMIT 50
-#define DEFAULT_TARGET 10 * NSEC_PER_MSEC
+//#define DEFAULT_LIMIT 83 /* 20ms @ 50 Mbps, offloads off */
+//#define DEFAULT_LIMIT 42 /* 25ms @ 20 Mbps, offloads off */
+#define DEFAULT_LIMIT 125 /* 20ms @ 300 Mbps, offloads on */
+#define DEFAULT_TARGET 5 * NSEC_PER_MSEC
 #define DEFAULT_INTERVAL 200 * NSEC_PER_MSEC
 
+/* marking strategies (choose one) */
+#define STRATEGY_CODEL_RAMP
+//#define STRATEGY_TARGET_PROPORTIONAL
+//#define STRATEGY_BUSY_PROPORTIONAL
+
 /* hard defines */
-#define RAMP_BASE 32
+#define RAMP_BASE 34 // 34 for SCE, 26 for ECN
 
 /* interval_saw bitmask values */
 enum {
@@ -42,9 +48,10 @@ enum {
 };
 
 /* Debugging */
-//#define PRINT_BAR
+//#define PRINT_QLEN_BAR
 //#define PRINT_IDLE
 //#define PRINT_EVENTS
+//#define PRINT_MARK
 
 struct quartz_params {
 	u32	target;
@@ -61,17 +68,43 @@ struct quartz_sched_data {
 	u64	wall;
 	ktime_t	busy_start;
 	ktime_t	busy_prior;
+#ifndef STRATEGY_CODEL_RAMP
+	ktime_t target_end;
+#endif
+#ifdef STRATEGY_BUSY_PROPORTIONAL
+	bool	ramp_incremented;
+	ktime_t	hold_end;
+#endif
+#ifdef STRATEGY_CODEL_RAMP
 	ktime_t	interval_end;
 	u8	interval_saw;
+#endif
 };
 
-static void reset_interval(struct quartz_sched_data *q, ktime_t now)
+/* debugging functions */
+
+static void print_qlen_bar(int len)
 {
-	q->interval_end = ktime_add(now, q->params.interval);
-	q->interval_saw = SAW_NONE;
+#ifdef PRINT_QLEN_BAR
+#define BAR "##################################################"
+	if (len)
+		printk("%.*s\n", len, BAR);
+	else
+		printk(".\n");
+#endif
 }
 
-static void set_ramp(struct quartz_sched_data *q, u8 ramp, ktime_t now)
+/* quartz_sched_data manipulation functions */
+
+static void set_mark(struct quartz_sched_data *q, u64 mark)
+{
+#ifdef PRINT_MARK
+	printk("mark -> %llx\n", mark);
+#endif
+	q->mark = mark;
+}
+
+static void set_ramp(struct quartz_sched_data *q, u8 ramp)
 {
 #ifdef PRINT_EVENTS
 	if (ramp != q->ramp)
@@ -84,38 +117,59 @@ static void set_ramp(struct quartz_sched_data *q, u8 ramp, ktime_t now)
 	q->wall = U64_MAX >> q->ramp_shift;
 }
 
-static void set_mark(struct quartz_sched_data *q, u64 mark)
-{
-/*
-#ifdef PRINT_EVENTS
-	static bool p;
-	if (!p) {
-		if (mark >= q->wall) {
-			printk("mark -> %llx\n", mark);
-			p = true;
-		}
-	} else {
-		p = (mark > 0);
-	}
-#endif
-*/
-	q->mark = mark;
-}
-
-static void increment_ramp(struct quartz_sched_data *q, ktime_t now)
+static void increment_ramp(struct quartz_sched_data *q)
 {
 	if (q->ramp < q->ramp_max) {
-		set_ramp(q, q->ramp + 1, now);
+		set_ramp(q, q->ramp + 1);
 		set_mark(q, q->mark >> 1);
 	}
 }
 
-static void decrement_ramp(struct quartz_sched_data *q, ktime_t now)
+static void decrement_ramp(struct quartz_sched_data *q)
 {
 	if (q->ramp) {
-		set_ramp(q, q->ramp - 1, now);
+		set_ramp(q, q->ramp - 1);
 		set_mark(q, q->mark << 1);
 	}
+}
+
+static u64 get_random_mark(struct quartz_sched_data *q)
+{
+	return get_random_u64() >> q->ramp_shift;
+}
+
+static void mark_random(struct quartz_sched_data *q, struct sk_buff *skb)
+{
+	if (q->ramp < q->ramp_max) {
+		if (q->mark && get_random_mark(q) < q->mark)
+			INET_ECN_set_ect1(skb);
+	} else {
+		INET_ECN_set_ect1(skb);
+	}
+}
+
+/**
+ * CoDel ramp strategy.
+ *
+ * Packets are marked in proportion to the queue busy time. The proportional
+ * constant (ramp) is modulated based on a target busy time, measured across
+ * a chosen interval.
+ **/
+
+#ifdef STRATEGY_CODEL_RAMP
+
+static void reset_interval(struct quartz_sched_data *q, ktime_t now)
+{
+	q->interval_end = ktime_add(now, q->params.interval);
+	q->interval_saw = SAW_NONE;
+}
+
+static void on_busy_start(struct quartz_sched_data *q, ktime_t now)
+{
+	q->busy_start = now;
+	q->busy_prior = now;
+	if (q->interval_saw == SAW_NONE)
+		reset_interval(q, now);
 }
 
 static void on_interval_end(struct quartz_sched_data *q, ktime_t now)
@@ -123,13 +177,26 @@ static void on_interval_end(struct quartz_sched_data *q, ktime_t now)
 	switch (q->interval_saw) {
 	case SAW_NONE:
 	case SAW_OVER_TARGET:
-		increment_ramp(q, now);
+		increment_ramp(q);
 		break;
 	case SAW_UNDER_TARGET:
-		decrement_ramp(q, now);
+		decrement_ramp(q);
 		break;
 	}
 	reset_interval(q, now);
+}
+
+static void on_busy(struct quartz_sched_data *q, ktime_t now)
+{
+	if (ktime_after(now, q->interval_end))
+		on_interval_end(q, now);
+
+	if (q->ramp) {
+		u64 m = q->mark + ktime_to_ns(ktime_sub(now, q->busy_prior));
+		set_mark(q, m > q->wall ? q->wall : m);
+	}
+
+	q->busy_prior = now;
 }
 
 static void on_idle(struct quartz_sched_data *q, ktime_t now)
@@ -149,10 +216,37 @@ static void on_idle(struct quartz_sched_data *q, ktime_t now)
 #endif
 }
 
+#endif
+
+/**
+ * Proportional to busy time strategy.
+ *
+ * Packets are marked in proportion to the queue busy time. The proportional
+ * constant (ramp) is modulated based on a target busy time. If the busy time
+ * is above the target, the ramp is increased. If the busy time is below the
+ * target, the ramp is decreased. A hold time equal to the busy time is used.
+ * The ramp cannot be decreased until the hold time expires.
+ *
+ * This works, but has a tendency to increase and decrease ramp levels too
+ * quickly. The CoDel estimator does a better job at this.
+ */
+
+#ifdef STRATEGY_BUSY_PROPORTIONAL
+
+static void on_busy_start(struct quartz_sched_data *q, ktime_t now)
+{
+	q->busy_start = now;
+	q->busy_prior = now;
+	q->target_end = ktime_add(now, ns_to_ktime(q->params.target));
+	q->ramp_incremented = false;
+}
+
 static void on_busy(struct quartz_sched_data *q, ktime_t now)
 {
-	if (ktime_after(now, q->interval_end))
-		on_interval_end(q, now);
+	if (!q->ramp_incremented && ktime_after(now, q->target_end)) {
+		increment_ramp(q);
+		q->ramp_incremented = true;
+	}
 
 	if (q->ramp) {
 		u64 m = q->mark + ktime_to_ns(ktime_sub(now, q->busy_prior));
@@ -162,34 +256,77 @@ static void on_busy(struct quartz_sched_data *q, ktime_t now)
 	q->busy_prior = now;
 }
 
-static u64 get_random_mark(struct quartz_sched_data *q)
+static void on_idle(struct quartz_sched_data *q, ktime_t now)
 {
-	return get_random_u64() >> q->ramp_shift;
-}
+	s64 b = ktime_to_ns(ktime_sub(now, q->busy_start));
+	ktime_t h = ktime_add(now, b);
 
-static void mark_random(struct quartz_sched_data *q, struct sk_buff *skb)
-{
-	if (!q->mark || !q->ramp)
-		return;
+	set_mark(q, 0);
 
-	if (q->ramp < q->ramp_max) {
-		if (get_random_mark(q) < q->mark)
-			INET_ECN_set_ect1(skb);
-	} else {
-		INET_ECN_set_ect1(skb);
+	if (!q->hold_end) {
+		q->hold_end = h;
+	} else if (ktime_after(now, q->hold_end)) {
+		if (ktime_after(h, q->hold_end))
+			q->hold_end = h;
+		decrement_ramp(q);
 	}
-}
 
-static void print_bar(int len)
-{
-#ifdef PRINT_BAR
-#define BAR "##################################################"
-	if (len)
-		printk("%.*s\n", len, BAR);
-	else
-		printk(".\n");
+#ifdef PRINT_IDLE
+	printk("busy=%-16lldns delta=%lld\n", t, t - p->target);
 #endif
 }
+
+#endif
+
+/**
+ * Target with proportional adjustment strategy.
+ *
+ * The marking proportion is adjusted up for any time above the target, and
+ * down for any time below the target. This under-utilizes the link by about
+ * 50% and exhibits a nice oscillation.
+ *
+ * TODO include remaining idle time while queue not active
+ **/
+
+#ifdef STRATEGY_TARGET_PROPORTIONAL
+
+static void on_busy_start(struct quartz_sched_data *q, ktime_t now)
+{
+	q->busy_start = now;
+	q->busy_prior = now;
+	q->target_end = ktime_add(now, ns_to_ktime(q->params.target));
+}
+
+static void on_busy(struct quartz_sched_data *q, ktime_t now)
+{
+	if (ktime_after(now, q->target_end)) {
+		s64 t = ktime_to_ns(ktime_sub(now, q->target_end));
+		s64 p = ktime_to_ns(ktime_sub(now, q->busy_prior));
+		u64 m = q->mark + t < p ? t : p;
+		set_mark(q, m > q->wall ? q->wall : m);
+	}
+	q->busy_prior = now;
+}
+
+static void on_idle(struct quartz_sched_data *q, ktime_t now)
+{
+	s64 t = ktime_to_ns(ktime_sub(q->target_end, now));
+	if (t > 0) {
+		s64 m = q->mark - t;
+		set_mark(q, m > 0 ? m : 0);
+	}
+
+#ifdef PRINT_IDLE
+	{
+		s64 b = ktime_to_ns(ktime_sub(now, q->busy_start));
+		printk("busy=%-16lldns delta=%lld\n", b, b - q->params.target);
+	}
+#endif
+}
+
+#endif
+
+/* qdisc implementation functions */
 
 static s32 quartz_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 			  struct sk_buff **to_free)
@@ -210,14 +347,10 @@ static s32 quartz_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 	if (r != NET_XMIT_SUCCESS)
 		return r;
 
-	if (!l0) {
-		q->busy_start = now;
-		q->busy_prior = now;
-		if (q->interval_saw == SAW_NONE)
-			reset_interval(q, now);
-	}
+	if (!l0)
+		on_busy_start(q, now);
 
-	print_bar(qdisc_qlen(sch));
+	print_qlen_bar(qdisc_qlen(sch));
 
 	return NET_XMIT_SUCCESS;
 }
@@ -241,7 +374,7 @@ static struct sk_buff* quartz_dequeue(struct Qdisc *sch)
 
 	mark_random(q, skb);
 
-	print_bar(qdisc_qlen(sch));
+	print_qlen_bar(qdisc_qlen(sch));
 
 	return skb;
 }
@@ -255,7 +388,12 @@ static int quartz_init(struct Qdisc *sch, struct nlattr *opt,
 	q->params.target = DEFAULT_TARGET;
 	q->params.interval = DEFAULT_INTERVAL;
 	q->ramp_max = ilog2(q->params.target / 2);
-	set_ramp(q, 0, 0);
+
+#ifdef STRATEGY_CODEL_RAMP
+	set_ramp(q, 0);
+#elif defined STRATEGY_TARGET_PROPORTIONAL
+	set_ramp(q, 4);
+#endif
 
 	sch->limit = DEFAULT_LIMIT;
 	sch->flags &= ~TCQ_F_CAN_BYPASS;
