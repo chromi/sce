@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+//
 
 /* Quartz Active Queue Management Queueing Discipline
  *
  * Copyright (C) 2023 Pete Heist <pete@heistp.net>
  *
  * Quartz is an AQM that marks SCE in proportion to queue busy (non-empty)
- * time, and adjusts the ramp to aim for the specified busy time target,
- * hovering around an operating point with low delay and high utilization.
- * Quartz pays no attention to the queue length, other than to enforce a hard
- * limit.
+ * time. The marking ramp is adjusted up or down to using a CoDel-style
+ * estimator, to aim for a specified target busy time, and converge on an
+ * operating point with low delay and high utilization. Quartz pays no
+ * attention to queue length, other than to enforce a hard limit.
  *
  * Parameters:
  *
@@ -17,7 +18,7 @@
  *   limit     hard limit, in packets
  *
  * TODO
- * - possibly return ramp to 32 bit
+ * - possibly return ramp to 32 bit (requires reducing time precision)
  * - optimize get_random call for size of ramp
  */
 
@@ -26,16 +27,11 @@
 #include <net/inet_ecn.h>
 
 /* AQM defaults (temporary until config code is in place) */
-//#define DEFAULT_LIMIT 83 /* 20ms @ 50 Mbps, offloads off */
+#define DEFAULT_LIMIT 83 /* 20ms @ 50 Mbps, offloads off */
 //#define DEFAULT_LIMIT 42 /* 25ms @ 20 Mbps, offloads off */
-#define DEFAULT_LIMIT 125 /* 20ms @ 300 Mbps, offloads on */
+//#define DEFAULT_LIMIT 125 /* 20ms @ 300 Mbps, offloads on */
 #define DEFAULT_TARGET 5 * NSEC_PER_MSEC
 #define DEFAULT_INTERVAL 200 * NSEC_PER_MSEC
-
-/* marking strategies (choose one) */
-#define STRATEGY_CODEL_RAMP
-//#define STRATEGY_TARGET_PROPORTIONAL
-//#define STRATEGY_BUSY_PROPORTIONAL
 
 /* hard defines */
 #define RAMP_BASE 34 // 34 for SCE, 26 for ECN
@@ -48,9 +44,9 @@ enum {
 };
 
 /* Debugging */
+#define PRINT_EVENTS
 //#define PRINT_QLEN_BAR
 //#define PRINT_IDLE
-//#define PRINT_EVENTS
 //#define PRINT_MARK
 
 struct quartz_params {
@@ -68,17 +64,8 @@ struct quartz_sched_data {
 	u64	wall;
 	ktime_t	busy_start;
 	ktime_t	busy_prior;
-#ifndef STRATEGY_CODEL_RAMP
-	ktime_t target_end;
-#endif
-#ifdef STRATEGY_BUSY_PROPORTIONAL
-	bool	ramp_incremented;
-	ktime_t	hold_end;
-#endif
-#ifdef STRATEGY_CODEL_RAMP
 	ktime_t	interval_end;
 	u8	interval_saw;
-#endif
 };
 
 /* debugging functions */
@@ -148,16 +135,6 @@ static void mark_random(struct quartz_sched_data *q, struct sk_buff *skb)
 	}
 }
 
-/**
- * CoDel ramp strategy.
- *
- * Packets are marked in proportion to the queue busy time. The proportional
- * constant (ramp) is modulated based on a target busy time, measured across
- * a chosen interval.
- **/
-
-#ifdef STRATEGY_CODEL_RAMP
-
 static void reset_interval(struct quartz_sched_data *q, ktime_t now)
 {
 	q->interval_end = ktime_add(now, q->params.interval);
@@ -215,116 +192,6 @@ static void on_idle(struct quartz_sched_data *q, ktime_t now)
 	printk("busy=%-16lldns delta=%lld\n", t, t - p->target);
 #endif
 }
-
-#endif
-
-/**
- * Proportional to busy time strategy.
- *
- * Packets are marked in proportion to the queue busy time. The proportional
- * constant (ramp) is modulated based on a target busy time. If the busy time
- * is above the target, the ramp is increased. If the busy time is below the
- * target, the ramp is decreased. A hold time equal to the busy time is used.
- * The ramp cannot be decreased until the hold time expires.
- *
- * This works, but has a tendency to increase and decrease ramp levels too
- * quickly. The CoDel estimator does a better job at this.
- */
-
-#ifdef STRATEGY_BUSY_PROPORTIONAL
-
-static void on_busy_start(struct quartz_sched_data *q, ktime_t now)
-{
-	q->busy_start = now;
-	q->busy_prior = now;
-	q->target_end = ktime_add(now, ns_to_ktime(q->params.target));
-	q->ramp_incremented = false;
-}
-
-static void on_busy(struct quartz_sched_data *q, ktime_t now)
-{
-	if (!q->ramp_incremented && ktime_after(now, q->target_end)) {
-		increment_ramp(q);
-		q->ramp_incremented = true;
-	}
-
-	if (q->ramp) {
-		u64 m = q->mark + ktime_to_ns(ktime_sub(now, q->busy_prior));
-		set_mark(q, m > q->wall ? q->wall : m);
-	}
-
-	q->busy_prior = now;
-}
-
-static void on_idle(struct quartz_sched_data *q, ktime_t now)
-{
-	s64 b = ktime_to_ns(ktime_sub(now, q->busy_start));
-	ktime_t h = ktime_add(now, b);
-
-	set_mark(q, 0);
-
-	if (!q->hold_end) {
-		q->hold_end = h;
-	} else if (ktime_after(now, q->hold_end)) {
-		if (ktime_after(h, q->hold_end))
-			q->hold_end = h;
-		decrement_ramp(q);
-	}
-
-#ifdef PRINT_IDLE
-	printk("busy=%-16lldns delta=%lld\n", t, t - p->target);
-#endif
-}
-
-#endif
-
-/**
- * Target with proportional adjustment strategy.
- *
- * The marking proportion is adjusted up for any time above the target, and
- * down for any time below the target. This under-utilizes the link by about
- * 50% and exhibits a nice oscillation.
- *
- * TODO include remaining idle time while queue not active
- **/
-
-#ifdef STRATEGY_TARGET_PROPORTIONAL
-
-static void on_busy_start(struct quartz_sched_data *q, ktime_t now)
-{
-	q->busy_start = now;
-	q->busy_prior = now;
-	q->target_end = ktime_add(now, ns_to_ktime(q->params.target));
-}
-
-static void on_busy(struct quartz_sched_data *q, ktime_t now)
-{
-	if (ktime_after(now, q->target_end)) {
-		s64 t = ktime_to_ns(ktime_sub(now, q->target_end));
-		s64 p = ktime_to_ns(ktime_sub(now, q->busy_prior));
-		u64 m = q->mark + t < p ? t : p;
-		set_mark(q, m > q->wall ? q->wall : m);
-	}
-	q->busy_prior = now;
-}
-
-static void on_idle(struct quartz_sched_data *q, ktime_t now)
-{
-	s64 t = ktime_to_ns(ktime_sub(q->target_end, now));
-	if (t > 0) {
-		s64 m = q->mark - t;
-		set_mark(q, m > 0 ? m : 0);
-	}
-
-#ifdef PRINT_IDLE
-	{
-		s64 b = ktime_to_ns(ktime_sub(now, q->busy_start));
-		printk("busy=%-16lldns delta=%lld\n", b, b - q->params.target);
-	}
-#endif
-}
-
-#endif
 
 /* qdisc implementation functions */
 
@@ -388,12 +255,7 @@ static int quartz_init(struct Qdisc *sch, struct nlattr *opt,
 	q->params.target = DEFAULT_TARGET;
 	q->params.interval = DEFAULT_INTERVAL;
 	q->ramp_max = ilog2(q->params.target / 2);
-
-#ifdef STRATEGY_CODEL_RAMP
 	set_ramp(q, 0);
-#elif defined STRATEGY_TARGET_PROPORTIONAL
-	set_ramp(q, 4);
-#endif
 
 	sch->limit = DEFAULT_LIMIT;
 	sch->flags &= ~TCQ_F_CAN_BYPASS;
