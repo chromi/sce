@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
-//
 
 /* Quartz Active Queue Management Queueing Discipline
  *
  * Copyright (C) 2023 Pete Heist <pete@heistp.net>
  *
  * Quartz is an AQM that marks SCE in proportion to queue busy (non-empty)
- * time. The marking ramp is adjusted up or down to using a CoDel-style
- * estimator, to aim for a specified target busy time, and converge on an
- * operating point with low delay and high utilization. Quartz pays no
- * attention to queue length, other than to enforce a hard limit.
+ * time. The marking ramp is adjusted up or down using a CoDel-style estimator
+ * to aim for a target busy time, and converge on an operating point with low
+ * delay and high utilization. Quartz pays no attention to queue length, other
+ * than to enforce a hard limit.
  *
  * Parameters:
  *
@@ -18,6 +17,9 @@
  *   limit     hard limit, in packets
  *
  * TODO
+ * - switch to shifting mark instead of ramp
+ * - double ramp granularity
+ * - implement sojourn time brick wall instead of hard limit
  * - possibly return ramp to 32 bit (requires reducing time precision)
  * - optimize get_random call for size of ramp
  */
@@ -27,24 +29,36 @@
 #include <net/inet_ecn.h>
 
 /* AQM defaults (temporary until config code is in place) */
-#define DEFAULT_LIMIT 83 /* 20ms @ 50 Mbps, offloads off */
+#define DEFAULT_LIMIT 20 /* 20ms @ 50 Mbps, offloads on */
+//#define DEFAULT_LIMIT 83 /* 20ms @ 50 Mbps, offloads off */
 //#define DEFAULT_LIMIT 42 /* 25ms @ 20 Mbps, offloads off */
 //#define DEFAULT_LIMIT 125 /* 20ms @ 300 Mbps, offloads on */
-#define DEFAULT_TARGET 5 * NSEC_PER_MSEC
+#define DEFAULT_TARGET 10 * NSEC_PER_MSEC
 #define DEFAULT_INTERVAL 200 * NSEC_PER_MSEC
+#define DEFAULT_FLOOR 0
+#define DEFAULT_SPLIT_GSO false
 
 /* hard defines */
-#define RAMP_BASE 34 // 34 for SCE, 26 for ECN
+// TODO decide on RAMP_SHIFT after finer ramp control
+#define RAMP_SHIFT 32 /* 32-34 for SCE, 26 for ECN */
+#define MARK_MAX U64_MAX >> RAMP_SHIFT
+#define RAMP_ZERO 0
+#define RAMP_INFINITE U8_MAX
 
-/* interval_saw bitmask values */
+/* interval_result bitmask values */
 enum {
-	SAW_NONE		= 0,
-	SAW_OVER_TARGET		= BIT(0),
-	SAW_UNDER_TARGET	= BIT(1)
+	RESULT_NONE		= 0,
+	RESULT_INITIALIZED	= BIT(0),
+	RESULT_OVER_TARGET	= BIT(1),
+	RESULT_UNDER_TARGET	= BIT(2),
+	RESULT_TARGET		= RESULT_OVER_TARGET | RESULT_UNDER_TARGET,
+	RESULT_HIT_MAX_MARK	= BIT(3),
+	RESULT_UNDER_MAX_MARK	= BIT(4),
+	RESULT_MARK		= RESULT_HIT_MAX_MARK | RESULT_UNDER_MAX_MARK
 };
 
 /* Debugging */
-#define PRINT_EVENTS
+//#define PRINT_EVENTS
 //#define PRINT_QLEN_BAR
 //#define PRINT_IDLE
 //#define PRINT_MARK
@@ -52,23 +66,53 @@ enum {
 struct quartz_params {
 	u32	target;
 	u32	interval;
+	u32	floor;
+	bool	split_gso;
 };
 
 struct quartz_sched_data {
 	struct quartz_params params;
 
 	u8	ramp;
-	u8	ramp_shift;
 	u8	ramp_max;
 	u64	mark;
-	u64	wall;
 	ktime_t	busy_start;
 	ktime_t	busy_prior;
 	ktime_t	interval_end;
-	u8	interval_saw;
+	u8	interval_result;
 };
 
-/* debugging functions */
+/**
+ * utility functions
+ */
+
+static s32 split_gso(struct sk_buff *skb, struct Qdisc *sch,
+	struct sk_buff **to_free, int len,
+	s32 (*enqueue)(struct sk_buff *, struct Qdisc *, struct sk_buff **))
+{
+	struct sk_buff *segs, *nskb;
+	netdev_features_t features = netif_skb_features(skb);
+	unsigned int slen = 0, numsegs = 0;
+
+	segs = skb_gso_segment(skb, features & ~NETIF_F_GSO_MASK);
+	if (IS_ERR_OR_NULL(segs))
+		return qdisc_drop(skb, sch, to_free);
+
+	skb_list_walk_safe(segs, segs, nskb) {
+		skb_mark_not_on_list(segs);
+
+		qdisc_skb_cb(segs)->pkt_len = segs->len;
+		slen += segs->len;
+		numsegs++;
+
+		enqueue(segs, sch, to_free);
+	}
+
+	qdisc_tree_reduce_backlog(sch, 1-numsegs, len - slen);
+	consume_skb(skb);
+
+	return NET_XMIT_SUCCESS;
+}
 
 static void print_qlen_bar(int len)
 {
@@ -81,7 +125,21 @@ static void print_qlen_bar(int len)
 #endif
 }
 
-/* quartz_sched_data manipulation functions */
+/**
+ * quartz_sched_data related functions
+ */
+
+static u64 ktime_to_mark(struct quartz_sched_data *q, ktime_t t)
+{
+	if (likely(t > 0)) {
+		if (q->ramp == RAMP_ZERO)
+			return 0;
+		else if (q->ramp == RAMP_INFINITE)
+			return MARK_MAX;
+		return ktime_to_ns(t) << (q->ramp - 1);
+	}
+	return 0;
+}
 
 static void set_mark(struct quartz_sched_data *q, u64 mark)
 {
@@ -96,38 +154,34 @@ static void set_ramp(struct quartz_sched_data *q, u8 ramp)
 #ifdef PRINT_EVENTS
 	if (ramp != q->ramp)
 		printk("ramp -> %u\n", ramp);
-	if (ramp >= q->ramp_max)
-		printk("hit max ramp %u\n", ramp);
 #endif
 	q->ramp = ramp;
-	q->ramp_shift = RAMP_BASE + (ramp - 1);
-	q->wall = U64_MAX >> q->ramp_shift;
 }
 
 static void increment_ramp(struct quartz_sched_data *q)
 {
-	if (q->ramp < q->ramp_max) {
+	if (q->ramp < q->ramp_max)
 		set_ramp(q, q->ramp + 1);
-		set_mark(q, q->mark >> 1);
-	}
+	else if (q->ramp != RAMP_INFINITE)
+		set_ramp(q, RAMP_INFINITE);
 }
 
 static void decrement_ramp(struct quartz_sched_data *q)
 {
-	if (q->ramp) {
+	if (q->ramp == RAMP_INFINITE)
+		set_ramp(q, q->ramp_max);
+	else if (q->ramp > RAMP_ZERO)
 		set_ramp(q, q->ramp - 1);
-		set_mark(q, q->mark << 1);
-	}
 }
 
 static u64 get_random_mark(struct quartz_sched_data *q)
 {
-	return get_random_u64() >> q->ramp_shift;
+	return get_random_u64() >> RAMP_SHIFT;
 }
 
 static void mark_random(struct quartz_sched_data *q, struct sk_buff *skb)
 {
-	if (q->ramp < q->ramp_max) {
+	if (q->ramp < RAMP_INFINITE) {
 		if (q->mark && get_random_mark(q) < q->mark)
 			INET_ECN_set_ect1(skb);
 	} else {
@@ -138,39 +192,44 @@ static void mark_random(struct quartz_sched_data *q, struct sk_buff *skb)
 static void reset_interval(struct quartz_sched_data *q, ktime_t now)
 {
 	q->interval_end = ktime_add(now, q->params.interval);
-	q->interval_saw = SAW_NONE;
+	q->interval_result = RESULT_INITIALIZED;
 }
 
-static void on_busy_start(struct quartz_sched_data *q, ktime_t now)
+static void on_busy(struct quartz_sched_data *q, ktime_t now)
 {
 	q->busy_start = now;
 	q->busy_prior = now;
-	if (q->interval_saw == SAW_NONE)
+	if (unlikely(q->interval_result == RESULT_NONE))
 		reset_interval(q, now);
 }
 
 static void on_interval_end(struct quartz_sched_data *q, ktime_t now)
 {
-	switch (q->interval_saw) {
-	case SAW_NONE:
-	case SAW_OVER_TARGET:
+	switch (q->interval_result & RESULT_TARGET) {
+	case RESULT_NONE:
+	case RESULT_OVER_TARGET:
 		increment_ramp(q);
 		break;
-	case SAW_UNDER_TARGET:
+	case RESULT_UNDER_TARGET:
 		decrement_ramp(q);
+		break;
+	case RESULT_OVER_TARGET | RESULT_UNDER_TARGET:
+		if ((q->interval_result & RESULT_MARK) == RESULT_HIT_MAX_MARK)
+			decrement_ramp(q);
 		break;
 	}
 	reset_interval(q, now);
 }
 
-static void on_busy(struct quartz_sched_data *q, ktime_t now)
+static void on_busy_dequeue(struct quartz_sched_data *q, ktime_t now)
 {
 	if (ktime_after(now, q->interval_end))
 		on_interval_end(q, now);
 
-	if (q->ramp) {
-		u64 m = q->mark + ktime_to_ns(ktime_sub(now, q->busy_prior));
-		set_mark(q, m > q->wall ? q->wall : m);
+	if (q->ramp != RAMP_ZERO) {
+		ktime_t b = ktime_sub(now, q->busy_prior);
+		u64 m = q->mark + ktime_to_mark(q, b);
+		set_mark(q, m > MARK_MAX ? MARK_MAX : m);
 	}
 
 	q->busy_prior = now;
@@ -181,10 +240,10 @@ static void on_idle(struct quartz_sched_data *q, ktime_t now)
 	struct quartz_params *p = &q->params;
 	s64 t = ktime_to_ns(ktime_sub(now, q->busy_start));
 
-	q->interval_saw |= (t > p->target) ? SAW_OVER_TARGET : SAW_UNDER_TARGET;
-
-	if (ktime_after(now, q->interval_end))
-		on_interval_end(q, now);
+	q->interval_result |= (t > p->target) ?
+		RESULT_OVER_TARGET : RESULT_UNDER_TARGET;
+	q->interval_result |= (q->mark >= MARK_MAX) ?
+		RESULT_HIT_MAX_MARK : RESULT_UNDER_MAX_MARK;
 
 	set_mark(q, 0);
 
@@ -193,17 +252,23 @@ static void on_idle(struct quartz_sched_data *q, ktime_t now)
 #endif
 }
 
-/* qdisc implementation functions */
+/**
+ * qdisc implementation functions
+ */
 
 static s32 quartz_enqueue(struct sk_buff *skb, struct Qdisc *sch,
-			  struct sk_buff **to_free)
+			struct sk_buff **to_free)
 {
 	ktime_t now = ktime_get();
 	struct quartz_sched_data *q = qdisc_priv(sch);
-	int l0 = qdisc_qlen(sch);
+	struct quartz_params *p = &q->params;
+	int len0 = qdisc_qlen(sch);
 	int r;
 
-	if (unlikely(sch->limit && l0 >= sch->limit)) {
+	if (p->split_gso && skb_is_gso(skb))
+		return split_gso(skb, sch, to_free, len0, quartz_enqueue);
+
+	if (unlikely(sch->limit && len0 >= sch->limit)) {
 #ifdef PRINT_EVENTS
 		printk("drop (limit %u)\n", sch->limit);
 #endif
@@ -214,8 +279,8 @@ static s32 quartz_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 	if (r != NET_XMIT_SUCCESS)
 		return r;
 
-	if (!l0)
-		on_busy_start(q, now);
+	if (len0 == p->floor)
+		on_busy(q, now);
 
 	print_qlen_bar(qdisc_qlen(sch));
 
@@ -226,20 +291,24 @@ static struct sk_buff* quartz_dequeue(struct Qdisc *sch)
 {
 	ktime_t now = ktime_get();
 	struct quartz_sched_data *q = qdisc_priv(sch);
+	struct quartz_params *p = &q->params;
 	struct sk_buff *skb;
+	int len1;
 
 	skb = qdisc_dequeue_head(sch);
 	if (unlikely(!skb)) {
 		WARN_ON(!skb);
 		return NULL;
 	}
+	len1 = qdisc_qlen(sch);
 
-	if (!qdisc_qlen(sch))
-		on_idle(q, now);
-	else
-		on_busy(q, now);
+	if (len1 >= p->floor)
+		on_busy_dequeue(q, now);
 
 	mark_random(q, skb);
+
+	if (len1 == p->floor)
+		on_idle(q, now);
 
 	print_qlen_bar(qdisc_qlen(sch));
 
@@ -254,8 +323,10 @@ static int quartz_init(struct Qdisc *sch, struct nlattr *opt,
 	memset(q, 0, sizeof(*q));
 	q->params.target = DEFAULT_TARGET;
 	q->params.interval = DEFAULT_INTERVAL;
+	q->params.floor = DEFAULT_FLOOR;
+	q->params.split_gso = DEFAULT_SPLIT_GSO;
 	q->ramp_max = ilog2(q->params.target / 2);
-	set_ramp(q, 0);
+	set_ramp(q, RAMP_ZERO);
 
 	sch->limit = DEFAULT_LIMIT;
 	sch->flags &= ~TCQ_F_CAN_BYPASS;
