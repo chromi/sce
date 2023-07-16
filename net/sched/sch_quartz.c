@@ -30,7 +30,7 @@
 
 /* AQM defaults (temporary until config code is in place) */
 #define DEFAULT_LIMIT 20 /* 20ms @ 50 Mbps, offloads on */
-//#define DEFAULT_LIMIT 83 /* 20ms @ 50 Mbps, offloads off */
+//#define DEFAULT_LIMIT 80 /* 20ms @ 50 Mbps, offloads off */
 //#define DEFAULT_LIMIT 42 /* 25ms @ 20 Mbps, offloads off */
 //#define DEFAULT_LIMIT 125 /* 20ms @ 300 Mbps, offloads on */
 #define DEFAULT_TARGET 10 * NSEC_PER_MSEC
@@ -136,7 +136,13 @@ static u64 ktime_to_mark(struct quartz_sched_data *q, ktime_t t)
 			return 0;
 		else if (q->ramp == RAMP_INFINITE)
 			return MARK_MAX;
-		return ktime_to_ns(t) << (q->ramp - 1);
+		else {
+			u64 n = ktime_to_ns(t);
+			u64 m = n << ((q->ramp - 1) >> 1);
+			if (q->ramp & 1)
+				m -= (n >> 1);
+			return m;
+		}
 	}
 	return 0;
 }
