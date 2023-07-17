@@ -4,9 +4,12 @@
  *
  * Copyright (C) 2023 Pete Heist <pete@heistp.net>
  *
- * Quartz is an AQM that marks SCE in proportion to queue busy (non-empty)
- * time. The marking ramp is adjusted up or down according to a target busy
- * time, converging on an operating point with low delay and high utilization.
+ * Quartz is an AQM that aims for low queueing delay with good utilization by
+ * marking SCE such that the queue periodically and briefly returns to idle. It
+ * does this by marking SCE in proportion to the queueing delay, accumulated
+ * across the queue busy time. The marking ramp is modulated according to the
+ * target busy time, thus automatically adapting to the carried load, and
+ * hovering around a suitable operating point.
  *
  * Parameters:
  *
@@ -18,12 +21,7 @@
  *   split_gso    if true, split GSO aggregated packets
  *
  * TODO
- *
- * - research sub-optimal solution convergence after rate drops
- * - try marking in proportion to accumulated delay
  * - research better CE strategy than fixed delay limit
- * - possibly return ramp to 32 bit (requires reducing time precision)
- * - optimize get_random call for size of ramp
  */
 
 #include <net/pkt_sched.h>
@@ -31,7 +29,7 @@
 #include <net/inet_ecn.h>
 
 /* AQM defaults (temporary until config code is in place) */
-#define DEFAULT_TARGET 5 * NSEC_PER_MSEC
+#define DEFAULT_TARGET 10 * NSEC_PER_MSEC
 #define DEFAULT_INTERVAL 100 * NSEC_PER_MSEC
 #define DEFAULT_FLOOR 0
 #define DEFAULT_DELAY_LIMIT 50 * NSEC_PER_MSEC
@@ -39,23 +37,11 @@
 #define DEFAULT_SPLIT_GSO false
 
 /* hard defines */
-#define RAMP_SHIFT 32 /* 32-34 for SCE, 8 for accumulated SCE, 26 for CE */
+#define RAMP_SHIFT 8 /* 8-10 for SCE, 26 for CE */
 #define MARK_MAX U64_MAX >> RAMP_SHIFT
 #define RAMP_MIN 0
 #define RAMP_MAX 2 * (64 - RAMP_SHIFT)
 #define RAMP_INFINITE U8_MAX
-
-/* interval_result bitmask values */
-enum {
-	RESULT_NONE		= 0,
-	RESULT_INITIALIZED	= BIT(0),
-	RESULT_OVER_TARGET	= BIT(1),
-	RESULT_UNDER_TARGET	= BIT(2),
-	RESULT_TARGET		= RESULT_OVER_TARGET | RESULT_UNDER_TARGET,
-	RESULT_HIT_MAX_MARK	= BIT(3),
-	RESULT_UNDER_MAX_MARK	= BIT(4),
-	RESULT_MARK		= RESULT_HIT_MAX_MARK | RESULT_UNDER_MAX_MARK
-};
 
 /* Debugging */
 //#define PRINT_EVENTS
@@ -80,7 +66,8 @@ struct quartz_sched_data {
 	ktime_t	busy_start;
 	ktime_t	busy_prior;
 	ktime_t	interval_end;
-	u8	interval_result;
+	ktime_t	interval_over;
+	ktime_t	interval_under;
 };
 
 struct quartz_skb_cb {
@@ -211,10 +198,8 @@ static bool delay_limit_exceeded(struct quartz_sched_data *q,
 				 struct sk_buff *skb,
 				 ktime_t now)
 {
-	struct quartz_params *p = &q->params;
-	if (p->delay_limit)
-		return since_enqueue_ns(skb, now) > p->delay_limit;
-	return false;
+	u32 l = q->params.delay_limit;
+	return l && since_enqueue_ns(skb, now) > l ? true : false;
 }
 
 static u64 random_mark(struct quartz_sched_data *q)
@@ -231,32 +216,26 @@ static void mark_sce_random(struct quartz_sched_data *q, struct sk_buff *skb)
 static void reset_interval(struct quartz_sched_data *q, ktime_t now)
 {
 	q->interval_end = ktime_add(now, q->params.interval);
-	q->interval_result = RESULT_INITIALIZED;
+	q->interval_over = 0;
+	q->interval_under = 0;
 }
 
 static void on_busy(struct quartz_sched_data *q, ktime_t now)
 {
 	q->busy_start = now;
 	q->busy_prior = now;
-	if (unlikely(q->interval_result == RESULT_NONE))
+	if (unlikely(!q->interval_end))
 		reset_interval(q, now);
 }
 
 static void on_interval_end(struct quartz_sched_data *q, ktime_t now)
 {
-	switch (q->interval_result & RESULT_TARGET) {
-	case RESULT_NONE:
-	case RESULT_OVER_TARGET:
+	if ((q->interval_over > q->interval_under << 1) ||
+	    (!q->interval_over && !q->interval_under))
 		increment_ramp(q);
-		break;
-	case RESULT_UNDER_TARGET:
+	else if (q->interval_under > q->interval_over << 1)
 		decrement_ramp(q);
-		break;
-	case RESULT_OVER_TARGET | RESULT_UNDER_TARGET:
-		if ((q->interval_result & RESULT_MARK) == RESULT_HIT_MAX_MARK)
-			decrement_ramp(q);
-		break;
-	}
+
 	reset_interval(q, now);
 }
 
@@ -271,8 +250,7 @@ static void on_busy_dequeue(struct quartz_sched_data *q,
 		on_interval_end(q, now);
 
 	b = ktime_sub(now, q->busy_prior);
-	//m = q->mark + (ktime_to_mark(q, b) * since_enqueue_ns(skb, now));
-	m = q->mark + ktime_to_mark(q, b);
+	m = q->mark + (ktime_to_mark(q, b) * since_enqueue_ns(skb, now));
 	set_mark(q, m > MARK_MAX ? MARK_MAX : m);
 
 	q->busy_prior = now;
@@ -283,10 +261,10 @@ static void on_idle(struct quartz_sched_data *q, ktime_t now)
 	struct quartz_params *p = &q->params;
 	s64 t = ktime_to_ns(ktime_sub(now, q->busy_start));
 
-	q->interval_result |= (t > p->target) ?
-		RESULT_OVER_TARGET : RESULT_UNDER_TARGET;
-	q->interval_result |= (q->mark >= MARK_MAX) ?
-		RESULT_HIT_MAX_MARK : RESULT_UNDER_MAX_MARK;
+	if (t > p->target)
+		q->interval_over += (t - p->target);
+	else
+		q->interval_under += (p->target - t);
 
 	set_mark(q, 0);
 
@@ -382,9 +360,7 @@ static int quartz_init(struct Qdisc *sch,
 	q->params.floor = DEFAULT_FLOOR;
 	q->params.delay_limit = DEFAULT_DELAY_LIMIT;
 	q->params.split_gso = DEFAULT_SPLIT_GSO;
-	q->ramp_max = 2 * ilog2(q->params.target / 2);
-	if (q->ramp_max > RAMP_MAX)
-		q->ramp_max = RAMP_MAX;
+	q->ramp_max = RAMP_MAX;
 	set_ramp(q, RAMP_MIN);
 
 	sch->limit = DEFAULT_LIMIT;
