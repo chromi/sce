@@ -18,7 +18,9 @@
  *   split_gso    if true, split GSO aggregated packets
  *
  * TODO
- * - add better CE strategy than fixed delay limit
+ *
+ * - try marking in proportion to accumulated delay
+ * - research better CE strategy than fixed delay limit
  * - possibly return ramp to 32 bit (requires reducing time precision)
  * - optimize get_random call for size of ramp
  */
@@ -210,14 +212,10 @@ static u64 random_mark(struct quartz_sched_data *q)
 	return get_random_u64() >> RAMP_SHIFT;
 }
 
-static void mark_random(struct quartz_sched_data *q, struct sk_buff *skb)
+static void mark_sce_random(struct quartz_sched_data *q, struct sk_buff *skb)
 {
-	if (q->ramp < RAMP_INFINITE) {
-		if (q->mark && random_mark(q) < q->mark)
-			INET_ECN_set_ect1(skb);
-	} else {
+	if (q->ramp == RAMP_INFINITE || (q->mark && random_mark(q) < q->mark))
 		INET_ECN_set_ect1(skb);
-	}
 }
 
 static void reset_interval(struct quartz_sched_data *q, ktime_t now)
@@ -339,12 +337,12 @@ static struct sk_buff* quartz_dequeue(struct Qdisc *sch)
 	if (len1 >= p->floor)
 		on_busy_dequeue(q, now);
 
-	mark_random(q, skb);
+	mark_sce_random(q, skb);
 
 	if (len1 == p->floor)
 		on_idle(q, now);
 
-	print_qlen_bar(qdisc_qlen(sch));
+	print_qlen_bar(len1);
 
 	if (delay_limit_exceeded(q, skb, now) && !INET_ECN_set_ce(skb) && len1) {
 		qdisc_tree_reduce_backlog(sch, 1, qdisc_pkt_len(skb));
@@ -369,7 +367,8 @@ static int quartz_init(struct Qdisc *sch, struct nlattr *opt,
 	q->params.floor = DEFAULT_FLOOR;
 	q->params.delay_limit = DEFAULT_DELAY_LIMIT;
 	q->params.split_gso = DEFAULT_SPLIT_GSO;
-	q->ramp_max = ilog2(q->params.target / 2);
+	q->ramp_max = 2 * ilog2(q->params.target / 2);
+	printk("ramp_max: %u\n", q->ramp_max);
 	set_ramp(q, RAMP_MIN);
 
 	sch->limit = DEFAULT_LIMIT;
