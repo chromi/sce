@@ -19,6 +19,7 @@
  *
  * TODO
  *
+ * - research sub-optimal solution convergence after rate drops
  * - try marking in proportion to accumulated delay
  * - research better CE strategy than fixed delay limit
  * - possibly return ramp to 32 bit (requires reducing time precision)
@@ -30,17 +31,18 @@
 #include <net/inet_ecn.h>
 
 /* AQM defaults (temporary until config code is in place) */
-#define DEFAULT_TARGET 10 * NSEC_PER_MSEC
+#define DEFAULT_TARGET 5 * NSEC_PER_MSEC
 #define DEFAULT_INTERVAL 100 * NSEC_PER_MSEC
 #define DEFAULT_FLOOR 0
-#define DEFAULT_DELAY_LIMIT 25 * NSEC_PER_MSEC
+#define DEFAULT_DELAY_LIMIT 50 * NSEC_PER_MSEC
 #define DEFAULT_LIMIT 1000
 #define DEFAULT_SPLIT_GSO false
 
 /* hard defines */
-#define RAMP_SHIFT 32 /* 32-34 for SCE, 26 for ECN */
+#define RAMP_SHIFT 32 /* 32-34 for SCE, 8 for accumulated SCE, 26 for CE */
 #define MARK_MAX U64_MAX >> RAMP_SHIFT
 #define RAMP_MIN 0
+#define RAMP_MAX 2 * (64 - RAMP_SHIFT)
 #define RAMP_INFINITE U8_MAX
 
 /* interval_result bitmask values */
@@ -85,29 +87,17 @@ struct quartz_skb_cb {
 	ktime_t	enqueue_time;
 };
 
+typedef s32 (*enqueuer_t)(struct sk_buff *, struct Qdisc *, struct sk_buff **);
+
 /**
  * utility functions
  */
 
-static struct quartz_skb_cb *quartz_cb(const struct sk_buff *skb)
-{
-	qdisc_cb_private_validate(skb, sizeof(struct quartz_skb_cb));
-	return (struct quartz_skb_cb *)qdisc_skb_cb(skb)->data;
-}
-
-static ktime_t enqueue_time(const struct sk_buff *skb)
-{
-	return quartz_cb(skb)->enqueue_time;
-}
-
-static void set_enqueue_time(struct sk_buff *skb, ktime_t t)
-{
-	quartz_cb(skb)->enqueue_time = t;
-}
-
-static s32 split_gso(struct sk_buff *skb, struct Qdisc *sch,
-	struct sk_buff **to_free, int len,
-	s32 (*enqueue)(struct sk_buff *, struct Qdisc *, struct sk_buff **))
+static s32 split_gso(struct sk_buff *skb,
+		     struct Qdisc *sch,
+		     struct sk_buff **to_free,
+		     int len,
+		     enqueuer_t enqueue)
 {
 	struct sk_buff *segs, *nskb;
 	netdev_features_t features = netif_skb_features(skb);
@@ -131,6 +121,27 @@ static s32 split_gso(struct sk_buff *skb, struct Qdisc *sch,
 	consume_skb(skb);
 
 	return NET_XMIT_SUCCESS;
+}
+
+static struct quartz_skb_cb *quartz_cb(const struct sk_buff *skb)
+{
+	qdisc_cb_private_validate(skb, sizeof(struct quartz_skb_cb));
+	return (struct quartz_skb_cb *)qdisc_skb_cb(skb)->data;
+}
+
+static ktime_t enqueue_time(const struct sk_buff *skb)
+{
+	return quartz_cb(skb)->enqueue_time;
+}
+
+static void set_enqueue_time(struct sk_buff *skb, ktime_t t)
+{
+	quartz_cb(skb)->enqueue_time = t;
+}
+
+static s64 since_enqueue_ns(struct sk_buff *skb, ktime_t now)
+{
+	return ktime_to_ns(ktime_sub(now, enqueue_time(skb)));
 }
 
 static void print_qlen_bar(int len)
@@ -197,13 +208,12 @@ static void decrement_ramp(struct quartz_sched_data *q)
 }
 
 static bool delay_limit_exceeded(struct quartz_sched_data *q,
-				struct sk_buff *skb, ktime_t now)
+				 struct sk_buff *skb,
+				 ktime_t now)
 {
 	struct quartz_params *p = &q->params;
-	if (p->delay_limit) {
-		s64 d = ktime_to_ns(ktime_sub(now, enqueue_time(skb)));
-		return d > p->delay_limit;
-	}
+	if (p->delay_limit)
+		return since_enqueue_ns(skb, now) > p->delay_limit;
 	return false;
 }
 
@@ -250,7 +260,9 @@ static void on_interval_end(struct quartz_sched_data *q, ktime_t now)
 	reset_interval(q, now);
 }
 
-static void on_busy_dequeue(struct quartz_sched_data *q, ktime_t now)
+static void on_busy_dequeue(struct quartz_sched_data *q,
+			    struct sk_buff *skb,
+			    ktime_t now)
 {
 	ktime_t b;
 	u64 m;
@@ -259,6 +271,7 @@ static void on_busy_dequeue(struct quartz_sched_data *q, ktime_t now)
 		on_interval_end(q, now);
 
 	b = ktime_sub(now, q->busy_prior);
+	//m = q->mark + (ktime_to_mark(q, b) * since_enqueue_ns(skb, now));
 	m = q->mark + ktime_to_mark(q, b);
 	set_mark(q, m > MARK_MAX ? MARK_MAX : m);
 
@@ -286,8 +299,9 @@ static void on_idle(struct quartz_sched_data *q, ktime_t now)
  * qdisc implementation functions
  */
 
-static s32 quartz_enqueue(struct sk_buff *skb, struct Qdisc *sch,
-			struct sk_buff **to_free)
+static s32 quartz_enqueue(struct sk_buff *skb,
+			  struct Qdisc *sch,
+			  struct sk_buff **to_free)
 {
 	ktime_t now = ktime_get();
 	struct quartz_sched_data *q = qdisc_priv(sch);
@@ -335,7 +349,7 @@ static struct sk_buff* quartz_dequeue(struct Qdisc *sch)
 	len1 = qdisc_qlen(sch);
 
 	if (len1 >= p->floor)
-		on_busy_dequeue(q, now);
+		on_busy_dequeue(q, skb, now);
 
 	mark_sce_random(q, skb);
 
@@ -356,7 +370,8 @@ static struct sk_buff* quartz_dequeue(struct Qdisc *sch)
 	return skb;
 }
 
-static int quartz_init(struct Qdisc *sch, struct nlattr *opt,
+static int quartz_init(struct Qdisc *sch,
+		       struct nlattr *opt,
 		       struct netlink_ext_ack *extack)
 {
 	struct quartz_sched_data *q = qdisc_priv(sch);
@@ -368,7 +383,8 @@ static int quartz_init(struct Qdisc *sch, struct nlattr *opt,
 	q->params.delay_limit = DEFAULT_DELAY_LIMIT;
 	q->params.split_gso = DEFAULT_SPLIT_GSO;
 	q->ramp_max = 2 * ilog2(q->params.target / 2);
-	printk("ramp_max: %u\n", q->ramp_max);
+	if (q->ramp_max > RAMP_MAX)
+		q->ramp_max = RAMP_MAX;
 	set_ramp(q, RAMP_MIN);
 
 	sch->limit = DEFAULT_LIMIT;
@@ -382,8 +398,9 @@ static void quartz_reset(struct Qdisc *sch)
 	qdisc_reset_queue(sch);
 }
 
-static int quartz_change(struct Qdisc *sch, struct nlattr *opt,
-		      struct netlink_ext_ack *extack)
+static int quartz_change(struct Qdisc *sch,
+			 struct nlattr *opt,
+			 struct netlink_ext_ack *extack)
 {
 	return 0;
 }
