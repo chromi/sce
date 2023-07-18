@@ -95,9 +95,6 @@ bool kern_addr_valid(unsigned long addr);
 #define PTRS_PER_PUD	(1UL << PUD_BITS)
 #define PTRS_PER_PGD	(1UL << PGDIR_BITS)
 
-/* Kernel has a separate 44bit address space. */
-#define FIRST_USER_ADDRESS	0UL
-
 #define pmd_ERROR(e)							\
 	pr_err("%s:%d: bad pmd %p(%016lx) seen at (%pS)\n",		\
 	       __FILE__, __LINE__, &(e), pmd_val(e), __builtin_return_address(0))
@@ -190,24 +187,8 @@ bool kern_addr_valid(unsigned long addr);
 #define _PAGE_SZHUGE_4U	_PAGE_SZ4MB_4U
 #define _PAGE_SZHUGE_4V	_PAGE_SZ4MB_4V
 
-/* These are actually filled in at boot time by sun4{u,v}_pgprot_init() */
-#define __P000	__pgprot(0)
-#define __P001	__pgprot(0)
-#define __P010	__pgprot(0)
-#define __P011	__pgprot(0)
-#define __P100	__pgprot(0)
-#define __P101	__pgprot(0)
-#define __P110	__pgprot(0)
-#define __P111	__pgprot(0)
-
-#define __S000	__pgprot(0)
-#define __S001	__pgprot(0)
-#define __S010	__pgprot(0)
-#define __S011	__pgprot(0)
-#define __S100	__pgprot(0)
-#define __S101	__pgprot(0)
-#define __S110	__pgprot(0)
-#define __S111	__pgprot(0)
+/* We borrow bit 20 to store the exclusive marker in swap PTEs. */
+#define _PAGE_SWP_EXCLUSIVE	_AC(0x0000000000100000, UL)
 
 #ifndef __ASSEMBLY__
 
@@ -376,9 +357,44 @@ static inline pgprot_t pgprot_noncached(pgprot_t prot)
  */
 #define pgprot_noncached pgprot_noncached
 
+static inline unsigned long pte_dirty(pte_t pte)
+{
+	unsigned long mask;
+
+	__asm__ __volatile__(
+	"\n661:	mov		%1, %0\n"
+	"	nop\n"
+	"	.section	.sun4v_2insn_patch, \"ax\"\n"
+	"	.word		661b\n"
+	"	sethi		%%uhi(%2), %0\n"
+	"	sllx		%0, 32, %0\n"
+	"	.previous\n"
+	: "=r" (mask)
+	: "i" (_PAGE_MODIFIED_4U), "i" (_PAGE_MODIFIED_4V));
+
+	return (pte_val(pte) & mask);
+}
+
+static inline unsigned long pte_write(pte_t pte)
+{
+	unsigned long mask;
+
+	__asm__ __volatile__(
+	"\n661:	mov		%1, %0\n"
+	"	nop\n"
+	"	.section	.sun4v_2insn_patch, \"ax\"\n"
+	"	.word		661b\n"
+	"	sethi		%%uhi(%2), %0\n"
+	"	sllx		%0, 32, %0\n"
+	"	.previous\n"
+	: "=r" (mask)
+	: "i" (_PAGE_WRITE_4U), "i" (_PAGE_WRITE_4V));
+
+	return (pte_val(pte) & mask);
+}
+
 #if defined(CONFIG_HUGETLB_PAGE) || defined(CONFIG_TRANSPARENT_HUGEPAGE)
-extern pte_t arch_make_huge_pte(pte_t entry, struct vm_area_struct *vma,
-				struct page *page, int writable);
+pte_t arch_make_huge_pte(pte_t entry, unsigned int shift, vm_flags_t flags);
 #define arch_make_huge_pte arch_make_huge_pte
 static inline unsigned long __pte_default_huge_mask(void)
 {
@@ -438,28 +454,43 @@ static inline bool is_hugetlb_pte(pte_t pte)
 }
 #endif
 
+static inline pte_t __pte_mkhwwrite(pte_t pte)
+{
+	unsigned long val = pte_val(pte);
+
+	/*
+	 * Note: we only want to set the HW writable bit if the SW writable bit
+	 * and the SW dirty bit are set.
+	 */
+	__asm__ __volatile__(
+	"\n661:	or		%0, %2, %0\n"
+	"	.section	.sun4v_1insn_patch, \"ax\"\n"
+	"	.word		661b\n"
+	"	or		%0, %3, %0\n"
+	"	.previous\n"
+	: "=r" (val)
+	: "0" (val), "i" (_PAGE_W_4U), "i" (_PAGE_W_4V));
+
+	return __pte(val);
+}
+
 static inline pte_t pte_mkdirty(pte_t pte)
 {
-	unsigned long val = pte_val(pte), tmp;
+	unsigned long val = pte_val(pte), mask;
 
 	__asm__ __volatile__(
-	"\n661:	or		%0, %3, %0\n"
-	"	nop\n"
-	"\n662:	nop\n"
+	"\n661:	mov		%1, %0\n"
 	"	nop\n"
 	"	.section	.sun4v_2insn_patch, \"ax\"\n"
 	"	.word		661b\n"
-	"	sethi		%%uhi(%4), %1\n"
-	"	sllx		%1, 32, %1\n"
-	"	.word		662b\n"
-	"	or		%1, %%lo(%4), %1\n"
-	"	or		%0, %1, %0\n"
+	"	sethi		%%uhi(%2), %0\n"
+	"	sllx		%0, 32, %0\n"
 	"	.previous\n"
-	: "=r" (val), "=r" (tmp)
-	: "0" (val), "i" (_PAGE_MODIFIED_4U | _PAGE_W_4U),
-	  "i" (_PAGE_MODIFIED_4V | _PAGE_W_4V));
+	: "=r" (mask)
+	: "i" (_PAGE_MODIFIED_4U), "i" (_PAGE_MODIFIED_4V));
 
-	return __pte(val);
+	pte = __pte(val | mask);
+	return pte_write(pte) ? __pte_mkhwwrite(pte) : pte;
 }
 
 static inline pte_t pte_mkclean(pte_t pte)
@@ -501,7 +532,8 @@ static inline pte_t pte_mkwrite(pte_t pte)
 	: "=r" (mask)
 	: "i" (_PAGE_WRITE_4U), "i" (_PAGE_WRITE_4V));
 
-	return __pte(val | mask);
+	pte = __pte(val | mask);
+	return pte_dirty(pte) ? __pte_mkhwwrite(pte) : pte;
 }
 
 static inline pte_t pte_wrprotect(pte_t pte)
@@ -604,42 +636,6 @@ static inline unsigned long pte_young(pte_t pte)
 	return (pte_val(pte) & mask);
 }
 
-static inline unsigned long pte_dirty(pte_t pte)
-{
-	unsigned long mask;
-
-	__asm__ __volatile__(
-	"\n661:	mov		%1, %0\n"
-	"	nop\n"
-	"	.section	.sun4v_2insn_patch, \"ax\"\n"
-	"	.word		661b\n"
-	"	sethi		%%uhi(%2), %0\n"
-	"	sllx		%0, 32, %0\n"
-	"	.previous\n"
-	: "=r" (mask)
-	: "i" (_PAGE_MODIFIED_4U), "i" (_PAGE_MODIFIED_4V));
-
-	return (pte_val(pte) & mask);
-}
-
-static inline unsigned long pte_write(pte_t pte)
-{
-	unsigned long mask;
-
-	__asm__ __volatile__(
-	"\n661:	mov		%1, %0\n"
-	"	nop\n"
-	"	.section	.sun4v_2insn_patch, \"ax\"\n"
-	"	.word		661b\n"
-	"	sethi		%%uhi(%2), %0\n"
-	"	sllx		%0, 32, %0\n"
-	"	.previous\n"
-	: "=r" (mask)
-	: "i" (_PAGE_WRITE_4U), "i" (_PAGE_WRITE_4V));
-
-	return (pte_val(pte) & mask);
-}
-
 static inline unsigned long pte_exec(pte_t pte)
 {
 	unsigned long mask;
@@ -716,6 +712,7 @@ static inline unsigned long pmd_dirty(pmd_t pmd)
 	return pte_dirty(pte);
 }
 
+#define pmd_young pmd_young
 static inline unsigned long pmd_young(pmd_t pmd)
 {
 	pte_t pte = __pte(pmd_val(pmd));
@@ -845,23 +842,23 @@ static inline unsigned long pmd_page_vaddr(pmd_t pmd)
 	return ((unsigned long) __va(pfn << PAGE_SHIFT));
 }
 
-static inline unsigned long pud_page_vaddr(pud_t pud)
+static inline pmd_t *pud_pgtable(pud_t pud)
 {
 	pte_t pte = __pte(pud_val(pud));
 	unsigned long pfn;
 
 	pfn = pte_pfn(pte);
 
-	return ((unsigned long) __va(pfn << PAGE_SHIFT));
+	return ((pmd_t *) __va(pfn << PAGE_SHIFT));
 }
 
 #define pmd_page(pmd) 			virt_to_page((void *)pmd_page_vaddr(pmd))
-#define pud_page(pud) 			virt_to_page((void *)pud_page_vaddr(pud))
+#define pud_page(pud)			virt_to_page((void *)pud_pgtable(pud))
 #define pmd_clear(pmdp)			(pmd_val(*(pmdp)) = 0UL)
 #define pud_present(pud)		(pud_val(pud) != 0U)
 #define pud_clear(pudp)			(pud_val(*(pudp)) = 0UL)
-#define p4d_page_vaddr(p4d)		\
-	((unsigned long) __va(p4d_val(p4d)))
+#define p4d_pgtable(p4d)		\
+	((pud_t *) __va(p4d_val(p4d)))
 #define p4d_present(p4d)		(p4d_val(p4d) != 0U)
 #define p4d_clear(p4dp)			(p4d_val(*(p4dp)) = 0UL)
 
@@ -983,17 +980,45 @@ void pgtable_trans_huge_deposit(struct mm_struct *mm, pmd_t *pmdp,
 pgtable_t pgtable_trans_huge_withdraw(struct mm_struct *mm, pmd_t *pmdp);
 #endif
 
-/* Encode and de-code a swap entry */
-#define __swp_type(entry)	(((entry).val >> PAGE_SHIFT) & 0xffUL)
+/*
+ * Encode/decode swap entries and swap PTEs. Swap PTEs are all PTEs that
+ * are !pte_none() && !pte_present().
+ *
+ * Format of swap PTEs:
+ *
+ *   6 6 6 6 5 5 5 5 5 5 5 5 5 5 4 4 4 4 4 4 4 4 4 4 3 3 3 3 3 3 3 3
+ *   3 2 1 0 9 8 7 6 5 4 3 2 1 0 9 8 7 6 5 4 3 2 1 0 9 8 7 6 5 4 3 2
+ *   <--------------------------- offset ---------------------------
+ *
+ *   3 3 2 2 2 2 2 2 2 2 2 2 1 1 1 1 1 1 1 1 1 1
+ *   1 0 9 8 7 6 5 4 3 2 1 0 9 8 7 6 5 4 3 2 1 0 9 8 7 6 5 4 3 2 1 0
+ *   --------------------> E <-- type ---> <------- zeroes -------->
+ */
+#define __swp_type(entry)	(((entry).val >> PAGE_SHIFT) & 0x7fUL)
 #define __swp_offset(entry)	((entry).val >> (PAGE_SHIFT + 8UL))
 #define __swp_entry(type, offset)	\
 	( (swp_entry_t) \
 	  { \
-		(((long)(type) << PAGE_SHIFT) | \
+		((((long)(type) & 0x7fUL) << PAGE_SHIFT) | \
                  ((long)(offset) << (PAGE_SHIFT + 8UL))) \
 	  } )
 #define __pte_to_swp_entry(pte)		((swp_entry_t) { pte_val(pte) })
 #define __swp_entry_to_pte(x)		((pte_t) { (x).val })
+
+static inline int pte_swp_exclusive(pte_t pte)
+{
+	return pte_val(pte) & _PAGE_SWP_EXCLUSIVE;
+}
+
+static inline pte_t pte_swp_mkexclusive(pte_t pte)
+{
+	return __pte(pte_val(pte) | _PAGE_SWP_EXCLUSIVE);
+}
+
+static inline pte_t pte_swp_clear_exclusive(pte_t pte)
+{
+	return __pte(pte_val(pte) & ~_PAGE_SWP_EXCLUSIVE);
+}
 
 int page_in_phys_avail(unsigned long paddr);
 
@@ -1120,6 +1145,21 @@ void sun4v_patch_tlb_handlers(void);
 extern unsigned long cmdline_memory_size;
 
 asmlinkage void do_sparc64_fault(struct pt_regs *regs);
+
+#define pmd_pgtable(PMD)	((pte_t *)pmd_page_vaddr(PMD))
+
+#ifdef CONFIG_HUGETLB_PAGE
+
+#define pud_leaf_size pud_leaf_size
+extern unsigned long pud_leaf_size(pud_t pud);
+
+#define pmd_leaf_size pmd_leaf_size
+extern unsigned long pmd_leaf_size(pmd_t pmd);
+
+#define pte_leaf_size pte_leaf_size
+extern unsigned long pte_leaf_size(pte_t pte);
+
+#endif /* CONFIG_HUGETLB_PAGE */
 
 #endif /* !(__ASSEMBLY__) */
 

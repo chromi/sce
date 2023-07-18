@@ -220,6 +220,9 @@ static void nouveau_dsm_pci_probe(struct pci_dev *pdev, acpi_handle *dhandle_out
 	int optimus_funcs;
 	struct pci_dev *parent_pdev;
 
+	if (pdev->vendor != PCI_VENDOR_ID_NVIDIA)
+		return;
+
 	*has_pr3 = false;
 	parent_pdev = pci_upstream_bridge(pdev);
 	if (parent_pdev) {
@@ -364,7 +367,6 @@ void *
 nouveau_acpi_edid(struct drm_device *dev, struct drm_connector *connector)
 {
 	struct acpi_device *acpidev;
-	acpi_handle handle;
 	int type, ret;
 	void *edid;
 
@@ -377,12 +379,8 @@ nouveau_acpi_edid(struct drm_device *dev, struct drm_connector *connector)
 		return NULL;
 	}
 
-	handle = ACPI_HANDLE(&dev->pdev->dev);
-	if (!handle)
-		return NULL;
-
-	ret = acpi_bus_get_device(handle, &acpidev);
-	if (ret)
+	acpidev = ACPI_COMPANION(dev->dev);
+	if (!acpidev)
 		return NULL;
 
 	ret = acpi_video_get_edid(acpidev, type, -1, &edid);
@@ -390,4 +388,14 @@ nouveau_acpi_edid(struct drm_device *dev, struct drm_connector *connector)
 		return NULL;
 
 	return kmemdup(edid, EDID_LENGTH, GFP_KERNEL);
+}
+
+bool nouveau_acpi_video_backlight_use_native(void)
+{
+	return acpi_video_backlight_use_native();
+}
+
+void nouveau_acpi_video_register_backlight(void)
+{
+	acpi_video_register_backlight();
 }

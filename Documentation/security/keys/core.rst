@@ -1040,13 +1040,13 @@ The keyctl syscall functions are:
 
      "key" is the ID of the key to be watched.
 
-     "queue_fd" is a file descriptor referring to an open "/dev/watch_queue"
-     which manages the buffer into which notifications will be delivered.
+     "queue_fd" is a file descriptor referring to an open pipe which
+     manages the buffer into which notifications will be delivered.
 
      "filter" is either NULL to remove a watch or a filter specification to
      indicate what events are required from the key.
 
-     See Documentation/watch_queue.rst for more information.
+     See Documentation/core-api/watch_queue.rst for more information.
 
      Note that only one watch may be emplaced for any particular { key,
      queue_fd } combination.

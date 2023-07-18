@@ -28,7 +28,6 @@
 #include <linux/string.h>
 #include <linux/bitops.h>
 #include <linux/slab.h>
-#include <linux/interrupt.h>  /* for in_interrupt() */
 #include <linux/kmod.h>
 #include <linux/init.h>
 #include <linux/spinlock.h>
@@ -206,6 +205,82 @@ int usb_find_common_endpoints_reverse(struct usb_host_interface *alt,
 	return -ENXIO;
 }
 EXPORT_SYMBOL_GPL(usb_find_common_endpoints_reverse);
+
+/**
+ * usb_find_endpoint() - Given an endpoint address, search for the endpoint's
+ * usb_host_endpoint structure in an interface's current altsetting.
+ * @intf: the interface whose current altsetting should be searched
+ * @ep_addr: the endpoint address (number and direction) to find
+ *
+ * Search the altsetting's list of endpoints for one with the specified address.
+ *
+ * Return: Pointer to the usb_host_endpoint if found, %NULL otherwise.
+ */
+static const struct usb_host_endpoint *usb_find_endpoint(
+		const struct usb_interface *intf, unsigned int ep_addr)
+{
+	int n;
+	const struct usb_host_endpoint *ep;
+
+	n = intf->cur_altsetting->desc.bNumEndpoints;
+	ep = intf->cur_altsetting->endpoint;
+	for (; n > 0; (--n, ++ep)) {
+		if (ep->desc.bEndpointAddress == ep_addr)
+			return ep;
+	}
+	return NULL;
+}
+
+/**
+ * usb_check_bulk_endpoints - Check whether an interface's current altsetting
+ * contains a set of bulk endpoints with the given addresses.
+ * @intf: the interface whose current altsetting should be searched
+ * @ep_addrs: 0-terminated array of the endpoint addresses (number and
+ * direction) to look for
+ *
+ * Search for endpoints with the specified addresses and check their types.
+ *
+ * Return: %true if all the endpoints are found and are bulk, %false otherwise.
+ */
+bool usb_check_bulk_endpoints(
+		const struct usb_interface *intf, const u8 *ep_addrs)
+{
+	const struct usb_host_endpoint *ep;
+
+	for (; *ep_addrs; ++ep_addrs) {
+		ep = usb_find_endpoint(intf, *ep_addrs);
+		if (!ep || !usb_endpoint_xfer_bulk(&ep->desc))
+			return false;
+	}
+	return true;
+}
+EXPORT_SYMBOL_GPL(usb_check_bulk_endpoints);
+
+/**
+ * usb_check_int_endpoints - Check whether an interface's current altsetting
+ * contains a set of interrupt endpoints with the given addresses.
+ * @intf: the interface whose current altsetting should be searched
+ * @ep_addrs: 0-terminated array of the endpoint addresses (number and
+ * direction) to look for
+ *
+ * Search for endpoints with the specified addresses and check their types.
+ *
+ * Return: %true if all the endpoints are found and are interrupt,
+ * %false otherwise.
+ */
+bool usb_check_int_endpoints(
+		const struct usb_interface *intf, const u8 *ep_addrs)
+{
+	const struct usb_host_endpoint *ep;
+
+	for (; *ep_addrs; ++ep_addrs) {
+		ep = usb_find_endpoint(intf, *ep_addrs);
+		if (!ep || !usb_endpoint_xfer_int(&ep->desc))
+			return false;
+	}
+	return true;
+}
+EXPORT_SYMBOL_GPL(usb_check_int_endpoints);
 
 /**
  * usb_find_alt_setting() - Given a configuration, find the alternate setting
@@ -424,9 +499,9 @@ static void usb_release_dev(struct device *dev)
 	kfree(udev);
 }
 
-static int usb_dev_uevent(struct device *dev, struct kobj_uevent_env *env)
+static int usb_dev_uevent(const struct device *dev, struct kobj_uevent_env *env)
 {
-	struct usb_device *usb_dev;
+	const struct usb_device *usb_dev;
 
 	usb_dev = to_usb_device(dev);
 
@@ -506,10 +581,10 @@ static const struct dev_pm_ops usb_device_pm_ops = {
 #endif	/* CONFIG_PM */
 
 
-static char *usb_devnode(struct device *dev,
+static char *usb_devnode(const struct device *dev,
 			 umode_t *mode, kuid_t *uid, kgid_t *gid)
 {
-	struct usb_device *usb_dev;
+	const struct usb_device *usb_dev;
 
 	usb_dev = to_usb_device(dev);
 	return kasprintf(GFP_KERNEL, "bus/usb/%03d/%03d",
@@ -561,7 +636,8 @@ static bool usb_dev_authorized(struct usb_device *dev, struct usb_hcd *hcd)
  * @parent: hub to which device is connected; null to allocate a root hub
  * @bus: bus used to access the device
  * @port1: one-based index of port; ignored for root hubs
- * Context: !in_interrupt()
+ *
+ * Context: task context, might sleep.
  *
  * Only hub drivers (including virtual root hub drivers for host
  * controllers) should ever call this.
@@ -688,6 +764,10 @@ EXPORT_SYMBOL_GPL(usb_alloc_dev);
  * Drivers for USB interfaces should normally record such references in
  * their probe() methods, when they bind to an interface, and release
  * them by calling usb_put_dev(), in their disconnect() methods.
+ * However, if a driver does not access the usb_device structure after
+ * its disconnect() method returns then refcounting is not necessary,
+ * because the USB core guarantees that a usb_device will not be
+ * deallocated until after all of its interface drivers have been unbound.
  *
  * Return: A pointer to the device with the incremented reference counter.
  */
@@ -722,6 +802,10 @@ EXPORT_SYMBOL_GPL(usb_put_dev);
  * Drivers for USB interfaces should normally record such references in
  * their probe() methods, when they bind to an interface, and release
  * them by calling usb_put_intf(), in their disconnect() methods.
+ * However, if a driver does not access the usb_interface structure after
+ * its disconnect() method returns then refcounting is not necessary,
+ * because the USB core guarantees that a usb_interface will not be
+ * deallocated until after its driver has been unbound.
  *
  * Return: A pointer to the interface with the incremented reference counter.
  */
@@ -748,6 +832,38 @@ void usb_put_intf(struct usb_interface *intf)
 }
 EXPORT_SYMBOL_GPL(usb_put_intf);
 
+/**
+ * usb_intf_get_dma_device - acquire a reference on the usb interface's DMA endpoint
+ * @intf: the usb interface
+ *
+ * While a USB device cannot perform DMA operations by itself, many USB
+ * controllers can. A call to usb_intf_get_dma_device() returns the DMA endpoint
+ * for the given USB interface, if any. The returned device structure must be
+ * released with put_device().
+ *
+ * See also usb_get_dma_device().
+ *
+ * Returns: A reference to the usb interface's DMA endpoint; or NULL if none
+ *          exists.
+ */
+struct device *usb_intf_get_dma_device(struct usb_interface *intf)
+{
+	struct usb_device *udev = interface_to_usbdev(intf);
+	struct device *dmadev;
+
+	if (!udev->bus)
+		return NULL;
+
+	dmadev = get_device(udev->bus->sysdev);
+	if (!dmadev || !dmadev->dma_mask) {
+		put_device(dmadev);
+		return NULL;
+	}
+
+	return dmadev;
+}
+EXPORT_SYMBOL_GPL(usb_intf_get_dma_device);
+
 /*			USB device locking
  *
  * USB devices and interfaces are locked using the semaphore in their
@@ -761,7 +877,7 @@ EXPORT_SYMBOL_GPL(usb_put_intf);
  * is simple:
  *
  *	When locking both a device and its parent, always lock the
- *	the parent first.
+ *	parent first.
  */
 
 /**
@@ -950,17 +1066,15 @@ static struct notifier_block usb_bus_nb = {
 	.notifier_call = usb_bus_notify,
 };
 
-static struct dentry *usb_devices_root;
-
 static void usb_debugfs_init(void)
 {
-	usb_devices_root = debugfs_create_file("devices", 0444, usb_debug_root,
-					       NULL, &usbfs_devices_fops);
+	debugfs_create_file("devices", 0444, usb_debug_root, NULL,
+			    &usbfs_devices_fops);
 }
 
 static void usb_debugfs_cleanup(void)
 {
-	debugfs_remove(usb_devices_root);
+	debugfs_lookup_and_remove("devices", usb_debug_root);
 }
 
 /*

@@ -99,6 +99,8 @@
 #define PTR_HASH(c, k)							\
 	(((k)->ptr[0] >> c->bucket_bits) | PTR_GEN(k, 0))
 
+static struct workqueue_struct *btree_io_wq;
+
 #define insert_lock(s, b)	((b)->level <= (s)->lock)
 
 
@@ -139,7 +141,7 @@ static uint64_t btree_csum_set(struct btree *b, struct bset *i)
 	uint64_t crc = b->key.ptr[0];
 	void *data = (void *) i + 8, *end = bset_bkey_last(i);
 
-	crc = bch_crc64_update(crc, data, end - data);
+	crc = crc64_be(crc, data, end - data);
 	return crc ^ 0xffffffffffffffffULL;
 }
 
@@ -308,7 +310,7 @@ static void __btree_node_write_done(struct closure *cl)
 	btree_complete_write(b, w);
 
 	if (btree_node_dirty(b))
-		schedule_delayed_work(&b->work, 30 * HZ);
+		queue_delayed_work(btree_io_wq, &b->work, 30 * HZ);
 
 	closure_return_with_destructor(cl, btree_node_write_unlock);
 }
@@ -424,7 +426,7 @@ void __bch_btree_node_write(struct btree *b, struct closure *parent)
 	do_btree_node_write(b);
 
 	atomic_long_add(set_blocks(i, block_bytes(b->c->cache)) * b->c->cache->sb.block_size,
-			&PTR_CACHE(b->c, &b->key, 0)->btree_sectors_written);
+			&b->c->cache->btree_sectors_written);
 
 	b->written += set_blocks(i, block_bytes(b->c->cache));
 }
@@ -481,7 +483,7 @@ static void bch_btree_leaf_dirty(struct btree *b, atomic_t *journal_ref)
 	BUG_ON(!i->keys);
 
 	if (!btree_node_dirty(b))
-		schedule_delayed_work(&b->work, 30 * HZ);
+		queue_delayed_work(btree_io_wq, &b->work, 30 * HZ);
 
 	set_btree_node_dirty(b);
 
@@ -810,7 +812,7 @@ int bch_btree_cache_alloc(struct cache_set *c)
 	c->shrink.seeks = 4;
 	c->shrink.batch = c->btree_pages * 2;
 
-	if (register_shrinker(&c->shrink))
+	if (register_shrinker(&c->shrink, "md-bcache:%pU", c->set_uuid))
 		pr_warn("bcache: %s: could not register shrinker\n",
 				__func__);
 
@@ -1159,7 +1161,7 @@ static void make_btree_freeing_key(struct btree *b, struct bkey *k)
 
 	for (i = 0; i < KEY_PTRS(k); i++)
 		SET_PTR_GEN(k, i,
-			    bch_inc_gen(PTR_CACHE(b->c, &b->key, i),
+			    bch_inc_gen(b->c->cache,
 					PTR_BUCKET(b->c, &b->key, i)));
 
 	mutex_unlock(&b->c->bucket_lock);
@@ -2004,8 +2006,7 @@ int bch_btree_check(struct cache_set *c)
 	int i;
 	struct bkey *k = NULL;
 	struct btree_iter iter;
-	struct btree_check_state *check_state;
-	char name[32];
+	struct btree_check_state check_state;
 
 	/* check and mark root node keys */
 	for_each_key_filter(&c->root->keys, k, &iter, bch_ptr_invalid)
@@ -2016,61 +2017,59 @@ int bch_btree_check(struct cache_set *c)
 	if (c->root->level == 0)
 		return 0;
 
-	check_state = kzalloc(sizeof(struct btree_check_state), GFP_KERNEL);
-	if (!check_state)
-		return -ENOMEM;
+	memset(&check_state, 0, sizeof(struct btree_check_state));
+	check_state.c = c;
+	check_state.total_threads = bch_btree_chkthread_nr();
+	check_state.key_idx = 0;
+	spin_lock_init(&check_state.idx_lock);
+	atomic_set(&check_state.started, 0);
+	atomic_set(&check_state.enough, 0);
+	init_waitqueue_head(&check_state.wait);
 
-	check_state->c = c;
-	check_state->total_threads = bch_btree_chkthread_nr();
-	check_state->key_idx = 0;
-	spin_lock_init(&check_state->idx_lock);
-	atomic_set(&check_state->started, 0);
-	atomic_set(&check_state->enough, 0);
-	init_waitqueue_head(&check_state->wait);
-
+	rw_lock(0, c->root, c->root->level);
 	/*
 	 * Run multiple threads to check btree nodes in parallel,
-	 * if check_state->enough is non-zero, it means current
+	 * if check_state.enough is non-zero, it means current
 	 * running check threads are enough, unncessary to create
 	 * more.
 	 */
-	for (i = 0; i < check_state->total_threads; i++) {
-		/* fetch latest check_state->enough earlier */
+	for (i = 0; i < check_state.total_threads; i++) {
+		/* fetch latest check_state.enough earlier */
 		smp_mb__before_atomic();
-		if (atomic_read(&check_state->enough))
+		if (atomic_read(&check_state.enough))
 			break;
 
-		check_state->infos[i].result = 0;
-		check_state->infos[i].state = check_state;
-		snprintf(name, sizeof(name), "bch_btrchk[%u]", i);
-		atomic_inc(&check_state->started);
+		check_state.infos[i].result = 0;
+		check_state.infos[i].state = &check_state;
 
-		check_state->infos[i].thread =
+		check_state.infos[i].thread =
 			kthread_run(bch_btree_check_thread,
-				    &check_state->infos[i],
-				    name);
-		if (IS_ERR(check_state->infos[i].thread)) {
+				    &check_state.infos[i],
+				    "bch_btrchk[%d]", i);
+		if (IS_ERR(check_state.infos[i].thread)) {
 			pr_err("fails to run thread bch_btrchk[%d]\n", i);
 			for (--i; i >= 0; i--)
-				kthread_stop(check_state->infos[i].thread);
+				kthread_stop(check_state.infos[i].thread);
 			ret = -ENOMEM;
 			goto out;
 		}
+		atomic_inc(&check_state.started);
 	}
 
-	wait_event_interruptible(check_state->wait,
-				 atomic_read(&check_state->started) == 0 ||
-				  test_bit(CACHE_SET_IO_DISABLE, &c->flags));
+	/*
+	 * Must wait for all threads to stop.
+	 */
+	wait_event(check_state.wait, atomic_read(&check_state.started) == 0);
 
-	for (i = 0; i < check_state->total_threads; i++) {
-		if (check_state->infos[i].result) {
-			ret = check_state->infos[i].result;
+	for (i = 0; i < check_state.total_threads; i++) {
+		if (check_state.infos[i].result) {
+			ret = check_state.infos[i].result;
 			goto out;
 		}
 	}
 
 out:
-	kfree(check_state);
+	rw_unlock(0, c->root);
 	return ret;
 }
 
@@ -2763,4 +2762,19 @@ void bch_keybuf_init(struct keybuf *buf)
 
 	spin_lock_init(&buf->lock);
 	array_allocator_init(&buf->freelist);
+}
+
+void bch_btree_exit(void)
+{
+	if (btree_io_wq)
+		destroy_workqueue(btree_io_wq);
+}
+
+int __init bch_btree_init(void)
+{
+	btree_io_wq = alloc_workqueue("bch_btree_io", WQ_MEM_RECLAIM, 0);
+	if (!btree_io_wq)
+		return -ENOMEM;
+
+	return 0;
 }

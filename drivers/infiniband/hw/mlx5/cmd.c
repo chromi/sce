@@ -5,34 +5,41 @@
 
 #include "cmd.h"
 
-int mlx5_cmd_dump_fill_mkey(struct mlx5_core_dev *dev, u32 *mkey)
+int mlx5r_cmd_query_special_mkeys(struct mlx5_ib_dev *dev)
 {
 	u32 out[MLX5_ST_SZ_DW(query_special_contexts_out)] = {};
 	u32 in[MLX5_ST_SZ_DW(query_special_contexts_in)] = {};
+	bool is_terminate, is_dump, is_null;
 	int err;
+
+	is_terminate = MLX5_CAP_GEN(dev->mdev, terminate_scatter_list_mkey);
+	is_dump = MLX5_CAP_GEN(dev->mdev, dump_fill_mkey);
+	is_null = MLX5_CAP_GEN(dev->mdev, null_mkey);
+
+	dev->mkeys.terminate_scatter_list_mkey = MLX5_TERMINATE_SCATTER_LIST_LKEY;
+	if (!is_terminate && !is_dump && !is_null)
+		return 0;
 
 	MLX5_SET(query_special_contexts_in, in, opcode,
 		 MLX5_CMD_OP_QUERY_SPECIAL_CONTEXTS);
-	err = mlx5_cmd_exec_inout(dev, query_special_contexts, in, out);
-	if (!err)
-		*mkey = MLX5_GET(query_special_contexts_out, out,
-				 dump_fill_mkey);
-	return err;
-}
+	err = mlx5_cmd_exec_inout(dev->mdev, query_special_contexts, in, out);
+	if (err)
+		return err;
 
-int mlx5_cmd_null_mkey(struct mlx5_core_dev *dev, u32 *null_mkey)
-{
-	u32 out[MLX5_ST_SZ_DW(query_special_contexts_out)] = {};
-	u32 in[MLX5_ST_SZ_DW(query_special_contexts_in)] = {};
-	int err;
+	if (is_dump)
+		dev->mkeys.dump_fill_mkey = MLX5_GET(query_special_contexts_out,
+						     out, dump_fill_mkey);
 
-	MLX5_SET(query_special_contexts_in, in, opcode,
-		 MLX5_CMD_OP_QUERY_SPECIAL_CONTEXTS);
-	err = mlx5_cmd_exec_inout(dev, query_special_contexts, in, out);
-	if (!err)
-		*null_mkey = MLX5_GET(query_special_contexts_out, out,
-				      null_mkey);
-	return err;
+	if (is_null)
+		dev->mkeys.null_mkey = cpu_to_be32(
+			MLX5_GET(query_special_contexts_out, out, null_mkey));
+
+	if (is_terminate)
+		dev->mkeys.terminate_scatter_list_mkey =
+			cpu_to_be32(MLX5_GET(query_special_contexts_out, out,
+					     terminate_scatter_list_mkey));
+
+	return 0;
 }
 
 int mlx5_cmd_query_cong_params(struct mlx5_core_dev *dev, int cong_point,
@@ -45,107 +52,6 @@ int mlx5_cmd_query_cong_params(struct mlx5_core_dev *dev, int cong_point,
 	MLX5_SET(query_cong_params_in, in, cong_protocol, cong_point);
 
 	return mlx5_cmd_exec_inout(dev, query_cong_params, in, out);
-}
-
-int mlx5_cmd_alloc_memic(struct mlx5_dm *dm, phys_addr_t *addr,
-			 u64 length, u32 alignment)
-{
-	struct mlx5_core_dev *dev = dm->dev;
-	u64 num_memic_hw_pages = MLX5_CAP_DEV_MEM(dev, memic_bar_size)
-					>> PAGE_SHIFT;
-	u64 hw_start_addr = MLX5_CAP64_DEV_MEM(dev, memic_bar_start_addr);
-	u32 max_alignment = MLX5_CAP_DEV_MEM(dev, log_max_memic_addr_alignment);
-	u32 num_pages = DIV_ROUND_UP(length, PAGE_SIZE);
-	u32 out[MLX5_ST_SZ_DW(alloc_memic_out)] = {};
-	u32 in[MLX5_ST_SZ_DW(alloc_memic_in)] = {};
-	u32 mlx5_alignment;
-	u64 page_idx = 0;
-	int ret = 0;
-
-	if (!length || (length & MLX5_MEMIC_ALLOC_SIZE_MASK))
-		return -EINVAL;
-
-	/* mlx5 device sets alignment as 64*2^driver_value
-	 * so normalizing is needed.
-	 */
-	mlx5_alignment = (alignment < MLX5_MEMIC_BASE_ALIGN) ? 0 :
-			 alignment - MLX5_MEMIC_BASE_ALIGN;
-	if (mlx5_alignment > max_alignment)
-		return -EINVAL;
-
-	MLX5_SET(alloc_memic_in, in, opcode, MLX5_CMD_OP_ALLOC_MEMIC);
-	MLX5_SET(alloc_memic_in, in, range_size, num_pages * PAGE_SIZE);
-	MLX5_SET(alloc_memic_in, in, memic_size, length);
-	MLX5_SET(alloc_memic_in, in, log_memic_addr_alignment,
-		 mlx5_alignment);
-
-	while (page_idx < num_memic_hw_pages) {
-		spin_lock(&dm->lock);
-		page_idx = bitmap_find_next_zero_area(dm->memic_alloc_pages,
-						      num_memic_hw_pages,
-						      page_idx,
-						      num_pages, 0);
-
-		if (page_idx < num_memic_hw_pages)
-			bitmap_set(dm->memic_alloc_pages,
-				   page_idx, num_pages);
-
-		spin_unlock(&dm->lock);
-
-		if (page_idx >= num_memic_hw_pages)
-			break;
-
-		MLX5_SET64(alloc_memic_in, in, range_start_addr,
-			   hw_start_addr + (page_idx * PAGE_SIZE));
-
-		ret = mlx5_cmd_exec_inout(dev, alloc_memic, in, out);
-		if (ret) {
-			spin_lock(&dm->lock);
-			bitmap_clear(dm->memic_alloc_pages,
-				     page_idx, num_pages);
-			spin_unlock(&dm->lock);
-
-			if (ret == -EAGAIN) {
-				page_idx++;
-				continue;
-			}
-
-			return ret;
-		}
-
-		*addr = dev->bar_addr +
-			MLX5_GET64(alloc_memic_out, out, memic_start_addr);
-
-		return 0;
-	}
-
-	return -ENOMEM;
-}
-
-void mlx5_cmd_dealloc_memic(struct mlx5_dm *dm, phys_addr_t addr, u64 length)
-{
-	struct mlx5_core_dev *dev = dm->dev;
-	u64 hw_start_addr = MLX5_CAP64_DEV_MEM(dev, memic_bar_start_addr);
-	u32 num_pages = DIV_ROUND_UP(length, PAGE_SIZE);
-	u32 in[MLX5_ST_SZ_DW(dealloc_memic_in)] = {};
-	u64 start_page_idx;
-	int err;
-
-	addr -= dev->bar_addr;
-	start_page_idx = (addr - hw_start_addr) >> PAGE_SHIFT;
-
-	MLX5_SET(dealloc_memic_in, in, opcode, MLX5_CMD_OP_DEALLOC_MEMIC);
-	MLX5_SET64(dealloc_memic_in, in, memic_start_addr, addr);
-	MLX5_SET(dealloc_memic_in, in, memic_size, length);
-
-	err =  mlx5_cmd_exec_in(dev, dealloc_memic, in);
-	if (err)
-		return;
-
-	spin_lock(&dm->lock);
-	bitmap_clear(dm->memic_alloc_pages,
-		     start_page_idx, num_pages);
-	spin_unlock(&dm->lock);
 }
 
 void mlx5_cmd_destroy_tir(struct mlx5_core_dev *dev, u32 tirn, u16 uid)
@@ -306,4 +212,30 @@ out:
 	kfree(out);
 	kfree(in);
 	return err;
+}
+
+int mlx5_cmd_uar_alloc(struct mlx5_core_dev *dev, u32 *uarn, u16 uid)
+{
+	u32 out[MLX5_ST_SZ_DW(alloc_uar_out)] = {};
+	u32 in[MLX5_ST_SZ_DW(alloc_uar_in)] = {};
+	int err;
+
+	MLX5_SET(alloc_uar_in, in, opcode, MLX5_CMD_OP_ALLOC_UAR);
+	MLX5_SET(alloc_uar_in, in, uid, uid);
+	err = mlx5_cmd_exec_inout(dev, alloc_uar, in, out);
+	if (err)
+		return err;
+
+	*uarn = MLX5_GET(alloc_uar_out, out, uar);
+	return 0;
+}
+
+int mlx5_cmd_uar_dealloc(struct mlx5_core_dev *dev, u32 uarn, u16 uid)
+{
+	u32 in[MLX5_ST_SZ_DW(dealloc_uar_in)] = {};
+
+	MLX5_SET(dealloc_uar_in, in, opcode, MLX5_CMD_OP_DEALLOC_UAR);
+	MLX5_SET(dealloc_uar_in, in, uar, uarn);
+	MLX5_SET(dealloc_uar_in, in, uid, uid);
+	return mlx5_cmd_exec_in(dev, dealloc_uar, in);
 }

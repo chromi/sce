@@ -158,7 +158,6 @@ const struct snd_soc_dai_ops aiu_fifo_spdif_dai_ops = {
 	.trigger	= fifo_spdif_trigger,
 	.prepare	= fifo_spdif_prepare,
 	.hw_params	= fifo_spdif_hw_params,
-	.hw_free	= aiu_fifo_hw_free,
 	.startup	= aiu_fifo_startup,
 	.shutdown	= aiu_fifo_shutdown,
 };
@@ -174,7 +173,7 @@ int aiu_fifo_spdif_dai_probe(struct snd_soc_dai *dai)
 	if (ret)
 		return ret;
 
-	fifo = dai->playback_dma_data;
+	fifo = snd_soc_dai_dma_data_get_playback(dai);
 
 	fifo->pcm = &fifo_spdif_pcm;
 	fifo->mem_offset = AIU_MEM_IEC958_START;

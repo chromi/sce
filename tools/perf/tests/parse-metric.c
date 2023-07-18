@@ -11,75 +11,7 @@
 #include "debug.h"
 #include "expr.h"
 #include "stat.h"
-
-static struct pmu_event pme_test[] = {
-{
-	.metric_expr	= "inst_retired.any / cpu_clk_unhalted.thread",
-	.metric_name	= "IPC",
-	.metric_group	= "group1",
-},
-{
-	.metric_expr	= "idq_uops_not_delivered.core / (4 * (( ( cpu_clk_unhalted.thread / 2 ) * "
-			  "( 1 + cpu_clk_unhalted.one_thread_active / cpu_clk_unhalted.ref_xclk ) )))",
-	.metric_name	= "Frontend_Bound_SMT",
-},
-{
-	.metric_expr	= "l1d\\-loads\\-misses / inst_retired.any",
-	.metric_name	= "dcache_miss_cpi",
-},
-{
-	.metric_expr	= "l1i\\-loads\\-misses / inst_retired.any",
-	.metric_name	= "icache_miss_cycles",
-},
-{
-	.metric_expr	= "(dcache_miss_cpi + icache_miss_cycles)",
-	.metric_name	= "cache_miss_cycles",
-	.metric_group	= "group1",
-},
-{
-	.metric_expr	= "l2_rqsts.demand_data_rd_hit + l2_rqsts.pf_hit + l2_rqsts.rfo_hit",
-	.metric_name	= "DCache_L2_All_Hits",
-},
-{
-	.metric_expr	= "max(l2_rqsts.all_demand_data_rd - l2_rqsts.demand_data_rd_hit, 0) + "
-			  "l2_rqsts.pf_miss + l2_rqsts.rfo_miss",
-	.metric_name	= "DCache_L2_All_Miss",
-},
-{
-	.metric_expr	= "dcache_l2_all_hits + dcache_l2_all_miss",
-	.metric_name	= "DCache_L2_All",
-},
-{
-	.metric_expr	= "d_ratio(dcache_l2_all_hits, dcache_l2_all)",
-	.metric_name	= "DCache_L2_Hits",
-},
-{
-	.metric_expr	= "d_ratio(dcache_l2_all_miss, dcache_l2_all)",
-	.metric_name	= "DCache_L2_Misses",
-},
-{
-	.metric_expr	= "ipc + m2",
-	.metric_name	= "M1",
-},
-{
-	.metric_expr	= "ipc + m1",
-	.metric_name	= "M2",
-},
-{
-	.metric_expr	= "1/m3",
-	.metric_name	= "M3",
-},
-{
-	.name	= NULL,
-}
-};
-
-static struct pmu_events_map map = {
-	.cpuid		= "test",
-	.version	= "1",
-	.type		= "core",
-	.table		= pme_test,
-};
+#include "pmu.h"
 
 struct value {
 	const char	*event;
@@ -94,24 +26,27 @@ static u64 find_value(const char *name, struct value *values)
 		if (!strcmp(name, v->event))
 			return v->val;
 		v++;
-	};
+	}
 	return 0;
 }
 
-static void load_runtime_stat(struct runtime_stat *st, struct evlist *evlist,
-			      struct value *vals)
+static void load_runtime_stat(struct evlist *evlist, struct value *vals)
 {
 	struct evsel *evsel;
 	u64 count;
 
+	evlist__alloc_aggr_stats(evlist, 1);
 	evlist__for_each_entry(evlist, evsel) {
 		count = find_value(evsel->name, vals);
-		perf_stat__update_shadow_stats(evsel, count, 0, st);
+		evsel->supported = true;
+		evsel->stats->aggr->counts.val = count;
+		if (evsel__name_is(evsel, "duration_time"))
+			update_stats(&walltime_nsecs_stats, count);
 	}
 }
 
 static double compute_single(struct rblist *metric_events, struct evlist *evlist,
-			     struct runtime_stat *st, const char *name)
+			     const char *name)
 {
 	struct metric_expr *mexp;
 	struct metric_event *me;
@@ -123,7 +58,7 @@ static double compute_single(struct rblist *metric_events, struct evlist *evlist
 			list_for_each_entry (mexp, &me->head, nd) {
 				if (strcmp(mexp->metric_name, name))
 					continue;
-				return test_generic_metric(mexp, 0, st);
+				return test_generic_metric(mexp, 0);
 			}
 		}
 	}
@@ -137,8 +72,8 @@ static int __compute_metric(const char *name, struct value *vals,
 	struct rblist metric_events = {
 		.nr_entries = 0,
 	};
+	const struct pmu_metrics_table *pme_test;
 	struct perf_cpu_map *cpus;
-	struct runtime_stat st;
 	struct evlist *evlist;
 	int err;
 
@@ -157,33 +92,31 @@ static int __compute_metric(const char *name, struct value *vals,
 	}
 
 	perf_evlist__set_maps(&evlist->core, cpus, NULL);
-	runtime_stat__init(&st);
 
 	/* Parse the metric into metric_events list. */
-	err = metricgroup__parse_groups_test(evlist, &map, name,
-					     false, false,
+	pme_test = find_core_metrics_table("testarch", "testcpu");
+	err = metricgroup__parse_groups_test(evlist, pme_test, name,
 					     &metric_events);
 	if (err)
 		goto out;
 
-	err = perf_evlist__alloc_stats(evlist, false);
+	err = evlist__alloc_stats(/*config=*/NULL, evlist, /*alloc_raw=*/false);
 	if (err)
 		goto out;
 
 	/* Load the runtime stats with given numbers for events. */
-	load_runtime_stat(&st, evlist, vals);
+	load_runtime_stat(evlist, vals);
 
 	/* And execute the metric */
 	if (name1 && ratio1)
-		*ratio1 = compute_single(&metric_events, evlist, &st, name1);
+		*ratio1 = compute_single(&metric_events, evlist, name1);
 	if (name2 && ratio2)
-		*ratio2 = compute_single(&metric_events, evlist, &st, name2);
+		*ratio2 = compute_single(&metric_events, evlist, name2);
 
 out:
-	/* ... clenup. */
+	/* ... cleanup. */
 	metricgroup__rblist_exit(&metric_events);
-	runtime_stat__exit(&st);
-	perf_evlist__free_stats(evlist);
+	evlist__free_stats(evlist);
 	perf_cpu_map__put(cpus);
 	evlist__delete(evlist);
 	return err;
@@ -321,6 +254,23 @@ static int test_recursion_fail(void)
 	return 0;
 }
 
+static int test_memory_bandwidth(void)
+{
+	double ratio;
+	struct value vals[] = {
+		{ .event = "l1d.replacement", .val = 4000000 },
+		{ .event = "duration_time",  .val = 200000000 },
+		{ .event = NULL, },
+	};
+
+	TEST_ASSERT_VAL("failed to compute metric",
+			compute_metric("L1D_Cache_Fill_BW", vals, &ratio) == 0);
+	TEST_ASSERT_VAL("L1D_Cache_Fill_BW, wrong ratio",
+			1.28 == ratio);
+
+	return 0;
+}
+
 static int test_metric_group(void)
 {
 	double ratio1, ratio2;
@@ -345,13 +295,19 @@ static int test_metric_group(void)
 	return 0;
 }
 
-int test__parse_metric(struct test *test __maybe_unused, int subtest __maybe_unused)
+static int test__parse_metric(struct test_suite *test __maybe_unused, int subtest __maybe_unused)
 {
 	TEST_ASSERT_VAL("IPC failed", test_ipc() == 0);
 	TEST_ASSERT_VAL("frontend failed", test_frontend() == 0);
-	TEST_ASSERT_VAL("cache_miss_cycles failed", test_cache_miss_cycles() == 0);
 	TEST_ASSERT_VAL("DCache_L2 failed", test_dcache_l2() == 0);
 	TEST_ASSERT_VAL("recursion fail failed", test_recursion_fail() == 0);
-	TEST_ASSERT_VAL("test metric group", test_metric_group() == 0);
+	TEST_ASSERT_VAL("Memory bandwidth", test_memory_bandwidth() == 0);
+
+	if (!perf_pmu__has_hybrid()) {
+		TEST_ASSERT_VAL("cache_miss_cycles failed", test_cache_miss_cycles() == 0);
+		TEST_ASSERT_VAL("test metric group", test_metric_group() == 0);
+	}
 	return 0;
 }
+
+DEFINE_SUITE("Parse and process metrics", parse_metric);

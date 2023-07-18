@@ -140,7 +140,7 @@ void smp_send_stop(void)
 	on_each_cpu(ipi_stop, NULL, 1);
 }
 
-void smp_send_reschedule(int cpu)
+void arch_smp_send_reschedule(int cpu)
 {
 	send_ipi_message(cpumask_of(cpu), IPI_RESCHEDULE);
 }
@@ -180,15 +180,13 @@ void __init setup_smp_ipi(void)
 void __init setup_smp(void)
 {
 	struct device_node *node = NULL;
-	int cpu;
+	unsigned int cpu;
 
 	for_each_of_cpu_node(node) {
 		if (!of_device_is_available(node))
 			continue;
 
-		if (of_property_read_u32(node, "reg", &cpu))
-			continue;
-
+		cpu = of_get_cpu_hwid(node, 0);
 		if (cpu >= NR_CPUS)
 			continue;
 
@@ -203,8 +201,8 @@ volatile unsigned int secondary_hint;
 volatile unsigned int secondary_hint2;
 volatile unsigned int secondary_ccr;
 volatile unsigned int secondary_stack;
-
-unsigned long secondary_msa1;
+volatile unsigned int secondary_msa1;
+volatile unsigned int secondary_pgd;
 
 int __cpu_up(unsigned int cpu, struct task_struct *tidle)
 {
@@ -216,6 +214,7 @@ int __cpu_up(unsigned int cpu, struct task_struct *tidle)
 	secondary_hint2 = mfcr("cr<21, 1>");
 	secondary_ccr  = mfcr("cr18");
 	secondary_msa1 = read_mmu_msa1();
+	secondary_pgd = mfcr("cr<29, 15>");
 
 	/*
 	 * Because other CPUs are in reset status, we must flush data
@@ -244,11 +243,6 @@ void __init smp_cpus_done(unsigned int max_cpus)
 {
 }
 
-int setup_profiling_timer(unsigned int multiplier)
-{
-	return -EINVAL;
-}
-
 void csky_start_secondary(void)
 {
 	struct mm_struct *mm = &init_mm;
@@ -262,8 +256,6 @@ void csky_start_secondary(void)
 
 	flush_tlb_all();
 	write_mmu_pagemask(0);
-	TLBMISS_HANDLER_SETUP_PGD(swapper_pg_dir);
-	TLBMISS_HANDLER_SETUP_PGD_KERNEL(swapper_pg_dir);
 
 #ifdef CONFIG_CPU_HAS_FPU
 	init_fpu();
@@ -282,7 +274,6 @@ void csky_start_secondary(void)
 	pr_info("CPU%u Online: %s...\n", cpu, __func__);
 
 	local_irq_enable();
-	preempt_disable();
 	cpu_startup_entry(CPUHP_AP_ONLINE_IDLE);
 }
 
@@ -309,7 +300,7 @@ void __cpu_die(unsigned int cpu)
 	pr_notice("CPU%u: shutdown\n", cpu);
 }
 
-void arch_cpu_idle_dead(void)
+void __noreturn arch_cpu_idle_dead(void)
 {
 	idle_task_exit();
 
@@ -318,7 +309,7 @@ void arch_cpu_idle_dead(void)
 	while (!secondary_stack)
 		arch_cpu_idle();
 
-	local_irq_disable();
+	raw_local_irq_disable();
 
 	asm volatile(
 		"mov	sp, %0\n"
@@ -326,5 +317,7 @@ void arch_cpu_idle_dead(void)
 		"jmpi	csky_start_secondary"
 		:
 		: "r" (secondary_stack));
+
+	BUG();
 }
 #endif

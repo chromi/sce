@@ -13,16 +13,6 @@
 #include <linux/videodev2.h>
 #include <media/media-request.h>
 
-/*
- * Include the stateless codec compound control definitions.
- * This will move to the public headers once this API is fully stable.
- */
-#include <media/mpeg2-ctrls.h>
-#include <media/fwht-ctrls.h>
-#include <media/h264-ctrls.h>
-#include <media/vp8-ctrls.h>
-#include <media/hevc-ctrls.h>
-
 /* forward references */
 struct file;
 struct poll_table_struct;
@@ -43,8 +33,9 @@ struct video_device;
  * @p_u16:			Pointer to a 16-bit unsigned value.
  * @p_u32:			Pointer to a 32-bit unsigned value.
  * @p_char:			Pointer to a string.
- * @p_mpeg2_slice_params:	Pointer to a MPEG2 slice parameters structure.
- * @p_mpeg2_quantization:	Pointer to a MPEG2 quantization data structure.
+ * @p_mpeg2_sequence:		Pointer to a MPEG2 sequence structure.
+ * @p_mpeg2_picture:		Pointer to a MPEG2 picture structure.
+ * @p_mpeg2_quantisation:	Pointer to a MPEG2 quantisation data structure.
  * @p_fwht_params:		Pointer to a FWHT stateless parameters structure.
  * @p_h264_sps:			Pointer to a struct v4l2_ctrl_h264_sps.
  * @p_h264_pps:			Pointer to a struct v4l2_ctrl_h264_pps.
@@ -52,10 +43,14 @@ struct video_device;
  * @p_h264_slice_params:	Pointer to a struct v4l2_ctrl_h264_slice_params.
  * @p_h264_decode_params:	Pointer to a struct v4l2_ctrl_h264_decode_params.
  * @p_h264_pred_weights:	Pointer to a struct v4l2_ctrl_h264_pred_weights.
- * @p_vp8_frame_header:		Pointer to a VP8 frame header structure.
+ * @p_vp8_frame:		Pointer to a VP8 frame params structure.
+ * @p_vp9_compressed_hdr_probs:	Pointer to a VP9 frame compressed header probs structure.
+ * @p_vp9_frame:		Pointer to a VP9 frame params structure.
  * @p_hevc_sps:			Pointer to an HEVC sequence parameter set structure.
  * @p_hevc_pps:			Pointer to an HEVC picture parameter set structure.
  * @p_hevc_slice_params:	Pointer to an HEVC slice parameters structure.
+ * @p_hdr10_cll:		Pointer to an HDR10 Content Light Level structure.
+ * @p_hdr10_mastering:		Pointer to an HDR10 Mastering Display structure.
  * @p_area:			Pointer to an area.
  * @p:				Pointer to a compound value.
  * @p_const:			Pointer to a constant compound value.
@@ -67,8 +62,9 @@ union v4l2_ctrl_ptr {
 	u16 *p_u16;
 	u32 *p_u32;
 	char *p_char;
-	struct v4l2_ctrl_mpeg2_slice_params *p_mpeg2_slice_params;
-	struct v4l2_ctrl_mpeg2_quantization *p_mpeg2_quantization;
+	struct v4l2_ctrl_mpeg2_sequence *p_mpeg2_sequence;
+	struct v4l2_ctrl_mpeg2_picture *p_mpeg2_picture;
+	struct v4l2_ctrl_mpeg2_quantisation *p_mpeg2_quantisation;
 	struct v4l2_ctrl_fwht_params *p_fwht_params;
 	struct v4l2_ctrl_h264_sps *p_h264_sps;
 	struct v4l2_ctrl_h264_pps *p_h264_pps;
@@ -76,10 +72,14 @@ union v4l2_ctrl_ptr {
 	struct v4l2_ctrl_h264_slice_params *p_h264_slice_params;
 	struct v4l2_ctrl_h264_decode_params *p_h264_decode_params;
 	struct v4l2_ctrl_h264_pred_weights *p_h264_pred_weights;
-	struct v4l2_ctrl_vp8_frame_header *p_vp8_frame_header;
+	struct v4l2_ctrl_vp8_frame *p_vp8_frame;
 	struct v4l2_ctrl_hevc_sps *p_hevc_sps;
 	struct v4l2_ctrl_hevc_pps *p_hevc_pps;
 	struct v4l2_ctrl_hevc_slice_params *p_hevc_slice_params;
+	struct v4l2_ctrl_vp9_compressed_hdr *p_vp9_compressed_hdr_probs;
+	struct v4l2_ctrl_vp9_frame *p_vp9_frame;
+	struct v4l2_ctrl_hdr10_cll_info *p_hdr10_cll;
+	struct v4l2_ctrl_hdr10_mastering_display *p_hdr10_mastering;
 	struct v4l2_area *p_area;
 	void *p;
 	const void *p_const;
@@ -121,21 +121,19 @@ struct v4l2_ctrl_ops {
  * struct v4l2_ctrl_type_ops - The control type operations that the driver
  *			       has to provide.
  *
- * @equal: return true if both values are equal.
- * @init: initialize the value.
+ * @equal: return true if all ctrl->elems array elements are equal.
+ * @init: initialize the value for array elements from from_idx to ctrl->elems.
  * @log: log the value.
- * @validate: validate the value. Return 0 on success and a negative value
- *	otherwise.
+ * @validate: validate the value for ctrl->new_elems array elements.
+ *	Return 0 on success and a negative value otherwise.
  */
 struct v4l2_ctrl_type_ops {
-	bool (*equal)(const struct v4l2_ctrl *ctrl, u32 idx,
-		      union v4l2_ctrl_ptr ptr1,
-		      union v4l2_ctrl_ptr ptr2);
-	void (*init)(const struct v4l2_ctrl *ctrl, u32 idx,
+	bool (*equal)(const struct v4l2_ctrl *ctrl,
+		      union v4l2_ctrl_ptr ptr1, union v4l2_ctrl_ptr ptr2);
+	void (*init)(const struct v4l2_ctrl *ctrl, u32 from_idx,
 		     union v4l2_ctrl_ptr ptr);
 	void (*log)(const struct v4l2_ctrl *ctrl);
-	int (*validate)(const struct v4l2_ctrl *ctrl, u32 idx,
-			union v4l2_ctrl_ptr ptr);
+	int (*validate)(const struct v4l2_ctrl *ctrl, union v4l2_ctrl_ptr ptr);
 };
 
 /**
@@ -179,6 +177,8 @@ typedef void (*v4l2_ctrl_notify_fnc)(struct v4l2_ctrl *ctrl, void *priv);
  *		and/or has type %V4L2_CTRL_TYPE_STRING. In other words, &struct
  *		v4l2_ext_control uses field p to point to the data.
  * @is_array: If set, then this control contains an N-dimensional array.
+ * @is_dyn_array: If set, then this control contains a dynamically sized 1-dimensional array.
+ *		If this is set, then @is_array is also set.
  * @has_volatiles: If set, then one or more members of the cluster are volatile.
  *		Drivers should never touch this flag.
  * @call_notify: If set, then call the handler's notify function whenever the
@@ -199,6 +199,9 @@ typedef void (*v4l2_ctrl_notify_fnc)(struct v4l2_ctrl *ctrl, void *priv);
  * @step:	The control's step value for non-menu controls.
  * @elems:	The number of elements in the N-dimensional array.
  * @elem_size:	The size in bytes of the control.
+ * @new_elems:	The number of elements in p_new. This is the same as @elems,
+ *		except for dynamic arrays. In that case it is in the range of
+ *		1 to @p_array_alloc_elems.
  * @dims:	The size of each dimension.
  * @nr_of_dims:The number of dimensions in @dims.
  * @menu_skip_mask: The control's skip mask for menu controls. This makes it
@@ -217,15 +220,20 @@ typedef void (*v4l2_ctrl_notify_fnc)(struct v4l2_ctrl *ctrl, void *priv);
  *		:math:`ceil(\frac{maximum - minimum}{step}) + 1`.
  *		Used only if the @type is %V4L2_CTRL_TYPE_INTEGER_MENU.
  * @flags:	The control's flags.
- * @cur:	Structure to store the current value.
- * @cur.val:	The control's current value, if the @type is represented via
- *		a u32 integer (see &enum v4l2_ctrl_type).
- * @val:	The control's new s32 value.
  * @priv:	The control's private pointer. For use by the driver. It is
  *		untouched by the control framework. Note that this pointer is
  *		not freed when the control is deleted. Should this be needed
  *		then a new internal bitfield can be added to tell the framework
  *		to free this pointer.
+ * @p_array:	Pointer to the allocated array. Only valid if @is_array is true.
+ * @p_array_alloc_elems: The number of elements in the allocated
+ *		array for both the cur and new values. So @p_array is actually
+ *		sized for 2 * @p_array_alloc_elems * @elem_size. Only valid if
+ *		@is_array is true.
+ * @cur:	Structure to store the current value.
+ * @cur.val:	The control's current value, if the @type is represented via
+ *		a u32 integer (see &enum v4l2_ctrl_type).
+ * @val:	The control's new s32 value.
  * @p_def:	The control's default value represented via a union which
  *		provides a standard way of accessing control types
  *		through a pointer (for compound controls only).
@@ -254,6 +262,7 @@ struct v4l2_ctrl {
 	unsigned int is_string:1;
 	unsigned int is_ptr:1;
 	unsigned int is_array:1;
+	unsigned int is_dyn_array:1;
 	unsigned int has_volatiles:1;
 	unsigned int call_notify:1;
 	unsigned int manual_mode_value:8;
@@ -266,6 +275,7 @@ struct v4l2_ctrl {
 	s64 minimum, maximum, default_value;
 	u32 elems;
 	u32 elem_size;
+	u32 new_elems;
 	u32 dims[V4L2_CTRL_MAX_DIMS];
 	u32 nr_of_dims;
 	union {
@@ -278,6 +288,8 @@ struct v4l2_ctrl {
 	};
 	unsigned long flags;
 	void *priv;
+	void *p_array;
+	u32 p_array_alloc_elems;
 	s32 val;
 	struct {
 		s32 val;
@@ -303,12 +315,24 @@ struct v4l2_ctrl {
  *		the control has been applied. This prevents applying controls
  *		from a cluster with multiple controls twice (when the first
  *		control of a cluster is applied, they all are).
- * @req:	If set, this refers to another request that sets this control.
+ * @p_req_valid: If set, then p_req contains the control value for the request.
+ * @p_req_array_enomem: If set, then p_req is invalid since allocating space for
+ *		an array failed. Attempting to read this value shall
+ *		result in ENOMEM. Only valid if ctrl->is_array is true.
+ * @p_req_array_alloc_elems: The number of elements allocated for the
+ *		array. Only valid if @p_req_valid and ctrl->is_array are
+ *		true.
+ * @p_req_elems: The number of elements in @p_req. This is the same as
+ *		ctrl->elems, except for dynamic arrays. In that case it is in
+ *		the range of 1 to @p_req_array_alloc_elems. Only valid if
+ *		@p_req_valid is true.
  * @p_req:	If the control handler containing this control reference
  *		is bound to a media request, then this points to the
- *		value of the control that should be applied when the request
+ *		value of the control that must be applied when the request
  *		is executed, or to the value of the control at the time
- *		that the request was completed.
+ *		that the request was completed. If @p_req_valid is false,
+ *		then this control was never set for this request and the
+ *		control will not be updated when this request is applied.
  *
  * Each control handler has a list of these refs. The list_head is used to
  * keep a sorted-by-control-ID list of all controls, while the next pointer
@@ -321,7 +345,10 @@ struct v4l2_ctrl_ref {
 	struct v4l2_ctrl_helper *helper;
 	bool from_other_dev;
 	bool req_done;
-	struct v4l2_ctrl_ref *req;
+	bool p_req_valid;
+	bool p_req_array_enomem;
+	u32 p_req_array_alloc_elems;
+	u32 p_req_elems;
 	union v4l2_ctrl_ptr p_req;
 };
 
@@ -348,7 +375,7 @@ struct v4l2_ctrl_ref {
  * @error:	The error code of the first failed control addition.
  * @request_is_queued: True if the request was queued.
  * @requests:	List to keep track of open control handler request objects.
- *		For the parent control handler (@req_obj.req == NULL) this
+ *		For the parent control handler (@req_obj.ops == NULL) this
  *		is the list header. When the parent control handler is
  *		removed, it has to unbind and put all these requests since
  *		they refer to the parent.
@@ -929,6 +956,59 @@ static inline int v4l2_ctrl_modify_range(struct v4l2_ctrl *ctrl,
 }
 
 /**
+ *__v4l2_ctrl_modify_dimensions() - Unlocked variant of v4l2_ctrl_modify_dimensions()
+ *
+ * @ctrl:	The control to update.
+ * @dims:	The control's new dimensions.
+ *
+ * Update the dimensions of an array control on the fly. The elements of the
+ * array are reset to their default value, even if the dimensions are
+ * unchanged.
+ *
+ * An error is returned if @dims is invalid for this control.
+ *
+ * The caller is responsible for acquiring the control handler mutex on behalf
+ * of __v4l2_ctrl_modify_dimensions().
+ *
+ * Note: calling this function when the same control is used in pending requests
+ * is untested. It should work (a request with the wrong size of the control
+ * will drop that control silently), but it will be very confusing.
+ */
+int __v4l2_ctrl_modify_dimensions(struct v4l2_ctrl *ctrl,
+				  u32 dims[V4L2_CTRL_MAX_DIMS]);
+
+/**
+ * v4l2_ctrl_modify_dimensions() - Update the dimensions of an array control.
+ *
+ * @ctrl:	The control to update.
+ * @dims:	The control's new dimensions.
+ *
+ * Update the dimensions of an array control on the fly. The elements of the
+ * array are reset to their default value, even if the dimensions are
+ * unchanged.
+ *
+ * An error is returned if @dims is invalid for this control type.
+ *
+ * This function assumes that the control handler is not locked and will
+ * take the lock itself.
+ *
+ * Note: calling this function when the same control is used in pending requests
+ * is untested. It should work (a request with the wrong size of the control
+ * will drop that control silently), but it will be very confusing.
+ */
+static inline int v4l2_ctrl_modify_dimensions(struct v4l2_ctrl *ctrl,
+					      u32 dims[V4L2_CTRL_MAX_DIMS])
+{
+	int rval;
+
+	v4l2_ctrl_lock(ctrl);
+	rval = __v4l2_ctrl_modify_dimensions(ctrl, dims);
+	v4l2_ctrl_unlock(ctrl);
+
+	return rval;
+}
+
+/**
  * v4l2_ctrl_notify() - Function to set a notify callback for a control.
  *
  * @ctrl:	The control.
@@ -1263,7 +1343,7 @@ void v4l2_ctrl_request_complete(struct media_request *req,
  * @parent: The parent control handler ('priv' in media_request_object_find())
  *
  * This function finds the control handler in the request. It may return
- * NULL if not found. When done, you must call v4l2_ctrl_request_put_hdl()
+ * NULL if not found. When done, you must call v4l2_ctrl_request_hdl_put()
  * with the returned handler pointer.
  *
  * If the request is not in state VALIDATING or QUEUED, then this function
@@ -1292,7 +1372,7 @@ static inline void v4l2_ctrl_request_hdl_put(struct v4l2_ctrl_handler *hdl)
 }
 
 /**
- * v4l2_ctrl_request_ctrl_find() - Find a control with the given ID.
+ * v4l2_ctrl_request_hdl_ctrl_find() - Find a control with the given ID.
  *
  * @hdl: The control handler from the request.
  * @id: The ID of the control to find.
@@ -1456,4 +1536,48 @@ int v4l2_ctrl_subdev_log_status(struct v4l2_subdev *sd);
 int v4l2_ctrl_new_fwnode_properties(struct v4l2_ctrl_handler *hdl,
 				    const struct v4l2_ctrl_ops *ctrl_ops,
 				    const struct v4l2_fwnode_device_properties *p);
+
+/**
+ * v4l2_ctrl_type_op_equal - Default v4l2_ctrl_type_ops equal callback.
+ *
+ * @ctrl: The v4l2_ctrl pointer.
+ * @ptr1: A v4l2 control value.
+ * @ptr2: A v4l2 control value.
+ *
+ * Return: true if values are equal, otherwise false.
+ */
+bool v4l2_ctrl_type_op_equal(const struct v4l2_ctrl *ctrl,
+			     union v4l2_ctrl_ptr ptr1, union v4l2_ctrl_ptr ptr2);
+
+/**
+ * v4l2_ctrl_type_op_init - Default v4l2_ctrl_type_ops init callback.
+ *
+ * @ctrl: The v4l2_ctrl pointer.
+ * @from_idx: Starting element index.
+ * @ptr: The v4l2 control value.
+ *
+ * Return: void
+ */
+void v4l2_ctrl_type_op_init(const struct v4l2_ctrl *ctrl, u32 from_idx,
+			    union v4l2_ctrl_ptr ptr);
+
+/**
+ * v4l2_ctrl_type_op_log - Default v4l2_ctrl_type_ops log callback.
+ *
+ * @ctrl: The v4l2_ctrl pointer.
+ *
+ * Return: void
+ */
+void v4l2_ctrl_type_op_log(const struct v4l2_ctrl *ctrl);
+
+/**
+ * v4l2_ctrl_type_op_validate - Default v4l2_ctrl_type_ops validate callback.
+ *
+ * @ctrl: The v4l2_ctrl pointer.
+ * @ptr: The v4l2 control value.
+ *
+ * Return: 0 on success, a negative error code on failure.
+ */
+int v4l2_ctrl_type_op_validate(const struct v4l2_ctrl *ctrl, union v4l2_ctrl_ptr ptr);
+
 #endif

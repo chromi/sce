@@ -135,7 +135,7 @@ static const struct regmap_config tlc591xx_regmap = {
 	.max_register = 0x1e,
 };
 
-static const struct of_device_id of_tlc591xx_leds_match[] = {
+static const struct of_device_id of_tlc591xx_leds_match[] __maybe_unused = {
 	{ .compatible = "ti,tlc59116",
 	  .data = &tlc59116 },
 	{ .compatible = "ti,tlc59108",
@@ -145,17 +145,20 @@ static const struct of_device_id of_tlc591xx_leds_match[] = {
 MODULE_DEVICE_TABLE(of, of_tlc591xx_leds_match);
 
 static int
-tlc591xx_probe(struct i2c_client *client,
-	       const struct i2c_device_id *id)
+tlc591xx_probe(struct i2c_client *client)
 {
-	struct device_node *np = dev_of_node(&client->dev), *child;
+	struct device_node *np, *child;
 	struct device *dev = &client->dev;
 	const struct tlc591xx *tlc591xx;
 	struct tlc591xx_priv *priv;
 	int err, count, reg;
 
-	tlc591xx = device_get_match_data(dev);
+	np = dev_of_node(dev);
 	if (!np)
+		return -ENODEV;
+
+	tlc591xx = device_get_match_data(dev);
+	if (!tlc591xx)
 		return -ENODEV;
 
 	count = of_get_available_child_count(np);
@@ -227,7 +230,7 @@ static struct i2c_driver tlc591xx_driver = {
 		.name = "tlc591xx",
 		.of_match_table = of_match_ptr(of_tlc591xx_leds_match),
 	},
-	.probe = tlc591xx_probe,
+	.probe_new = tlc591xx_probe,
 	.id_table = tlc591xx_id,
 };
 

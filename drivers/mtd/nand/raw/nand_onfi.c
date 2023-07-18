@@ -166,8 +166,7 @@ int nand_onfi_detect(struct nand_chip *chip)
 	if (!pbuf)
 		return -ENOMEM;
 
-	if (!nand_has_exec_op(chip) ||
-	    !nand_read_data_op(chip, &pbuf[0], sizeof(*pbuf), true, true))
+	if (!nand_has_exec_op(chip) || chip->controller->supported_op.data_only_read)
 		use_datain = true;
 
 	for (i = 0; i < ONFI_PARAM_PAGES; i++) {
@@ -315,7 +314,10 @@ int nand_onfi_detect(struct nand_chip *chip)
 	onfi->tBERS = le16_to_cpu(p->t_bers);
 	onfi->tR = le16_to_cpu(p->t_r);
 	onfi->tCCS = le16_to_cpu(p->t_ccs);
-	onfi->async_timing_mode = le16_to_cpu(p->async_timing_mode);
+	onfi->fast_tCAD = le16_to_cpu(p->nvddr_nvddr2_features) & BIT(0);
+	onfi->sdr_timing_modes = le16_to_cpu(p->sdr_timing_modes);
+	if (le16_to_cpu(p->features) & ONFI_FEATURE_NV_DDR)
+		onfi->nvddr_timing_modes = le16_to_cpu(p->nvddr_timing_modes);
 	onfi->vendor_revision = le16_to_cpu(p->vendor_revision);
 	memcpy(onfi->vendor, p->vendor, sizeof(p->vendor));
 	chip->parameters.onfi = onfi;

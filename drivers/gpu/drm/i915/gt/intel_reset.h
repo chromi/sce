@@ -1,6 +1,5 @@
+/* SPDX-License-Identifier: MIT */
 /*
- * SPDX-License-Identifier: MIT
- *
  * Copyright © 2008-2018 Intel Corporation
  */
 
@@ -34,10 +33,13 @@ void intel_gt_reset(struct intel_gt *gt,
 		    const char *reason);
 int intel_engine_reset(struct intel_engine_cs *engine,
 		       const char *reason);
+int __intel_engine_reset_bh(struct intel_engine_cs *engine,
+			    const char *reason);
 
 void __i915_request_reset(struct i915_request *rq, bool guilty);
 
 int __must_check intel_gt_reset_trylock(struct intel_gt *gt, int *srcu);
+int __must_check intel_gt_reset_lock_interruptible(struct intel_gt *gt, int *srcu);
 void intel_gt_reset_unlock(struct intel_gt *gt, int tag);
 
 void intel_gt_set_wedged(struct intel_gt *gt);

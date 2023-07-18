@@ -5,12 +5,18 @@
 #include <linux/highmem.h>
 #include <linux/mm.h>
 #include <asm/cache.h>
+#include <asm/tlbflush.h>
 
 void update_mmu_cache(struct vm_area_struct *vma, unsigned long address,
 		      pte_t *pte)
 {
 	unsigned long addr;
 	struct page *page;
+
+	flush_tlb_page(vma, address);
+
+	if (!pfn_valid(pte_pfn(*pte)))
+		return;
 
 	page = pfn_to_page(pte_pfn(*pte));
 	if (page == ZERO_PAGE(0))

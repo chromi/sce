@@ -13,10 +13,6 @@
 
 extern unsigned long isa_io_base;
 
-extern void pci_setup_phb_io(struct pci_controller *hose, int primary);
-extern void pci_setup_phb_io_dynamic(struct pci_controller *hose, int primary);
-
-
 extern struct list_head hose_list;
 
 extern struct pci_dev *isa_bridge_pcidev;	/* may be NULL if no ISA bus */
@@ -32,9 +28,6 @@ struct pci_dn;
 void *pci_traverse_device_nodes(struct device_node *start,
 				void *(*fn)(struct device_node *, void *),
 				void *data);
-void *traverse_pci_dn(struct pci_dn *root,
-		      void *(*fn)(struct pci_dn *, void *),
-		      void *data);
 extern void pci_devs_phb_init_dynamic(struct pci_controller *phb);
 
 /* From rtas_pci.h */
@@ -62,18 +55,21 @@ void eeh_pe_dev_mode_mark(struct eeh_pe *pe, int mode);
 void eeh_sysfs_add_device(struct pci_dev *pdev);
 void eeh_sysfs_remove_device(struct pci_dev *pdev);
 
-static inline const char *eeh_driver_name(struct pci_dev *pdev)
-{
-	return (pdev && pdev->driver) ? pdev->driver->name : "<null>";
-}
-
 #endif /* CONFIG_EEH */
+
+#ifdef CONFIG_FSL_ULI1575
+void __init uli_init(void);
+#endif /* CONFIG_FSL_ULI1575 */
 
 #define PCI_BUSNO(bdfn) ((bdfn >> 8) & 0xff)
 
 #else /* CONFIG_PCI */
 static inline void init_pci_config_tokens(void) { }
 #endif /* !CONFIG_PCI */
+
+#if !defined(CONFIG_PCI) || !defined(CONFIG_FSL_ULI1575)
+static inline void __init uli_init(void) {}
+#endif /* !defined(CONFIG_PCI) || !defined(CONFIG_FSL_ULI1575) */
 
 #endif /* __KERNEL__ */
 #endif /* _ASM_POWERPC_PPC_PCI_H */

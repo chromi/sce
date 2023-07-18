@@ -116,7 +116,6 @@
 	(min(1270, ((ql) > 0) ? (QLA_TGT_DATASEGS_PER_CMD_24XX + \
 		QLA_TGT_DATASEGS_PER_CONT_24XX*((ql) - 1)) : 0))
 #endif
-#endif
 
 #define GET_TARGET_ID(ha, iocb) ((HAS_EXTENDED_IDS(ha))			\
 			 ? le16_to_cpu((iocb)->u.isp2x.target.extended)	\
@@ -177,6 +176,7 @@ struct nack_to_isp {
 	uint8_t  reserved[2];
 	__le16	ox_id;
 } __packed;
+#define NOTIFY_ACK_FLAGS_FCSP		BIT_5
 #define NOTIFY_ACK_FLAGS_TERMINATE	BIT_3
 #define NOTIFY_ACK_SRR_FLAGS_ACCEPT	0
 #define NOTIFY_ACK_SRR_FLAGS_REJECT	1
@@ -239,11 +239,16 @@ struct ctio_to_2xxx {
 #define CTIO_PORT_LOGGED_OUT		0x29
 #define CTIO_PORT_CONF_CHANGED		0x2A
 #define CTIO_SRR_RECEIVED		0x45
+#define CTIO_FAST_AUTH_ERR		0x63
+#define CTIO_FAST_INCOMP_PAD_LEN	0x65
+#define CTIO_FAST_INVALID_REQ		0x66
+#define CTIO_FAST_SPI_ERR		0x67
 #endif
 
 #ifndef CTIO_RET_TYPE
 #define CTIO_RET_TYPE	0x17		/* CTIO return entry */
 #define ATIO_TYPE7 0x06 /* Accept target I/O entry for 24xx */
+#endif
 
 struct fcp_hdr {
 	uint8_t  r_ctl;
@@ -408,7 +413,16 @@ struct ctio7_to_24xx {
 		struct {
 			__le16	reserved1;
 			__le16 flags;
-			__le32	residual;
+			union {
+				__le32	residual;
+				struct {
+					uint8_t rsvd1;
+					uint8_t edif_flags;
+#define EF_EN_EDIF	BIT_0
+#define EF_NEW_SA	BIT_1
+					uint16_t rsvd2;
+				};
+			};
 			__le16 ox_id;
 			__le16	scsi_status;
 			__le32	relative_offset;
@@ -446,7 +460,7 @@ struct ctio7_from_24xx {
 	uint8_t  vp_index;
 	uint8_t  reserved1[5];
 	__le32	exchange_address;
-	__le16	reserved2;
+	__le16	edif_sa_index;
 	__le16	flags;
 	__le32	residual;
 	__le16	ox_id;
@@ -799,9 +813,6 @@ struct qla_tgt {
 	/* Count of sessions refering qla_tgt. Protected by hardware_lock. */
 	int sess_count;
 
-	/* Protected by hardware_lock */
-	struct list_head del_sess_list;
-
 	spinlock_t sess_work_lock;
 	struct list_head sess_works_list;
 	struct work_struct sess_work;
@@ -856,6 +867,7 @@ struct qla_tgt_cmd {
 	uint8_t cmd_type;
 	uint8_t pad[7];
 	struct se_cmd se_cmd;
+	struct list_head sess_cmd_list;
 	struct fc_port *sess;
 	struct qla_qpair *qpair;
 	uint32_t reset_count;
@@ -868,12 +880,12 @@ struct qla_tgt_cmd {
 	/* to save extra sess dereferences */
 	unsigned int conf_compl_supported:1;
 	unsigned int sg_mapped:1;
-	unsigned int free_sg:1;
 	unsigned int write_data_transferred:1;
 	unsigned int q_full:1;
 	unsigned int term_exchg:1;
 	unsigned int cmd_sent_to_fw:1;
 	unsigned int cmd_in_wq:1;
+	unsigned int edif:1;
 
 	/*
 	 * This variable may be set from outside the LIO and I/O completion
@@ -930,7 +942,6 @@ struct qla_tgt_sess_work_param {
 	struct list_head sess_works_list_entry;
 
 #define QLA_TGT_SESS_WORK_ABORT	1
-#define QLA_TGT_SESS_WORK_TM	2
 	int type;
 
 	union {
@@ -1006,7 +1017,6 @@ extern void qlt_fc_port_added(struct scsi_qla_host *, fc_port_t *);
 extern void qlt_fc_port_deleted(struct scsi_qla_host *, fc_port_t *, int);
 extern int __init qlt_init(void);
 extern void qlt_exit(void);
-extern void qlt_update_vp_map(struct scsi_qla_host *, int);
 extern void qlt_free_session_done(struct work_struct *);
 /*
  * This macro is used during early initializations when host->active_mode
@@ -1064,8 +1074,6 @@ extern void qlt_81xx_config_nvram_stage2(struct scsi_qla_host *,
 	struct init_cb_81xx *);
 extern void qlt_81xx_config_nvram_stage1(struct scsi_qla_host *,
 	struct nvram_81xx *);
-extern int qlt_24xx_process_response_error(struct scsi_qla_host *,
-	struct sts_entry_24xx *);
 extern void qlt_modify_vp_config(struct scsi_qla_host *,
 	struct vp_config_entry_24xx *);
 extern void qlt_probe_one_stage1(struct scsi_qla_host *, struct qla_hw_data *);

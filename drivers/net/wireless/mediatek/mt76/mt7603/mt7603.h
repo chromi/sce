@@ -120,7 +120,7 @@ struct mt7603_dev {
 	unsigned long last_cca_adj;
 
 	u32 ampdu_ref;
-	__le32 rx_ampdu_ts;
+	u32 rx_ampdu_ts;
 	u8 rssi_offset[3];
 
 	u8 slottime;
@@ -131,8 +131,6 @@ struct mt7603_dev {
 	ktime_t ed_time;
 
 	spinlock_t ps_lock;
-
-	u8 mac_work_count;
 
 	u8 mcu_running;
 
@@ -246,7 +244,7 @@ int mt7603_tx_prepare_skb(struct mt76_dev *mdev, void *txwi_ptr,
 void mt7603_tx_complete_skb(struct mt76_dev *mdev, struct mt76_queue_entry *e);
 
 void mt7603_queue_rx_skb(struct mt76_dev *mdev, enum mt76_rxq_id q,
-			 struct sk_buff *skb);
+			 struct sk_buff *skb, u32 *info);
 void mt7603_rx_poll_complete(struct mt76_dev *mdev, enum mt76_rxq_id q);
 void mt7603_sta_ps(struct mt76_dev *mdev, struct ieee80211_sta *sta, bool ps);
 int mt7603_sta_add(struct mt76_dev *mdev, struct ieee80211_vif *vif,
@@ -256,9 +254,9 @@ void mt7603_sta_assoc(struct mt76_dev *mdev, struct ieee80211_vif *vif,
 void mt7603_sta_remove(struct mt76_dev *mdev, struct ieee80211_vif *vif,
 		       struct ieee80211_sta *sta);
 
-void mt7603_pre_tbtt_tasklet(unsigned long arg);
+void mt7603_pre_tbtt_tasklet(struct tasklet_struct *t);
 
-void mt7603_update_channel(struct mt76_dev *mdev);
+void mt7603_update_channel(struct mt76_phy *mphy);
 
 void mt7603_edcca_set_strict(struct mt7603_dev *dev, bool val);
 void mt7603_cca_stats_reset(struct mt7603_dev *dev);

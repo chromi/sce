@@ -102,9 +102,9 @@ static void xlgmac_ethtool_get_drvinfo(struct net_device *netdev,
 	u32 ver = pdata->hw_feat.version;
 	u32 snpsver, devid, userver;
 
-	strlcpy(drvinfo->driver, pdata->drv_name, sizeof(drvinfo->driver));
-	strlcpy(drvinfo->version, pdata->drv_ver, sizeof(drvinfo->version));
-	strlcpy(drvinfo->bus_info, dev_name(pdata->dev),
+	strscpy(drvinfo->driver, pdata->drv_name, sizeof(drvinfo->driver));
+	strscpy(drvinfo->version, pdata->drv_ver, sizeof(drvinfo->version));
+	strscpy(drvinfo->bus_info, dev_name(pdata->dev),
 		sizeof(drvinfo->bus_info));
 	/* S|SNPSVER: Synopsys-defined Version
 	 * D|DEVID: Indicates the Device family
@@ -146,8 +146,11 @@ static void xlgmac_ethtool_get_channels(struct net_device *netdev,
 	channel->tx_count = pdata->tx_q_count;
 }
 
-static int xlgmac_ethtool_get_coalesce(struct net_device *netdev,
-				       struct ethtool_coalesce *ec)
+static int
+xlgmac_ethtool_get_coalesce(struct net_device *netdev,
+			    struct ethtool_coalesce *ec,
+			    struct kernel_ethtool_coalesce *kernel_coal,
+			    struct netlink_ext_ack *extack)
 {
 	struct xlgmac_pdata *pdata = netdev_priv(netdev);
 
@@ -158,8 +161,11 @@ static int xlgmac_ethtool_get_coalesce(struct net_device *netdev,
 	return 0;
 }
 
-static int xlgmac_ethtool_set_coalesce(struct net_device *netdev,
-				       struct ethtool_coalesce *ec)
+static int
+xlgmac_ethtool_set_coalesce(struct net_device *netdev,
+			    struct ethtool_coalesce *ec,
+			    struct kernel_ethtool_coalesce *kernel_coal,
+			    struct netlink_ext_ack *extack)
 {
 	struct xlgmac_pdata *pdata = netdev_priv(netdev);
 	struct xlgmac_hw_ops *hw_ops = &pdata->hw_ops;

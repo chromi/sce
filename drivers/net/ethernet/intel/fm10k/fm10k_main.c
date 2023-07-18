@@ -32,6 +32,8 @@ struct workqueue_struct *fm10k_workqueue;
  **/
 static int __init fm10k_init_module(void)
 {
+	int ret;
+
 	pr_info("%s\n", fm10k_driver_string);
 	pr_info("%s\n", fm10k_copyright);
 
@@ -43,7 +45,13 @@ static int __init fm10k_init_module(void)
 
 	fm10k_dbg_init();
 
-	return fm10k_register_pci_driver();
+	ret = fm10k_register_pci_driver();
+	if (ret) {
+		fm10k_dbg_exit();
+		destroy_workqueue(fm10k_workqueue);
+	}
+
+	return ret;
 }
 module_init(fm10k_init_module);
 
@@ -194,17 +202,12 @@ static void fm10k_reuse_rx_page(struct fm10k_ring *rx_ring,
 					 DMA_FROM_DEVICE);
 }
 
-static inline bool fm10k_page_is_reserved(struct page *page)
-{
-	return (page_to_nid(page) != numa_mem_id()) || page_is_pfmemalloc(page);
-}
-
 static bool fm10k_can_reuse_rx_page(struct fm10k_rx_buffer *rx_buffer,
 				    struct page *page,
 				    unsigned int __maybe_unused truesize)
 {
-	/* avoid re-using remote pages */
-	if (unlikely(fm10k_page_is_reserved(page)))
+	/* avoid re-using remote and pfmemalloc pages */
+	if (!dev_page_is_reusable(page))
 		return false;
 
 #if (PAGE_SIZE < 8192)
@@ -265,8 +268,8 @@ static bool fm10k_add_rx_frag(struct fm10k_rx_buffer *rx_buffer,
 	if (likely(size <= FM10K_RX_HDR_LEN)) {
 		memcpy(__skb_put(skb, size), va, ALIGN(size, sizeof(long)));
 
-		/* page is not reserved, we can reuse buffer as-is */
-		if (likely(!fm10k_page_is_reserved(page)))
+		/* page is reusable, we can reuse buffer as-is */
+		if (dev_page_is_reusable(page))
 			return true;
 
 		/* this page cannot be reused so discard it */
@@ -1600,8 +1603,7 @@ static int fm10k_alloc_q_vector(struct fm10k_intfc *interface,
 		return -ENOMEM;
 
 	/* initialize NAPI */
-	netif_napi_add(interface->netdev, &q_vector->napi,
-		       fm10k_poll, NAPI_POLL_WEIGHT);
+	netif_napi_add(interface->netdev, &q_vector->napi, fm10k_poll);
 
 	/* tie q_vector and interface together */
 	interface->q_vector[v_idx] = q_vector;
@@ -1779,7 +1781,7 @@ static void fm10k_free_q_vectors(struct fm10k_intfc *interface)
 }
 
 /**
- * f10k_reset_msix_capability - reset MSI-X capability
+ * fm10k_reset_msix_capability - reset MSI-X capability
  * @interface: board private structure to initialize
  *
  * Reset the MSI-X capability back to its starting state
@@ -1792,7 +1794,7 @@ static void fm10k_reset_msix_capability(struct fm10k_intfc *interface)
 }
 
 /**
- * f10k_init_msix_capability - configure MSI-X capability
+ * fm10k_init_msix_capability - configure MSI-X capability
  * @interface: board private structure to initialize
  *
  * Attempt to configure the interrupts using the best available

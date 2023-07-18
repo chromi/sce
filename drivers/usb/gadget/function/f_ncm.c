@@ -72,9 +72,7 @@ struct f_ncm {
 	struct sk_buff			*skb_tx_data;
 	struct sk_buff			*skb_tx_ndp;
 	u16				ndp_dgram_count;
-	bool				timer_force_tx;
 	struct hrtimer			task_timer;
-	bool				timer_stopping;
 };
 
 static inline struct f_ncm *func_to_ncm(struct usb_function *f)
@@ -85,7 +83,9 @@ static inline struct f_ncm *func_to_ncm(struct usb_function *f)
 /* peak (theoretical) bulk transfer rate in bits-per-second */
 static inline unsigned ncm_bitrate(struct usb_gadget *g)
 {
-	if (gadget_is_superspeed(g) && g->speed >= USB_SPEED_SUPER_PLUS)
+	if (!g)
+		return 0;
+	else if (gadget_is_superspeed(g) && g->speed >= USB_SPEED_SUPER_PLUS)
 		return 4250000000U;
 	else if (gadget_is_superspeed(g) && g->speed == USB_SPEED_SUPER)
 		return 3750000000U;
@@ -452,39 +452,35 @@ struct ndp_parser_opts {
 	unsigned	next_ndp_index;
 };
 
-#define INIT_NDP16_OPTS {					\
-		.nth_sign = USB_CDC_NCM_NTH16_SIGN,		\
-		.ndp_sign = USB_CDC_NCM_NDP16_NOCRC_SIGN,	\
-		.nth_size = sizeof(struct usb_cdc_ncm_nth16),	\
-		.ndp_size = sizeof(struct usb_cdc_ncm_ndp16),	\
-		.dpe_size = sizeof(struct usb_cdc_ncm_dpe16),	\
-		.ndplen_align = 4,				\
-		.dgram_item_len = 1,				\
-		.block_length = 1,				\
-		.ndp_index = 1,					\
-		.reserved1 = 0,					\
-		.reserved2 = 0,					\
-		.next_ndp_index = 1,				\
-	}
+static const struct ndp_parser_opts ndp16_opts = {
+	.nth_sign = USB_CDC_NCM_NTH16_SIGN,
+	.ndp_sign = USB_CDC_NCM_NDP16_NOCRC_SIGN,
+	.nth_size = sizeof(struct usb_cdc_ncm_nth16),
+	.ndp_size = sizeof(struct usb_cdc_ncm_ndp16),
+	.dpe_size = sizeof(struct usb_cdc_ncm_dpe16),
+	.ndplen_align = 4,
+	.dgram_item_len = 1,
+	.block_length = 1,
+	.ndp_index = 1,
+	.reserved1 = 0,
+	.reserved2 = 0,
+	.next_ndp_index = 1,
+};
 
-
-#define INIT_NDP32_OPTS {					\
-		.nth_sign = USB_CDC_NCM_NTH32_SIGN,		\
-		.ndp_sign = USB_CDC_NCM_NDP32_NOCRC_SIGN,	\
-		.nth_size = sizeof(struct usb_cdc_ncm_nth32),	\
-		.ndp_size = sizeof(struct usb_cdc_ncm_ndp32),	\
-		.dpe_size = sizeof(struct usb_cdc_ncm_dpe32),	\
-		.ndplen_align = 8,				\
-		.dgram_item_len = 2,				\
-		.block_length = 2,				\
-		.ndp_index = 2,					\
-		.reserved1 = 1,					\
-		.reserved2 = 2,					\
-		.next_ndp_index = 2,				\
-	}
-
-static const struct ndp_parser_opts ndp16_opts = INIT_NDP16_OPTS;
-static const struct ndp_parser_opts ndp32_opts = INIT_NDP32_OPTS;
+static const struct ndp_parser_opts ndp32_opts = {
+	.nth_sign = USB_CDC_NCM_NTH32_SIGN,
+	.ndp_sign = USB_CDC_NCM_NDP32_NOCRC_SIGN,
+	.nth_size = sizeof(struct usb_cdc_ncm_nth32),
+	.ndp_size = sizeof(struct usb_cdc_ncm_ndp32),
+	.dpe_size = sizeof(struct usb_cdc_ncm_dpe32),
+	.ndplen_align = 8,
+	.dgram_item_len = 2,
+	.block_length = 2,
+	.ndp_index = 2,
+	.reserved1 = 1,
+	.reserved2 = 2,
+	.next_ndp_index = 2,
+};
 
 static inline void put_ncm(__le16 **p, unsigned size, unsigned val)
 {
@@ -583,7 +579,7 @@ static void ncm_do_notify(struct f_ncm *ncm)
 		data[0] = cpu_to_le32(ncm_bitrate(cdev->gadget));
 		data[1] = data[0];
 
-		DBG(cdev, "notify speed %d\n", ncm_bitrate(cdev->gadget));
+		DBG(cdev, "notify speed %u\n", ncm_bitrate(cdev->gadget));
 		ncm->notify_state = NCM_NOTIFY_CONNECT;
 		break;
 	}
@@ -890,7 +886,6 @@ static int ncm_set_alt(struct usb_function *f, unsigned intf, unsigned alt)
 
 		if (ncm->port.in_ep->enabled) {
 			DBG(cdev, "reset ncm\n");
-			ncm->timer_stopping = true;
 			ncm->netdev = NULL;
 			gether_disconnect(&ncm->port);
 			ncm_reset_values(ncm);
@@ -928,7 +923,6 @@ static int ncm_set_alt(struct usb_function *f, unsigned intf, unsigned alt)
 			if (IS_ERR(net))
 				return PTR_ERR(net);
 			ncm->netdev = net;
-			ncm->timer_stopping = false;
 		}
 
 		spin_lock(&ncm->lock);
@@ -1017,22 +1011,20 @@ static struct sk_buff *ncm_wrap_ntb(struct gether *port,
 {
 	struct f_ncm	*ncm = func_to_ncm(&port->func);
 	struct sk_buff	*skb2 = NULL;
-	int		ncb_len = 0;
-	__le16		*ntb_data;
-	__le16		*ntb_ndp;
-	int		dgram_pad;
-
-	unsigned	max_size = ncm->port.fixed_in_len;
-	const struct ndp_parser_opts *opts = ncm->parser_opts;
-	const int ndp_align = le16_to_cpu(ntb_parameters.wNdpInAlignment);
-	const int div = le16_to_cpu(ntb_parameters.wNdpInDivisor);
-	const int rem = le16_to_cpu(ntb_parameters.wNdpInPayloadRemainder);
-	const int dgram_idx_len = 2 * 2 * opts->dgram_item_len;
-
-	if (!skb && !ncm->skb_tx_data)
-		return NULL;
 
 	if (skb) {
+		int		ncb_len = 0;
+		__le16		*ntb_data;
+		__le16		*ntb_ndp;
+		int		dgram_pad;
+
+		unsigned	max_size = ncm->port.fixed_in_len;
+		const struct ndp_parser_opts *opts = ncm->parser_opts;
+		const int ndp_align = le16_to_cpu(ntb_parameters.wNdpInAlignment);
+		const int div = le16_to_cpu(ntb_parameters.wNdpInDivisor);
+		const int rem = le16_to_cpu(ntb_parameters.wNdpInPayloadRemainder);
+		const int dgram_idx_len = 2 * 2 * opts->dgram_item_len;
+
 		/* Add the CRC if required up front */
 		if (ncm->is_crc) {
 			uint32_t	crc;
@@ -1101,11 +1093,11 @@ static struct sk_buff *ncm_wrap_ntb(struct gether *port,
 			ncm->ndp_dgram_count = 1;
 
 			/* Note: we skip opts->next_ndp_index */
-		}
 
-		/* Delay the timer. */
-		hrtimer_start(&ncm->task_timer, TX_TIMEOUT_NSECS,
-			      HRTIMER_MODE_REL_SOFT);
+			/* Start the timer. */
+			hrtimer_start(&ncm->task_timer, TX_TIMEOUT_NSECS,
+				      HRTIMER_MODE_REL_SOFT);
+		}
 
 		/* Add the datagram position entries */
 		ntb_ndp = skb_put_zero(ncm->skb_tx_ndp, dgram_idx_len);
@@ -1126,8 +1118,11 @@ static struct sk_buff *ncm_wrap_ntb(struct gether *port,
 		dev_consume_skb_any(skb);
 		skb = NULL;
 
-	} else if (ncm->skb_tx_data && ncm->timer_force_tx) {
-		/* If the tx was requested because of a timeout then send */
+	} else if (ncm->skb_tx_data) {
+		/* If we get here ncm_wrap_ntb() was called with NULL skb,
+		 * because eth_start_xmit() was called with NULL skb by
+		 * ncm_tx_timeout() - hence, this is our signal to flush/send.
+		 */
 		skb2 = package_for_tx(ncm);
 		if (!skb2)
 			goto err;
@@ -1155,20 +1150,18 @@ err:
 static enum hrtimer_restart ncm_tx_timeout(struct hrtimer *data)
 {
 	struct f_ncm *ncm = container_of(data, struct f_ncm, task_timer);
+	struct net_device *netdev = READ_ONCE(ncm->netdev);
 
-	/* Only send if data is available. */
-	if (!ncm->timer_stopping && ncm->skb_tx_data) {
-		ncm->timer_force_tx = true;
-
+	if (netdev) {
 		/* XXX This allowance of a NULL skb argument to ndo_start_xmit
 		 * XXX is not sane.  The gadget layer should be redesigned so
 		 * XXX that the dev->wrap() invocations to build SKBs is transparent
 		 * XXX and performed in some way outside of the ndo_start_xmit
 		 * XXX interface.
+		 *
+		 * This will call directly into u_ether's eth_start_xmit()
 		 */
-		ncm->netdev->netdev_ops->ndo_start_xmit(NULL, ncm->netdev);
-
-		ncm->timer_force_tx = false;
+		netdev->netdev_ops->ndo_start_xmit(NULL, netdev);
 	}
 	return HRTIMER_NORESTART;
 }
@@ -1357,7 +1350,6 @@ static void ncm_disable(struct usb_function *f)
 	DBG(cdev, "ncm deactivated\n");
 
 	if (ncm->port.in_ep->enabled) {
-		ncm->timer_stopping = true;
 		ncm->netdev = NULL;
 		gether_disconnect(&ncm->port);
 	}

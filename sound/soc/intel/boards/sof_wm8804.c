@@ -124,7 +124,11 @@ static int sof_wm8804_hw_params(struct snd_pcm_substream *substream,
 	}
 
 	snd_soc_dai_set_clkdiv(codec_dai, WM8804_MCLK_DIV, mclk_div);
-	snd_soc_dai_set_pll(codec_dai, 0, 0, sysclk, mclk_freq);
+	ret = snd_soc_dai_set_pll(codec_dai, 0, 0, sysclk, mclk_freq);
+	if (ret < 0) {
+		dev_err(rtd->card->dev, "Failed to set WM8804 PLL\n");
+		return ret;
+	}
 
 	ret = snd_soc_dai_set_sysclk(codec_dai, WM8804_TX_CLKSRC_PLL,
 				     sysclk, SND_SOC_CLOCK_OUT);
@@ -163,7 +167,6 @@ static struct snd_soc_dai_link dailink[] = {
 		.name = "SSP5-Codec",
 		.id = 0,
 		.no_pcm = 1,
-		.nonatomic = true,
 		.dpcm_playback = 1,
 		.dpcm_capture = 1,
 		.ops = &sof_wm8804_ops,
@@ -266,20 +269,19 @@ static int sof_wm8804_probe(struct platform_device *pdev)
 	if (adev) {
 		snprintf(codec_name, sizeof(codec_name),
 			 "%s%s", "i2c-", acpi_dev_name(adev));
-		put_device(&adev->dev);
 		dailink[dai_index].codecs->name = codec_name;
 	}
+	acpi_dev_put(adev);
 
 	snd_soc_card_set_drvdata(card, ctx);
 
 	return devm_snd_soc_register_card(&pdev->dev, card);
 }
 
-static int sof_wm8804_remove(struct platform_device *pdev)
+static void sof_wm8804_remove(struct platform_device *pdev)
 {
 	if (sof_wm8804_quirk & SOF_WM8804_UP2_QUIRK)
 		gpiod_remove_lookup_table(&up2_gpios_table);
-	return 0;
 }
 
 static struct platform_driver sof_wm8804_driver = {
@@ -288,7 +290,7 @@ static struct platform_driver sof_wm8804_driver = {
 		.pm = &snd_soc_pm_ops,
 	},
 	.probe = sof_wm8804_probe,
-	.remove = sof_wm8804_remove,
+	.remove_new = sof_wm8804_remove,
 };
 module_platform_driver(sof_wm8804_driver);
 

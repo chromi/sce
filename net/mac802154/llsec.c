@@ -152,7 +152,7 @@ err_tfm0:
 	crypto_free_sync_skcipher(key->tfm0);
 err_tfm:
 	for (i = 0; i < ARRAY_SIZE(key->tfm); i++)
-		if (key->tfm[i])
+		if (!IS_ERR_OR_NULL(key->tfm[i]))
 			crypto_free_aead(key->tfm[i]);
 
 	kfree_sensitive(key);
@@ -707,7 +707,10 @@ int mac802154_llsec_encrypt(struct mac802154_llsec *sec, struct sk_buff *skb)
 
 	hlen = ieee802154_hdr_pull(skb, &hdr);
 
-	if (hlen < 0 || hdr.fc.type != IEEE802154_FC_TYPE_DATA)
+	/* TODO: control frames security support */
+	if (hlen < 0 ||
+	    (hdr.fc.type != IEEE802154_FC_TYPE_DATA &&
+	     hdr.fc.type != IEEE802154_FC_TYPE_BEACON))
 		return -EINVAL;
 
 	if (!hdr.fc.security_enabled ||

@@ -340,7 +340,6 @@ static const struct regulator_desc regulators[] = {
 static int s2mpa01_pmic_probe(struct platform_device *pdev)
 {
 	struct sec_pmic_dev *iodev = dev_get_drvdata(pdev->dev.parent);
-	struct sec_platform_data *pdata = dev_get_platdata(iodev->dev);
 	struct regulator_config config = { };
 	struct s2mpa01_info *s2mpa01;
 	int i;
@@ -355,9 +354,6 @@ static int s2mpa01_pmic_probe(struct platform_device *pdev)
 
 	for (i = 0; i < S2MPA01_REGULATOR_MAX; i++) {
 		struct regulator_dev *rdev;
-
-		if (pdata)
-			config.init_data = pdata->regulators[i].initdata;
 
 		rdev = devm_regulator_register(&pdev->dev,
 						&regulators[i], &config);
@@ -380,6 +376,7 @@ MODULE_DEVICE_TABLE(platform, s2mpa01_pmic_id);
 static struct platform_driver s2mpa01_pmic_driver = {
 	.driver = {
 		.name = "s2mpa01-pmic",
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	},
 	.probe = s2mpa01_pmic_probe,
 	.id_table = s2mpa01_pmic_id,

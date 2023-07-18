@@ -51,6 +51,13 @@
 #define MLX5E_DECLARE_XSKSQ_STAT(type, fld) "tx%d_xsk_"#fld, offsetof(type, fld)
 #define MLX5E_DECLARE_CH_STAT(type, fld) "ch%d_"#fld, offsetof(type, fld)
 
+#define MLX5E_DECLARE_PTP_TX_STAT(type, fld) "ptp_tx%d_"#fld, offsetof(type, fld)
+#define MLX5E_DECLARE_PTP_CH_STAT(type, fld) "ptp_ch_"#fld, offsetof(type, fld)
+#define MLX5E_DECLARE_PTP_CQ_STAT(type, fld) "ptp_cq%d_"#fld, offsetof(type, fld)
+#define MLX5E_DECLARE_PTP_RQ_STAT(type, fld) "ptp_rq%d_"#fld, offsetof(type, fld)
+
+#define MLX5E_DECLARE_QOS_TX_STAT(type, fld) "qos_tx%d_"#fld, offsetof(type, fld)
+
 struct counter_desc {
 	char		format[ETH_GSTRING_LEN];
 	size_t		offset; /* Byte offset */
@@ -107,6 +114,20 @@ void mlx5e_stats_update_ndo_stats(struct mlx5e_priv *priv);
 
 void mlx5e_stats_pause_get(struct mlx5e_priv *priv,
 			   struct ethtool_pause_stats *pause_stats);
+void mlx5e_stats_fec_get(struct mlx5e_priv *priv,
+			 struct ethtool_fec_stats *fec_stats);
+
+void mlx5e_stats_eth_phy_get(struct mlx5e_priv *priv,
+			     struct ethtool_eth_phy_stats *phy_stats);
+void mlx5e_stats_eth_mac_get(struct mlx5e_priv *priv,
+			     struct ethtool_eth_mac_stats *mac_stats);
+void mlx5e_stats_eth_ctrl_get(struct mlx5e_priv *priv,
+			      struct ethtool_eth_ctrl_stats *ctrl_stats);
+void mlx5e_stats_rmon_get(struct mlx5e_priv *priv,
+			  struct ethtool_rmon_stats *rmon,
+			  const struct ethtool_rmon_hist_range **ranges);
+void mlx5e_get_link_ext_stats(struct net_device *dev,
+			      struct ethtool_link_ext_stats *stats);
 
 /* Concrete NIC Stats */
 
@@ -125,6 +146,11 @@ struct mlx5e_sw_stats {
 	u64 tx_mpwqe_pkts;
 	u64 rx_lro_packets;
 	u64 rx_lro_bytes;
+	u64 rx_gro_packets;
+	u64 rx_gro_bytes;
+	u64 rx_gro_skbs;
+	u64 rx_gro_match_packets;
+	u64 rx_gro_large_hds;
 	u64 rx_mcast_packets;
 	u64 rx_ecn_mark;
 	u64 rx_removed_vlan_packets;
@@ -167,11 +193,6 @@ struct mlx5e_sw_stats {
 	u64 rx_buff_alloc_err;
 	u64 rx_cqe_compress_blks;
 	u64 rx_cqe_compress_pkts;
-	u64 rx_cache_reuse;
-	u64 rx_cache_full;
-	u64 rx_cache_empty;
-	u64 rx_cache_busy;
-	u64 rx_cache_waive;
 	u64 rx_congst_umr;
 	u64 rx_arfs_err;
 	u64 rx_recover;
@@ -181,11 +202,22 @@ struct mlx5e_sw_stats {
 	u64 ch_aff_change;
 	u64 ch_force_irq;
 	u64 ch_eq_rearm;
-
+#ifdef CONFIG_PAGE_POOL_STATS
+	u64 rx_pp_alloc_fast;
+	u64 rx_pp_alloc_slow;
+	u64 rx_pp_alloc_slow_high_order;
+	u64 rx_pp_alloc_empty;
+	u64 rx_pp_alloc_refill;
+	u64 rx_pp_alloc_waive;
+	u64 rx_pp_recycle_cached;
+	u64 rx_pp_recycle_cache_full;
+	u64 rx_pp_recycle_ring;
+	u64 rx_pp_recycle_ring_full;
+	u64 rx_pp_recycle_released_ref;
+#endif
 #ifdef CONFIG_MLX5_EN_TLS
 	u64 tx_tls_encrypted_packets;
 	u64 tx_tls_encrypted_bytes;
-	u64 tx_tls_ctx;
 	u64 tx_tls_ooo;
 	u64 tx_tls_dump_packets;
 	u64 tx_tls_dump_bytes;
@@ -196,13 +228,12 @@ struct mlx5e_sw_stats {
 
 	u64 rx_tls_decrypted_packets;
 	u64 rx_tls_decrypted_bytes;
-	u64 rx_tls_ctx;
-	u64 rx_tls_del;
 	u64 rx_tls_resync_req_pkt;
 	u64 rx_tls_resync_req_start;
 	u64 rx_tls_resync_req_end;
 	u64 rx_tls_resync_req_skip;
 	u64 rx_tls_resync_res_ok;
+	u64 rx_tls_resync_res_retry;
 	u64 rx_tls_resync_res_skip;
 	u64 rx_tls_err;
 #endif
@@ -238,6 +269,10 @@ struct mlx5e_qcounter_stats {
 	u32 rx_out_of_buffer;
 	u32 rx_if_down_packets;
 };
+
+#define VNIC_ENV_GET(vnic_env_stats, c) \
+	MLX5_GET(query_vnic_env_out, (vnic_env_stats)->query_vnic_env_out, \
+		 vport_env.c)
 
 struct mlx5e_vnic_env_stats {
 	__be64 query_vnic_env_out[MLX5_ST_SZ_QW(query_vnic_env_out)];
@@ -305,6 +340,11 @@ struct mlx5e_rq_stats {
 	u64 csum_none;
 	u64 lro_packets;
 	u64 lro_bytes;
+	u64 gro_packets;
+	u64 gro_bytes;
+	u64 gro_skbs;
+	u64 gro_match_packets;
+	u64 gro_large_hds;
 	u64 mcast_packets;
 	u64 ecn_mark;
 	u64 removed_vlan_packets;
@@ -317,24 +357,31 @@ struct mlx5e_rq_stats {
 	u64 buff_alloc_err;
 	u64 cqe_compress_blks;
 	u64 cqe_compress_pkts;
-	u64 cache_reuse;
-	u64 cache_full;
-	u64 cache_empty;
-	u64 cache_busy;
-	u64 cache_waive;
 	u64 congst_umr;
 	u64 arfs_err;
 	u64 recover;
+#ifdef CONFIG_PAGE_POOL_STATS
+	u64 pp_alloc_fast;
+	u64 pp_alloc_slow;
+	u64 pp_alloc_slow_high_order;
+	u64 pp_alloc_empty;
+	u64 pp_alloc_refill;
+	u64 pp_alloc_waive;
+	u64 pp_recycle_cached;
+	u64 pp_recycle_cache_full;
+	u64 pp_recycle_ring;
+	u64 pp_recycle_ring_full;
+	u64 pp_recycle_released_ref;
+#endif
 #ifdef CONFIG_MLX5_EN_TLS
 	u64 tls_decrypted_packets;
 	u64 tls_decrypted_bytes;
-	u64 tls_ctx;
-	u64 tls_del;
 	u64 tls_resync_req_pkt;
 	u64 tls_resync_req_start;
 	u64 tls_resync_req_end;
 	u64 tls_resync_req_skip;
 	u64 tls_resync_res_ok;
+	u64 tls_resync_res_retry;
 	u64 tls_resync_res_skip;
 	u64 tls_err;
 #endif
@@ -358,7 +405,6 @@ struct mlx5e_sq_stats {
 #ifdef CONFIG_MLX5_EN_TLS
 	u64 tls_encrypted_packets;
 	u64 tls_encrypted_bytes;
-	u64 tls_ctx;
 	u64 tls_ooo;
 	u64 tls_dump_packets;
 	u64 tls_dump_bytes;
@@ -398,6 +444,31 @@ struct mlx5e_ch_stats {
 	u64 eq_rearm;
 };
 
+struct mlx5e_ptp_cq_stats {
+	u64 cqe;
+	u64 err_cqe;
+	u64 abort;
+	u64 abort_abs_diff_ns;
+	u64 resync_cqe;
+	u64 resync_event;
+	u64 ooo_cqe_drop;
+};
+
+struct mlx5e_rep_stats {
+	u64 vport_rx_packets;
+	u64 vport_tx_packets;
+	u64 vport_rx_bytes;
+	u64 vport_tx_bytes;
+	u64 rx_vport_rdma_unicast_packets;
+	u64 tx_vport_rdma_unicast_packets;
+	u64 rx_vport_rdma_unicast_bytes;
+	u64 tx_vport_rdma_unicast_bytes;
+	u64 rx_vport_rdma_multicast_packets;
+	u64 tx_vport_rdma_multicast_packets;
+	u64 rx_vport_rdma_multicast_bytes;
+	u64 tx_vport_rdma_multicast_bytes;
+};
+
 struct mlx5e_stats {
 	struct mlx5e_sw_stats sw;
 	struct mlx5e_qcounter_stats qcnt;
@@ -406,6 +477,7 @@ struct mlx5e_stats {
 	struct mlx5e_pport_stats pport;
 	struct rtnl_link_stats64 vf_vport;
 	struct mlx5e_pcie_stats pcie;
+	struct mlx5e_rep_stats rep_stats;
 };
 
 extern mlx5e_stats_grp_t mlx5e_nic_stats_grps[];
@@ -427,5 +499,7 @@ extern MLX5E_DECLARE_STATS_GRP(channels);
 extern MLX5E_DECLARE_STATS_GRP(per_port_buff_congest);
 extern MLX5E_DECLARE_STATS_GRP(ipsec_hw);
 extern MLX5E_DECLARE_STATS_GRP(ipsec_sw);
+extern MLX5E_DECLARE_STATS_GRP(ptp);
+extern MLX5E_DECLARE_STATS_GRP(macsec_hw);
 
 #endif /* __MLX5_EN_STATS_H__ */

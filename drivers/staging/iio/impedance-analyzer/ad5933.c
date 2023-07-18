@@ -602,23 +602,6 @@ static const struct iio_buffer_setup_ops ad5933_ring_setup_ops = {
 	.postdisable = ad5933_ring_postdisable,
 };
 
-static int ad5933_register_ring_funcs_and_init(struct device *dev,
-					       struct iio_dev *indio_dev)
-{
-	struct iio_buffer *buffer;
-
-	buffer = devm_iio_kfifo_allocate(dev);
-	if (!buffer)
-		return -ENOMEM;
-
-	iio_device_attach_buffer(indio_dev, buffer);
-
-	/* Ring buffer functions - here trigger setup related */
-	indio_dev->setup_ops = &ad5933_ring_setup_ops;
-
-	return 0;
-}
-
 static void ad5933_work(struct work_struct *work)
 {
 	struct ad5933_state *st = container_of(work,
@@ -691,9 +674,9 @@ static void ad5933_clk_disable(void *data)
 	clk_disable_unprepare(st->mclk);
 }
 
-static int ad5933_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int ad5933_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	int ret;
 	struct ad5933_state *st;
 	struct iio_dev *indio_dev;
@@ -761,11 +744,12 @@ static int ad5933_probe(struct i2c_client *client,
 
 	indio_dev->info = &ad5933_info;
 	indio_dev->name = id->name;
-	indio_dev->modes = (INDIO_BUFFER_SOFTWARE | INDIO_DIRECT_MODE);
+	indio_dev->modes = INDIO_DIRECT_MODE;
 	indio_dev->channels = ad5933_channels;
 	indio_dev->num_channels = ARRAY_SIZE(ad5933_channels);
 
-	ret = ad5933_register_ring_funcs_and_init(&client->dev, indio_dev);
+	ret = devm_iio_kfifo_buffer_setup(&client->dev, indio_dev,
+					  &ad5933_ring_setup_ops);
 	if (ret)
 		return ret;
 
@@ -797,7 +781,7 @@ static struct i2c_driver ad5933_driver = {
 		.name = "ad5933",
 		.of_match_table = ad5933_of_match,
 	},
-	.probe = ad5933_probe,
+	.probe_new = ad5933_probe,
 	.id_table = ad5933_id,
 };
 module_i2c_driver(ad5933_driver);

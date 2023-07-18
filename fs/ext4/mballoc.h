@@ -59,7 +59,7 @@
  * by the stream allocator, which purpose is to pack requests
  * as close each to other as possible to produce smooth I/O traffic
  * We use locality group prealloc space for stream request.
- * We can tune the same via /proc/fs/ext4/<parition>/stream_req
+ * We can tune the same via /proc/fs/ext4/<partition>/stream_req
  */
 #define MB_DEFAULT_STREAM_THRESHOLD	16	/* 64K */
 
@@ -74,9 +74,21 @@
 #define MB_DEFAULT_GROUP_PREALLOC	512
 
 /*
- * maximum length of inode prealloc list
+ * Number of groups to search linearly before performing group scanning
+ * optimization.
  */
-#define MB_DEFAULT_MAX_INODE_PREALLOC	512
+#define MB_DEFAULT_LINEAR_LIMIT		4
+
+/*
+ * Minimum number of groups that should be present in the file system to perform
+ * group scanning optimizations.
+ */
+#define MB_DEFAULT_LINEAR_SCAN_THRESHOLD	16
+
+/*
+ * Number of valid buddy orders
+ */
+#define MB_NUM_ORDERS(sb)		((sb)->s_blocksize_bits + 2)
 
 struct ext4_free_data {
 	/* this links the free block information from sb_info */
@@ -97,7 +109,10 @@ struct ext4_free_data {
 };
 
 struct ext4_prealloc_space {
-	struct list_head	pa_inode_list;
+	union {
+		struct rb_node	inode_node;		/* for inode PA rbtree */
+		struct list_head	lg_list;	/* for lg PAs */
+	} pa_node;
 	struct list_head	pa_group_list;
 	union {
 		struct list_head pa_tmp_list;
@@ -111,8 +126,11 @@ struct ext4_prealloc_space {
 	ext4_grpblk_t		pa_len;		/* len of preallocated chunk */
 	ext4_grpblk_t		pa_free;	/* how many blocks are free */
 	unsigned short		pa_type;	/* pa type. inode or group */
-	spinlock_t		*pa_obj_lock;
-	struct inode		*pa_inode;	/* hack, for history only */
+	union {
+		rwlock_t		*inode_lock;	/* locks the rbtree holding this PA */
+		spinlock_t		*lg_lock;	/* locks the lg list holding this PA */
+	} pa_node_lock;
+	struct inode		*pa_inode;	/* used to get the inode during group discard */
 };
 
 enum {
@@ -161,11 +179,13 @@ struct ext4_allocation_context {
 	/* copy of the best found extent taken before preallocation efforts */
 	struct ext4_free_extent ac_f_ex;
 
+	__u32 ac_groups_considered;
+	__u32 ac_flags;		/* allocation hints */
 	__u16 ac_groups_scanned;
+	__u16 ac_groups_linear_remaining;
 	__u16 ac_found;
 	__u16 ac_tail;
 	__u16 ac_buddy;
-	__u16 ac_flags;		/* allocation hints */
 	__u8 ac_status;
 	__u8 ac_criteria;
 	__u8 ac_2order;		/* if request is to allocate 2^N blocks and

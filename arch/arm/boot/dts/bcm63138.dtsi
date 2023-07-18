@@ -9,8 +9,8 @@
 / {
 	#address-cells = <1>;
 	#size-cells = <1>;
-	compatible = "brcm,bcm63138";
-	model = "Broadcom BCM63138 DSL SoC";
+	compatible = "brcm,bcm63138", "brcm,bcmbca";
+	model = "Broadcom BCM963138 Reference Board";
 	interrupt-parent = <&gic>;
 
 	aliases {
@@ -65,6 +65,12 @@
 			clocks = <&armpll>;
 			clock-div = <4>;
 			clock-mult = <1>;
+		};
+
+		hsspi_pll: hsspi-pll {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <400000000>;
 		};
 	};
 
@@ -203,7 +209,19 @@
 			status = "disabled";
 		};
 
-		nand: nand@2000 {
+		hsspi: spi@1000 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			compatible = "brcm,bcm63138-hsspi", "brcm,bcmbca-hsspi-v1.0";
+			reg = <0x1000 0x600>;
+			interrupts = <GIC_SPI 37 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&hsspi_pll &hsspi_pll>;
+			clock-names = "hsspi", "pll";
+			num-cs = <8>;
+			status = "disabled";
+		};
+
+		nand_controller: nand-controller@2000 {
 			#address-cells = <1>;
 			#size-cells = <0>;
 			compatible = "brcm,nand-bcm63138", "brcm,brcmnand-v7.0", "brcm,brcmnand";

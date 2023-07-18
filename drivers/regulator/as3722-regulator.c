@@ -455,7 +455,8 @@ static int as3722_sd_set_mode(struct regulator_dev *rdev,
 	switch (mode) {
 	case REGULATOR_MODE_FAST:
 		val = as3722_reg_lookup[id].mode_mask;
-	case REGULATOR_MODE_NORMAL: /* fall down */
+		fallthrough;
+	case REGULATOR_MODE_NORMAL:
 		break;
 	default:
 		return -EINVAL;
@@ -830,6 +831,7 @@ MODULE_DEVICE_TABLE(of, of_as3722_regulator_match);
 static struct platform_driver as3722_regulator_driver = {
 	.driver = {
 		.name = "as3722-regulator",
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 		.of_match_table = of_as3722_regulator_match,
 	},
 	.probe = as3722_regulator_probe,

@@ -60,6 +60,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <signal.h>
+#include "utils.h"
 #include "nxu.h"
 #include "nx.h"
 
@@ -69,6 +70,8 @@ FILE *nx_gzip_log;
 #define NX_MIN(X, Y) (((X) < (Y)) ? (X) : (Y))
 #define FNAME_MAX 1024
 #define FEXT ".nx.gz"
+
+#define SYSFS_MAX_REQ_BUF_PATH "devices/vio/ibm,compression-v1/nx_gzip_caps/req_max_processed_len"
 
 /*
  * LZ counts returned in the user supplied nx_gzip_crb_cpb_t structure.
@@ -140,54 +143,6 @@ int gzip_header_blank(char *buf)
 	return i;
 }
 
-/* Caller must free the allocated buffer return nonzero on error. */
-int read_alloc_input_file(char *fname, char **buf, size_t *bufsize)
-{
-	struct stat statbuf;
-	FILE *fp;
-	char *p;
-	size_t num_bytes;
-
-	if (stat(fname, &statbuf)) {
-		perror(fname);
-		return(-1);
-	}
-	fp = fopen(fname, "r");
-	if (fp == NULL) {
-		perror(fname);
-		return(-1);
-	}
-	assert(NULL != (p = (char *) malloc(statbuf.st_size)));
-	num_bytes = fread(p, 1, statbuf.st_size, fp);
-	if (ferror(fp) || (num_bytes != statbuf.st_size)) {
-		perror(fname);
-		return(-1);
-	}
-	*buf = p;
-	*bufsize = num_bytes;
-	return 0;
-}
-
-/* Returns nonzero on error */
-int write_output_file(char *fname, char *buf, size_t bufsize)
-{
-	FILE *fp;
-	size_t num_bytes;
-
-	fp = fopen(fname, "w");
-	if (fp == NULL) {
-		perror(fname);
-		return(-1);
-	}
-	num_bytes = fwrite(buf, 1, bufsize, fp);
-	if (ferror(fp) || (num_bytes != bufsize)) {
-		perror(fname);
-		return(-1);
-	}
-	fclose(fp);
-	return 0;
-}
-
 /*
  * Z_SYNC_FLUSH as described in zlib.h.
  * Returns number of appended bytes
@@ -244,6 +199,7 @@ int compress_file(int argc, char **argv, void *handle)
 	struct nx_gzip_crb_cpb_t *cmdp;
 	uint32_t pagelen = 65536;
 	int fault_tries = NX_MAX_FAULTS;
+	char buf[32];
 
 	cmdp = (void *)(uintptr_t)
 		aligned_alloc(sizeof(struct nx_gzip_crb_cpb_t),
@@ -253,7 +209,7 @@ int compress_file(int argc, char **argv, void *handle)
 		fprintf(stderr, "usage: %s <fname>\n", argv[0]);
 		exit(-1);
 	}
-	if (read_alloc_input_file(argv[1], &inbuf, &inlen))
+	if (read_file_alloc(argv[1], &inbuf, &inlen))
 		exit(-1);
 	fprintf(stderr, "file %s read, %ld bytes\n", argv[1], inlen);
 
@@ -263,8 +219,17 @@ int compress_file(int argc, char **argv, void *handle)
 	assert(NULL != (outbuf = (char *)malloc(outlen)));
 	nxu_touch_pages(outbuf, outlen, pagelen, 1);
 
-	/* Compress piecemeal in smallish chunks */
-	chunk = 1<<22;
+	/*
+	 * On PowerVM, the hypervisor defines the maximum request buffer
+	 * size is defined and this value is available via sysfs.
+	 */
+	if (!read_sysfs_file(SYSFS_MAX_REQ_BUF_PATH, buf, sizeof(buf))) {
+		chunk = atoi(buf);
+	} else {
+		/* sysfs entry is not available on PowerNV */
+		/* Compress piecemeal in smallish chunks */
+		chunk = 1<<22;
+	}
 
 	/* Write the gzip header to the stream */
 	num_hdr_bytes = gzip_header_blank(outbuf);
@@ -324,7 +289,7 @@ int compress_file(int argc, char **argv, void *handle)
 				fprintf(stderr, "error: cannot progress; ");
 				fprintf(stderr, "too many faults\n");
 				exit(-1);
-			};
+			}
 		}
 
 		fault_tries = NX_MAX_FAULTS; /* Reset for the next chunk */
@@ -386,7 +351,7 @@ int compress_file(int argc, char **argv, void *handle)
 	assert(FNAME_MAX > (strlen(argv[1]) + strlen(FEXT)));
 	strcpy(outname, argv[1]);
 	strcat(outname, FEXT);
-	if (write_output_file(outname, outbuf, dsttotlen)) {
+	if (write_file(outname, outbuf, dsttotlen)) {
 		fprintf(stderr, "write error: %s\n", outname);
 		exit(-1);
 	}

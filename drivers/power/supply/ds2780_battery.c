@@ -454,7 +454,7 @@ static ssize_t ds2780_get_pmod_enabled(struct device *dev,
 	if (ret < 0)
 		return ret;
 
-	return sprintf(buf, "%d\n",
+	return sysfs_emit(buf, "%d\n",
 		 !!(control_reg & DS2780_CONTROL_REG_PMOD));
 }
 
@@ -507,7 +507,7 @@ static ssize_t ds2780_get_sense_resistor_value(struct device *dev,
 	if (ret < 0)
 		return ret;
 
-	ret = sprintf(buf, "%d\n", sense_resistor);
+	ret = sysfs_emit(buf, "%d\n", sense_resistor);
 	return ret;
 }
 
@@ -545,7 +545,7 @@ static ssize_t ds2780_get_rsgain_setting(struct device *dev,
 	if (ret < 0)
 		return ret;
 
-	return sprintf(buf, "%d\n", rsgain);
+	return sysfs_emit(buf, "%d\n", rsgain);
 }
 
 static ssize_t ds2780_set_rsgain_setting(struct device *dev,
@@ -588,7 +588,7 @@ static ssize_t ds2780_get_pio_pin(struct device *dev,
 	if (ret < 0)
 		return ret;
 
-	ret = sprintf(buf, "%d\n", sfr & DS2780_SFR_REG_PIOSC);
+	ret = sysfs_emit(buf, "%d\n", sfr & DS2780_SFR_REG_PIOSC);
 	return ret;
 }
 
@@ -624,7 +624,7 @@ static ssize_t ds2780_read_param_eeprom_bin(struct file *filp,
 				struct bin_attribute *bin_attr,
 				char *buf, loff_t off, size_t count)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
+	struct device *dev = kobj_to_dev(kobj);
 	struct power_supply *psy = to_power_supply(dev);
 	struct ds2780_device_info *dev_info = to_ds2780_device_info(psy);
 
@@ -637,7 +637,7 @@ static ssize_t ds2780_write_param_eeprom_bin(struct file *filp,
 				struct bin_attribute *bin_attr,
 				char *buf, loff_t off, size_t count)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
+	struct device *dev = kobj_to_dev(kobj);
 	struct power_supply *psy = to_power_supply(dev);
 	struct ds2780_device_info *dev_info = to_ds2780_device_info(psy);
 	int ret;
@@ -669,7 +669,7 @@ static ssize_t ds2780_read_user_eeprom_bin(struct file *filp,
 				struct bin_attribute *bin_attr,
 				char *buf, loff_t off, size_t count)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
+	struct device *dev = kobj_to_dev(kobj);
 	struct power_supply *psy = to_power_supply(dev);
 	struct ds2780_device_info *dev_info = to_ds2780_device_info(psy);
 
@@ -682,7 +682,7 @@ static ssize_t ds2780_write_user_eeprom_bin(struct file *filp,
 				struct bin_attribute *bin_attr,
 				char *buf, loff_t off, size_t count)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
+	struct device *dev = kobj_to_dev(kobj);
 	struct power_supply *psy = to_power_supply(dev);
 	struct ds2780_device_info *dev_info = to_ds2780_device_info(psy);
 	int ret;

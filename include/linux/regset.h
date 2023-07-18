@@ -46,6 +46,18 @@ static inline int membuf_write(struct membuf *s, const void *v, size_t size)
 	return s->left;
 }
 
+static inline struct membuf membuf_at(const struct membuf *s, size_t offs)
+{
+	struct membuf n = *s;
+
+	if (offs > n.left)
+		offs = n.left;
+	n.p += offs;
+	n.left -= offs;
+
+	return n;
+}
+
 /* current s->p must be aligned for v; v must be a scalar */
 #define membuf_store(s, v)				\
 ({							\
@@ -263,15 +275,15 @@ static inline int user_regset_copyin(unsigned int *pos, unsigned int *count,
 	return 0;
 }
 
-static inline int user_regset_copyin_ignore(unsigned int *pos,
-					    unsigned int *count,
-					    const void **kbuf,
-					    const void __user **ubuf,
-					    const int start_pos,
-					    const int end_pos)
+static inline void user_regset_copyin_ignore(unsigned int *pos,
+					     unsigned int *count,
+					     const void **kbuf,
+					     const void __user **ubuf,
+					     const int start_pos,
+					     const int end_pos)
 {
 	if (*count == 0)
-		return 0;
+		return;
 	BUG_ON(*pos < start_pos);
 	if (end_pos < 0 || *pos < end_pos) {
 		unsigned int copy = (end_pos < 0 ? *count
@@ -283,7 +295,6 @@ static inline int user_regset_copyin_ignore(unsigned int *pos,
 		*pos += copy;
 		*count -= copy;
 	}
-	return 0;
 }
 
 extern int regset_get(struct task_struct *target,

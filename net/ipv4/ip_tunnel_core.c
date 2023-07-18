@@ -222,7 +222,7 @@ static int iptunnel_pmtud_build_icmp(struct sk_buff *skb, int mtu)
 		.code			= ICMP_FRAG_NEEDED,
 		.checksum		= 0,
 		.un.frag.__unused	= 0,
-		.un.frag.mtu		= ntohs(mtu),
+		.un.frag.mtu		= htons(mtu),
 	};
 	icmph->checksum = ip_compute_csum(icmph, len);
 	skb_reset_transport_header(skb);
@@ -245,7 +245,7 @@ static int iptunnel_pmtud_build_icmp(struct sk_buff *skb, int mtu)
 
 	skb->ip_summed = CHECKSUM_NONE;
 
-	eth_header(skb, skb->dev, htons(eh.h_proto), eh.h_source, eh.h_dest, 0);
+	eth_header(skb, skb->dev, ntohs(eh.h_proto), eh.h_source, eh.h_dest, 0);
 	skb_reset_mac_header(skb);
 
 	return skb->len;
@@ -338,7 +338,7 @@ static int iptunnel_pmtud_build_icmpv6(struct sk_buff *skb, int mtu)
 
 	skb->ip_summed = CHECKSUM_NONE;
 
-	eth_header(skb, skb->dev, htons(eh.h_proto), eh.h_source, eh.h_dest, 0);
+	eth_header(skb, skb->dev, ntohs(eh.h_proto), eh.h_source, eh.h_dest, 0);
 	skb_reset_mac_header(skb);
 
 	return skb->len;
@@ -410,7 +410,7 @@ int skb_tunnel_check_pmtu(struct sk_buff *skb, struct dst_entry *encap_dst,
 	u32 mtu = dst_mtu(encap_dst) - headroom;
 
 	if ((skb_is_gso(skb) && skb_gso_validate_network_len(skb, mtu)) ||
-	    (!skb_is_gso(skb) && (skb->len - skb_mac_header_len(skb)) <= mtu))
+	    (!skb_is_gso(skb) && (skb->len - skb_network_offset(skb)) <= mtu))
 		return 0;
 
 	skb_dst_update_pmtu_no_confirm(skb, mtu);
@@ -428,15 +428,6 @@ int skb_tunnel_check_pmtu(struct sk_buff *skb, struct dst_entry *encap_dst,
 	return 0;
 }
 EXPORT_SYMBOL(skb_tunnel_check_pmtu);
-
-/* Often modified stats are per cpu, other are shared (netdev->stats) */
-void ip_tunnel_get_stats64(struct net_device *dev,
-			   struct rtnl_link_stats64 *tot)
-{
-	netdev_stats_to_stats64(tot, &dev->stats);
-	dev_fetch_sw_netstats(tot, dev->tstats);
-}
-EXPORT_SYMBOL_GPL(ip_tunnel_get_stats64);
 
 static const struct nla_policy ip_tun_policy[LWTUNNEL_IP_MAX + 1] = {
 	[LWTUNNEL_IP_UNSPEC]	= { .strict_start_type = LWTUNNEL_IP_OPTS },
@@ -592,8 +583,9 @@ static int ip_tun_parse_opts_erspan(struct nlattr *attr,
 static int ip_tun_parse_opts(struct nlattr *attr, struct ip_tunnel_info *info,
 			     struct netlink_ext_ack *extack)
 {
-	int err, rem, opt_len, opts_len = 0, type = 0;
+	int err, rem, opt_len, opts_len = 0;
 	struct nlattr *nla;
+	__be16 type = 0;
 
 	if (!attr)
 		return 0;
@@ -1087,3 +1079,70 @@ EXPORT_SYMBOL(ip_tunnel_parse_protocol);
 
 const struct header_ops ip_tunnel_header_ops = { .parse_protocol = ip_tunnel_parse_protocol };
 EXPORT_SYMBOL(ip_tunnel_header_ops);
+
+/* This function returns true when ENCAP attributes are present in the nl msg */
+bool ip_tunnel_netlink_encap_parms(struct nlattr *data[],
+				   struct ip_tunnel_encap *encap)
+{
+	bool ret = false;
+
+	memset(encap, 0, sizeof(*encap));
+
+	if (!data)
+		return ret;
+
+	if (data[IFLA_IPTUN_ENCAP_TYPE]) {
+		ret = true;
+		encap->type = nla_get_u16(data[IFLA_IPTUN_ENCAP_TYPE]);
+	}
+
+	if (data[IFLA_IPTUN_ENCAP_FLAGS]) {
+		ret = true;
+		encap->flags = nla_get_u16(data[IFLA_IPTUN_ENCAP_FLAGS]);
+	}
+
+	if (data[IFLA_IPTUN_ENCAP_SPORT]) {
+		ret = true;
+		encap->sport = nla_get_be16(data[IFLA_IPTUN_ENCAP_SPORT]);
+	}
+
+	if (data[IFLA_IPTUN_ENCAP_DPORT]) {
+		ret = true;
+		encap->dport = nla_get_be16(data[IFLA_IPTUN_ENCAP_DPORT]);
+	}
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(ip_tunnel_netlink_encap_parms);
+
+void ip_tunnel_netlink_parms(struct nlattr *data[],
+			     struct ip_tunnel_parm *parms)
+{
+	if (data[IFLA_IPTUN_LINK])
+		parms->link = nla_get_u32(data[IFLA_IPTUN_LINK]);
+
+	if (data[IFLA_IPTUN_LOCAL])
+		parms->iph.saddr = nla_get_be32(data[IFLA_IPTUN_LOCAL]);
+
+	if (data[IFLA_IPTUN_REMOTE])
+		parms->iph.daddr = nla_get_be32(data[IFLA_IPTUN_REMOTE]);
+
+	if (data[IFLA_IPTUN_TTL]) {
+		parms->iph.ttl = nla_get_u8(data[IFLA_IPTUN_TTL]);
+		if (parms->iph.ttl)
+			parms->iph.frag_off = htons(IP_DF);
+	}
+
+	if (data[IFLA_IPTUN_TOS])
+		parms->iph.tos = nla_get_u8(data[IFLA_IPTUN_TOS]);
+
+	if (!data[IFLA_IPTUN_PMTUDISC] || nla_get_u8(data[IFLA_IPTUN_PMTUDISC]))
+		parms->iph.frag_off = htons(IP_DF);
+
+	if (data[IFLA_IPTUN_FLAGS])
+		parms->i_flags = nla_get_be16(data[IFLA_IPTUN_FLAGS]);
+
+	if (data[IFLA_IPTUN_PROTO])
+		parms->iph.protocol = nla_get_u8(data[IFLA_IPTUN_PROTO]);
+}
+EXPORT_SYMBOL_GPL(ip_tunnel_netlink_parms);

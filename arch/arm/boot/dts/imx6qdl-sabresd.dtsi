@@ -97,8 +97,11 @@
 		compatible = "fsl,imx6q-sabresd-wm8962",
 			   "fsl,imx-audio-wm8962";
 		model = "wm8962-audio";
+		pinctrl-names = "default";
+		pinctrl-0 = <&pinctrl_hp>;
 		ssi-controller = <&ssi2>;
 		audio-codec = <&codec>;
+		audio-asrc = <&asrc>;
 		audio-routing =
 			"Headphone Jack", "HPOUTL",
 			"Headphone Jack", "HPOUTR",
@@ -127,7 +130,7 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&pinctrl_gpio_leds>;
 
-		red {
+		led-red {
 			gpios = <&gpio1 2 0>;
 			default-state = "on";
 		};
@@ -194,7 +197,7 @@
 	pinctrl-0 = <&pinctrl_ecspi1>;
 	status = "okay";
 
-	flash: m25p80@0 {
+	flash: flash@0 {
 		#address-cells = <1>;
 		#size-cells = <1>;
 		compatible = "st,m25p32", "jedec,spi-nor";
@@ -308,8 +311,8 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&pinctrl_i2c2_egalax_int>;
 		interrupt-parent = <&gpio6>;
-		interrupts = <8 IRQ_TYPE_EDGE_FALLING>;
-		wakeup-gpios = <&gpio6 8 GPIO_ACTIVE_HIGH>;
+		interrupts = <8 IRQ_TYPE_LEVEL_LOW>;
+		wakeup-gpios = <&gpio6 8 GPIO_ACTIVE_LOW>;
 	};
 
 	ov5640: camera@3c {
@@ -447,8 +450,8 @@
 		compatible = "eeti,egalax_ts";
 		reg = <0x04>;
 		interrupt-parent = <&gpio6>;
-		interrupts = <7 2>;
-		wakeup-gpios = <&gpio6 7 0>;
+		interrupts = <7 IRQ_TYPE_LEVEL_LOW>;
+		wakeup-gpios = <&gpio6 7 GPIO_ACTIVE_LOW>;
 	};
 
 	magnetometer@e {
@@ -542,6 +545,13 @@
 		pinctrl_hdmi_cec: hdmicecgrp {
 			fsl,pins = <
 				MX6QDL_PAD_KEY_ROW2__HDMI_TX_CEC_LINE	0x1f8b0
+			>;
+		};
+
+		pinctrl_hp: hpgrp {
+			fsl,pins = <
+				MX6QDL_PAD_SD3_RST__GPIO7_IO08          0x1b0b0
+				MX6QDL_PAD_GPIO_9__GPIO1_IO09           0x1b0b0
 			>;
 		};
 

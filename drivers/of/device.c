@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0
-#include <linux/string.h>
 #include <linux/kernel.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/of_address.h>
 #include <linux/of_iommu.h>
+#include <linux/of_reserved_mem.h>
 #include <linux/dma-direct.h> /* for bus_dma_region */
 #include <linux/dma-map-ops.h>
 #include <linux/init.h>
-#include <linux/module.h>
 #include <linux/mod_devicetable.h>
 #include <linux/slab.h>
 #include <linux/platform_device.h>
@@ -27,32 +26,11 @@
 const struct of_device_id *of_match_device(const struct of_device_id *matches,
 					   const struct device *dev)
 {
-	if ((!matches) || (!dev->of_node))
+	if (!matches || !dev->of_node || dev->of_node_reused)
 		return NULL;
 	return of_match_node(matches, dev->of_node);
 }
 EXPORT_SYMBOL(of_match_device);
-
-struct platform_device *of_dev_get(struct platform_device *dev)
-{
-	struct device *tmp;
-
-	if (!dev)
-		return NULL;
-	tmp = get_device(&dev->dev);
-	if (tmp)
-		return to_platform_device(tmp);
-	else
-		return NULL;
-}
-EXPORT_SYMBOL(of_dev_get);
-
-void of_dev_put(struct platform_device *dev)
-{
-	if (dev)
-		put_device(&dev->dev);
-}
-EXPORT_SYMBOL(of_dev_put);
 
 int of_device_add(struct platform_device *ofdev)
 {
@@ -73,8 +51,51 @@ int of_device_add(struct platform_device *ofdev)
 	return device_add(&ofdev->dev);
 }
 
+static void
+of_dma_set_restricted_buffer(struct device *dev, struct device_node *np)
+{
+	struct device_node *node, *of_node = dev->of_node;
+	int count, i;
+
+	if (!IS_ENABLED(CONFIG_DMA_RESTRICTED_POOL))
+		return;
+
+	count = of_property_count_elems_of_size(of_node, "memory-region",
+						sizeof(u32));
+	/*
+	 * If dev->of_node doesn't exist or doesn't contain memory-region, try
+	 * the OF node having DMA configuration.
+	 */
+	if (count <= 0) {
+		of_node = np;
+		count = of_property_count_elems_of_size(
+			of_node, "memory-region", sizeof(u32));
+	}
+
+	for (i = 0; i < count; i++) {
+		node = of_parse_phandle(of_node, "memory-region", i);
+		/*
+		 * There might be multiple memory regions, but only one
+		 * restricted-dma-pool region is allowed.
+		 */
+		if (of_device_is_compatible(node, "restricted-dma-pool") &&
+		    of_device_is_available(node)) {
+			of_node_put(node);
+			break;
+		}
+		of_node_put(node);
+	}
+
+	/*
+	 * Attempt to initialize a restricted-dma-pool region if one was found.
+	 * Note that count can hold a negative error code.
+	 */
+	if (i < count && of_reserved_mem_device_init_by_idx(dev, of_node, i))
+		dev_warn(dev, "failed to initialise \"restricted-dma-pool\" memory node\n");
+}
+
 /**
- * of_dma_configure - Setup DMA configuration
+ * of_dma_configure_id - Setup DMA configuration
  * @dev:	Device to apply DMA configuration
  * @np:		Pointer to OF node having DMA configuration
  * @force_dma:  Whether device is to be set up by of_dma_configure() even if
@@ -93,12 +114,19 @@ int of_dma_configure_id(struct device *dev, struct device_node *np,
 {
 	const struct iommu_ops *iommu;
 	const struct bus_dma_region *map = NULL;
+	struct device_node *bus_np;
 	u64 dma_start = 0;
 	u64 mask, end, size = 0;
 	bool coherent;
 	int ret;
 
-	ret = of_dma_get_range(np, &map);
+	if (np == dev->of_node)
+		bus_np = __of_get_dma_parent(np);
+	else
+		bus_np = of_node_get(np);
+
+	ret = of_dma_get_range(bus_np, &map);
+	of_node_put(bus_np);
 	if (ret < 0) {
 		/*
 		 * For legacy reasons, we have to assume some devices need
@@ -162,9 +190,11 @@ int of_dma_configure_id(struct device *dev, struct device_node *np,
 	mask = DMA_BIT_MASK(ilog2(end) + 1);
 	dev->coherent_dma_mask &= mask;
 	*dev->dma_mask &= mask;
-	/* ...but only set bus limit if we found valid dma-ranges earlier */
-	if (!ret)
+	/* ...but only set bus limit and range map if we found valid dma-ranges earlier */
+	if (!ret) {
 		dev->bus_dma_limit = end;
+		dev->dma_range_map = map;
+	}
 
 	coherent = of_dma_is_coherent(np);
 	dev_dbg(dev, "device is%sdma coherent\n",
@@ -172,6 +202,9 @@ int of_dma_configure_id(struct device *dev, struct device_node *np,
 
 	iommu = of_iommu_configure(dev, np, id);
 	if (PTR_ERR(iommu) == -EPROBE_DEFER) {
+		/* Don't touch range map if it wasn't set from a valid dma-ranges */
+		if (!ret)
+			dev->dma_range_map = NULL;
 		kfree(map);
 		return -EPROBE_DEFER;
 	}
@@ -181,7 +214,9 @@ int of_dma_configure_id(struct device *dev, struct device_node *np,
 
 	arch_setup_dma_ops(dev, dma_start, size, iommu, coherent);
 
-	dev->dma_range_map = map;
+	if (!iommu)
+		of_dma_set_restricted_buffer(dev, np);
+
 	return 0;
 }
 EXPORT_SYMBOL_GPL(of_dma_configure_id);
@@ -211,74 +246,20 @@ const void *of_device_get_match_data(const struct device *dev)
 }
 EXPORT_SYMBOL(of_device_get_match_data);
 
-static ssize_t of_device_get_modalias(struct device *dev, char *str, ssize_t len)
-{
-	const char *compat;
-	char *c;
-	struct property *p;
-	ssize_t csize;
-	ssize_t tsize;
-
-	if ((!dev) || (!dev->of_node))
-		return -ENODEV;
-
-	/* Name & Type */
-	/* %p eats all alphanum characters, so %c must be used here */
-	csize = snprintf(str, len, "of:N%pOFn%c%s", dev->of_node, 'T',
-			 of_node_get_device_type(dev->of_node));
-	tsize = csize;
-	len -= csize;
-	if (str)
-		str += csize;
-
-	of_property_for_each_string(dev->of_node, "compatible", p, compat) {
-		csize = strlen(compat) + 1;
-		tsize += csize;
-		if (csize > len)
-			continue;
-
-		csize = snprintf(str, len, "C%s", compat);
-		for (c = str; c; ) {
-			c = strchr(c, ' ');
-			if (c)
-				*c++ = '_';
-		}
-		len -= csize;
-		str += csize;
-	}
-
-	return tsize;
-}
-
-int of_device_request_module(struct device *dev)
-{
-	char *str;
-	ssize_t size;
-	int ret;
-
-	size = of_device_get_modalias(dev, NULL, 0);
-	if (size < 0)
-		return size;
-
-	str = kmalloc(size + 1, GFP_KERNEL);
-	if (!str)
-		return -ENOMEM;
-
-	of_device_get_modalias(dev, str, size);
-	str[size] = '\0';
-	ret = request_module(str);
-	kfree(str);
-
-	return ret;
-}
-EXPORT_SYMBOL_GPL(of_device_request_module);
-
 /**
  * of_device_modalias - Fill buffer with newline terminated modalias string
+ * @dev:	Calling device
+ * @str:	Modalias string
+ * @len:	Size of @str
  */
 ssize_t of_device_modalias(struct device *dev, char *str, ssize_t len)
 {
-	ssize_t sl = of_device_get_modalias(dev, str, len - 2);
+	ssize_t sl;
+
+	if (!dev || !dev->of_node || dev->of_node_reused)
+		return -ENODEV;
+
+	sl = of_modalias(dev->of_node, str, len - 2);
 	if (sl < 0)
 		return sl;
 	if (sl > len - 2)
@@ -292,8 +273,10 @@ EXPORT_SYMBOL_GPL(of_device_modalias);
 
 /**
  * of_device_uevent - Display OF related uevent information
+ * @dev:	Device to display the uevent information for
+ * @env:	Kernel object's userspace event reference to fill up
  */
-void of_device_uevent(struct device *dev, struct kobj_uevent_env *env)
+void of_device_uevent(const struct device *dev, struct kobj_uevent_env *env)
 {
 	const char *compat, *type;
 	struct alias_prop *app;
@@ -330,19 +313,21 @@ void of_device_uevent(struct device *dev, struct kobj_uevent_env *env)
 	mutex_unlock(&of_mutex);
 }
 
-int of_device_uevent_modalias(struct device *dev, struct kobj_uevent_env *env)
+int of_device_uevent_modalias(const struct device *dev, struct kobj_uevent_env *env)
 {
 	int sl;
 
-	if ((!dev) || (!dev->of_node))
+	if ((!dev) || (!dev->of_node) || dev->of_node_reused)
 		return -ENODEV;
 
 	/* Devicetree modalias is tricky, we add it in 2 steps */
 	if (add_uevent_var(env, "MODALIAS="))
 		return -ENOMEM;
 
-	sl = of_device_get_modalias(dev, &env->buf[env->buflen-1],
-				    sizeof(env->buf) - env->buflen);
+	sl = of_modalias(dev->of_node, &env->buf[env->buflen-1],
+			 sizeof(env->buf) - env->buflen);
+	if (sl < 0)
+		return sl;
 	if (sl >= (sizeof(env->buf) - env->buflen))
 		return -ENOMEM;
 	env->buflen += sl;

@@ -4,10 +4,10 @@
 $id: http://devicetree.org/schemas/mfd/rohm,bd71837-pmic.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: ROHM BD71837 Power Management Integrated Circuit bindings
+title: ROHM BD71837 Power Management Integrated Circuit
 
 maintainers:
-  - Matti Vaittinen <matti.vaittinen@fi.rohmeurope.com>
+  - Matti Vaittinen <mazziesaccount@gmail.com>
 
 description: |
   BD71837MWV is programmable Power Management ICs for powering single-core,
@@ -32,8 +32,14 @@ properties:
   clocks:
     maxItems: 1
 
+  clock-names:
+    const: osc
+
   "#clock-cells":
     const: 0
+
+  clock-output-names:
+    const: pmic_clk
 
 # The BD718x7 supports two different HW states as reset target states. States
 # are called as SNVS and READY. At READY state all the PMIC power outputs go

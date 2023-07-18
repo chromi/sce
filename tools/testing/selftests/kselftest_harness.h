@@ -54,6 +54,7 @@
 #define _GNU_SOURCE
 #endif
 #include <asm/types.h>
+#include <ctype.h>
 #include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -64,6 +65,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <setjmp.h>
 
 #include "kselftest.h"
 
@@ -79,7 +81,7 @@
 #endif
 
 /**
- * TH_LOG(fmt, ...)
+ * TH_LOG()
  *
  * @fmt: format string
  * @...: optional arguments
@@ -113,11 +115,15 @@
 			__FILE__, __LINE__, _metadata->name, ##__VA_ARGS__)
 
 /**
- * SKIP(statement, fmt, ...)
+ * SKIP()
  *
  * @statement: statement to run after reporting SKIP
  * @fmt: format string
  * @...: optional arguments
+ *
+ * .. code-block:: c
+ *
+ *     SKIP(statement, fmt, ...);
  *
  * This forces a "pass" after reporting why something is being skipped
  * and runs "statement", which is usually "return" or "goto skip".
@@ -136,7 +142,7 @@
 } while (0)
 
 /**
- * TEST(test_name) - Defines the test function and creates the registration
+ * TEST() - Defines the test function and creates the registration
  * stub
  *
  * @test_name: test name
@@ -155,7 +161,7 @@
 #define TEST(test_name) __TEST_IMPL(test_name, -1)
 
 /**
- * TEST_SIGNAL(test_name, signal)
+ * TEST_SIGNAL()
  *
  * @test_name: test name
  * @signal: signal number
@@ -179,7 +185,10 @@
 		struct __test_metadata *_metadata, \
 		struct __fixture_variant_metadata *variant) \
 	{ \
-		test_name(_metadata); \
+		_metadata->setup_completed = true; \
+		if (setjmp(_metadata->env) == 0) \
+			test_name(_metadata); \
+		__test_check_assert(_metadata); \
 	} \
 	static struct __test_metadata _##test_name##_object = \
 		{ .name = #test_name, \
@@ -195,7 +204,7 @@
 		struct __test_metadata __attribute__((unused)) *_metadata)
 
 /**
- * FIXTURE_DATA(datatype_name) - Wraps the struct name so we have one less
+ * FIXTURE_DATA() - Wraps the struct name so we have one less
  * argument to pass around
  *
  * @datatype_name: datatype name
@@ -212,7 +221,7 @@
 #define FIXTURE_DATA(datatype_name) struct _test_data_##datatype_name
 
 /**
- * FIXTURE(fixture_name) - Called once per fixture to setup the data and
+ * FIXTURE() - Called once per fixture to setup the data and
  * register
  *
  * @fixture_name: fixture name
@@ -239,8 +248,8 @@
 	FIXTURE_DATA(fixture_name)
 
 /**
- * FIXTURE_SETUP(fixture_name) - Prepares the setup function for the fixture.
- * *_metadata* is included so that EXPECT_* and ASSERT_* work correctly.
+ * FIXTURE_SETUP() - Prepares the setup function for the fixture.
+ * *_metadata* is included so that EXPECT_*, ASSERT_* etc. work correctly.
  *
  * @fixture_name: fixture name
  *
@@ -265,8 +274,8 @@
 			__attribute__((unused)) *variant)
 
 /**
- * FIXTURE_TEARDOWN(fixture_name)
- * *_metadata* is included so that EXPECT_* and ASSERT_* work correctly.
+ * FIXTURE_TEARDOWN()
+ * *_metadata* is included so that EXPECT_*, ASSERT_* etc. work correctly.
  *
  * @fixture_name: fixture name
  *
@@ -283,10 +292,12 @@
 #define FIXTURE_TEARDOWN(fixture_name) \
 	void fixture_name##_teardown( \
 		struct __test_metadata __attribute__((unused)) *_metadata, \
-		FIXTURE_DATA(fixture_name) __attribute__((unused)) *self)
+		FIXTURE_DATA(fixture_name) __attribute__((unused)) *self, \
+		const FIXTURE_VARIANT(fixture_name) \
+			__attribute__((unused)) *variant)
 
 /**
- * FIXTURE_VARIANT(fixture_name) - Optionally called once per fixture
+ * FIXTURE_VARIANT() - Optionally called once per fixture
  * to declare fixture variant
  *
  * @fixture_name: fixture name
@@ -298,14 +309,14 @@
  *       ...
  *     };
  *
- * Defines type of constant parameters provided to FIXTURE_SETUP() and TEST_F()
- * as *variant*. Variants allow the same tests to be run with different
- * arguments.
+ * Defines type of constant parameters provided to FIXTURE_SETUP(), TEST_F() and
+ * FIXTURE_TEARDOWN as *variant*. Variants allow the same tests to be run with
+ * different arguments.
  */
 #define FIXTURE_VARIANT(fixture_name) struct _fixture_variant_##fixture_name
 
 /**
- * FIXTURE_VARIANT_ADD(fixture_name, variant_name) - Called once per fixture
+ * FIXTURE_VARIANT_ADD() - Called once per fixture
  * variant to setup and register the data
  *
  * @fixture_name: fixture name
@@ -339,7 +350,7 @@
 		_##fixture_name##_##variant_name##_variant =
 
 /**
- * TEST_F(fixture_name, test_name) - Emits test registration and helpers for
+ * TEST_F() - Emits test registration and helpers for
  * fixture-based test cases
  *
  * @fixture_name: fixture name
@@ -352,10 +363,7 @@
  * Defines a test that depends on a fixture (e.g., is part of a test case).
  * Very similar to TEST() except that *self* is the setup instance of fixture's
  * datatype exposed for use by the implementation.
- *
- * Warning: use of ASSERT_* here will skip TEARDOWN.
  */
-/* TODO(wad) register fixtures on dedicated test lists. */
 #define TEST_F(fixture_name, test_name) \
 	__TEST_F_IMPL(fixture_name, test_name, -1, TEST_TIMEOUT_DEFAULT)
 
@@ -377,12 +385,17 @@
 		/* fixture data is alloced, setup, and torn down per call. */ \
 		FIXTURE_DATA(fixture_name) self; \
 		memset(&self, 0, sizeof(FIXTURE_DATA(fixture_name))); \
-		fixture_name##_setup(_metadata, &self, variant->data); \
-		/* Let setup failure terminate early. */ \
-		if (!_metadata->passed) \
-			return; \
-		fixture_name##_##test_name(_metadata, &self, variant->data); \
-		fixture_name##_teardown(_metadata, &self); \
+		if (setjmp(_metadata->env) == 0) { \
+			fixture_name##_setup(_metadata, &self, variant->data); \
+			/* Let setup failure terminate early. */ \
+                       if (!_metadata->passed || _metadata->skip) \
+				return; \
+			_metadata->setup_completed = true; \
+			fixture_name##_##test_name(_metadata, &self, variant->data); \
+		} \
+		if (_metadata->setup_completed) \
+			fixture_name##_teardown(_metadata, &self, variant->data); \
+		__test_check_assert(_metadata); \
 	} \
 	static struct __test_metadata \
 		      _##fixture_name##_##test_name##_object = { \
@@ -667,7 +680,9 @@
 #define EXPECT_STRNE(expected, seen) \
 	__EXPECT_STR(expected, seen, !=, 0)
 
+#ifndef ARRAY_SIZE
 #define ARRAY_SIZE(a)	(sizeof(a) / sizeof(a[0]))
+#endif
 
 /* Support an optional handler after and ASSERT_* or EXPECT_*.  The approach is
  * not thread-safe, but it should be fine in most sane test scenarios.
@@ -677,7 +692,7 @@
  */
 #define OPTIONAL_HANDLER(_assert) \
 	for (; _metadata->trigger; _metadata->trigger = \
-			__bail(_assert, _metadata->no_print, _metadata->step))
+			__bail(_assert, _metadata))
 
 #define __INC_STEP(_metadata) \
 	/* Keep "step" below 255 (which is used for "SKIP" reporting). */	\
@@ -824,6 +839,9 @@ struct __test_metadata {
 	bool timed_out;	/* did this test timeout instead of exiting? */
 	__u8 step;
 	bool no_print; /* manual trigger when TH_LOG_STREAM is not available */
+	bool aborted;	/* stopped test due to failed ASSERT */
+	bool setup_completed; /* did setup finish? */
+	jmp_buf env;	/* for exiting out of test early */
 	struct __test_results *results;
 	struct __test_metadata *prev, *next;
 };
@@ -842,14 +860,24 @@ static inline void __register_test(struct __test_metadata *t)
 	__LIST_APPEND(t->fixture->tests, t);
 }
 
-static inline int __bail(int for_realz, bool no_print, __u8 step)
+static inline int __bail(int for_realz, struct __test_metadata *t)
 {
+	/* if this is ASSERT, return immediately. */
 	if (for_realz) {
-		if (no_print)
-			_exit(step);
+		t->aborted = true;
+		longjmp(t->env, 1);
+	}
+	/* otherwise, end the for loop and continue. */
+	return 0;
+}
+
+static inline void __test_check_assert(struct __test_metadata *t)
+{
+	if (t->aborted) {
+		if (t->no_print)
+			_exit(t->step);
 		abort();
 	}
-	return 0;
 }
 
 struct __test_metadata *__active_test;
@@ -871,7 +899,8 @@ static void __timeout_handler(int sig, siginfo_t *info, void *ucontext)
 	}
 
 	t->timed_out = true;
-	kill(t->pid, SIGKILL);
+	// signal process group
+	kill(-(t->pid), SIGKILL);
 }
 
 void __wait_for_test(struct __test_metadata *t)
@@ -957,6 +986,127 @@ void __wait_for_test(struct __test_metadata *t)
 	}
 }
 
+static void test_harness_list_tests(void)
+{
+	struct __fixture_variant_metadata *v;
+	struct __fixture_metadata *f;
+	struct __test_metadata *t;
+
+	for (f = __fixture_list; f; f = f->next) {
+		v = f->variant;
+		t = f->tests;
+
+		if (f == __fixture_list)
+			fprintf(stderr, "%-20s %-25s %s\n",
+				"# FIXTURE", "VARIANT", "TEST");
+		else
+			fprintf(stderr, "--------------------------------------------------------------------------------\n");
+
+		do {
+			fprintf(stderr, "%-20s %-25s %s\n",
+				t == f->tests ? f->name : "",
+				v ? v->name : "",
+				t ? t->name : "");
+
+			v = v ? v->next : NULL;
+			t = t ? t->next : NULL;
+		} while (v || t);
+	}
+}
+
+static int test_harness_argv_check(int argc, char **argv)
+{
+	int opt;
+
+	while ((opt = getopt(argc, argv, "hlF:f:V:v:t:T:r:")) != -1) {
+		switch (opt) {
+		case 'f':
+		case 'F':
+		case 'v':
+		case 'V':
+		case 't':
+		case 'T':
+		case 'r':
+			break;
+		case 'l':
+			test_harness_list_tests();
+			return KSFT_SKIP;
+		case 'h':
+		default:
+			fprintf(stderr,
+				"Usage: %s [-h|-l] [-t|-T|-v|-V|-f|-F|-r name]\n"
+				"\t-h       print help\n"
+				"\t-l       list all tests\n"
+				"\n"
+				"\t-t name  include test\n"
+				"\t-T name  exclude test\n"
+				"\t-v name  include variant\n"
+				"\t-V name  exclude variant\n"
+				"\t-f name  include fixture\n"
+				"\t-F name  exclude fixture\n"
+				"\t-r name  run specified test\n"
+				"\n"
+				"Test filter options can be specified "
+				"multiple times. The filtering stops\n"
+				"at the first match. For example to "
+				"include all tests from variant 'bla'\n"
+				"but not test 'foo' specify '-T foo -v bla'.\n"
+				"", argv[0]);
+			return opt == 'h' ? KSFT_SKIP : KSFT_FAIL;
+		}
+	}
+
+	return KSFT_PASS;
+}
+
+static bool test_enabled(int argc, char **argv,
+			 struct __fixture_metadata *f,
+			 struct __fixture_variant_metadata *v,
+			 struct __test_metadata *t)
+{
+	unsigned int flen = 0, vlen = 0, tlen = 0;
+	bool has_positive = false;
+	int opt;
+
+	optind = 1;
+	while ((opt = getopt(argc, argv, "F:f:V:v:t:T:r:")) != -1) {
+		has_positive |= islower(opt);
+
+		switch (tolower(opt)) {
+		case 't':
+			if (!strcmp(t->name, optarg))
+				return islower(opt);
+			break;
+		case 'f':
+			if (!strcmp(f->name, optarg))
+				return islower(opt);
+			break;
+		case 'v':
+			if (!strcmp(v->name, optarg))
+				return islower(opt);
+			break;
+		case 'r':
+			if (!tlen) {
+				flen = strlen(f->name);
+				vlen = strlen(v->name);
+				tlen = strlen(t->name);
+			}
+			if (strlen(optarg) == flen + 1 + vlen + !!vlen + tlen &&
+			    !strncmp(f->name, &optarg[0], flen) &&
+			    !strncmp(v->name, &optarg[flen + 1], vlen) &&
+			    !strncmp(t->name, &optarg[flen + 1 + vlen + !!vlen], tlen))
+				return true;
+			break;
+		}
+	}
+
+	/*
+	 * If there are no positive tests then we assume user just wants
+	 * exclusions and everything else is a pass.
+	 */
+	return !has_positive;
+}
+
 void __run_test(struct __fixture_metadata *f,
 		struct __fixture_variant_metadata *variant,
 		struct __test_metadata *t)
@@ -965,7 +1115,7 @@ void __run_test(struct __fixture_metadata *f,
 	t->passed = 1;
 	t->skip = 0;
 	t->trigger = 0;
-	t->step = 0;
+	t->step = 1;
 	t->no_print = 0;
 	memset(t->results->reason, 0, sizeof(t->results->reason));
 
@@ -981,6 +1131,7 @@ void __run_test(struct __fixture_metadata *f,
 		ksft_print_msg("ERROR SPAWNING TEST CHILD\n");
 		t->passed = 0;
 	} else if (t->pid == 0) {
+		setpgrp();
 		t->fn(t, variant);
 		if (t->skip)
 			_exit(255);
@@ -1003,24 +1154,32 @@ void __run_test(struct __fixture_metadata *f,
 			f->name, variant->name[0] ? "." : "", variant->name, t->name);
 }
 
-static int test_harness_run(int __attribute__((unused)) argc,
-			    char __attribute__((unused)) **argv)
+static int test_harness_run(int argc, char **argv)
 {
 	struct __fixture_variant_metadata no_variant = { .name = "", };
 	struct __fixture_variant_metadata *v;
 	struct __fixture_metadata *f;
 	struct __test_results *results;
 	struct __test_metadata *t;
-	int ret = 0;
+	int ret;
 	unsigned int case_count = 0, test_count = 0;
 	unsigned int count = 0;
 	unsigned int pass_count = 0;
 
+	ret = test_harness_argv_check(argc, argv);
+	if (ret != KSFT_PASS)
+		return ret;
+
 	for (f = __fixture_list; f; f = f->next) {
 		for (v = f->variant ?: &no_variant; v; v = v->next) {
-			case_count++;
+			unsigned int old_tests = test_count;
+
 			for (t = f->tests; t; t = t->next)
-				test_count++;
+				if (test_enabled(argc, argv, f, v, t))
+					test_count++;
+
+			if (old_tests != test_count)
+				case_count++;
 		}
 	}
 
@@ -1034,6 +1193,8 @@ static int test_harness_run(int __attribute__((unused)) argc,
 	for (f = __fixture_list; f; f = f->next) {
 		for (v = f->variant ?: &no_variant; v; v = v->next) {
 			for (t = f->tests; t; t = t->next) {
+				if (!test_enabled(argc, argv, f, v, t))
+					continue;
 				count++;
 				t->results = results;
 				__run_test(f, v, t);

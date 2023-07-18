@@ -76,18 +76,12 @@ static struct rpmh_ctrlr *get_rpmh_ctrlr(const struct device *dev)
 	return &drv->client;
 }
 
-void rpmh_tx_done(const struct tcs_request *msg, int r)
+void rpmh_tx_done(const struct tcs_request *msg)
 {
 	struct rpmh_request *rpm_msg = container_of(msg, struct rpmh_request,
 						    msg);
 	struct completion *compl = rpm_msg->completion;
 	bool free = rpm_msg->needs_free;
-
-	rpm_msg->err = r;
-
-	if (r)
-		dev_err(rpm_msg->dev, "RPMH TX fail in msg addr=%#x, err=%d\n",
-			rpm_msg->msg.cmds[0].addr, r);
 
 	if (!compl)
 		goto exit;
@@ -181,8 +175,6 @@ static int __rpmh_write(const struct device *dev, enum rpmh_state state,
 	struct cache_req *req;
 	int i;
 
-	rpm_msg->msg.state = state;
-
 	/* Cache the request in our store and link the payload */
 	for (i = 0; i < rpm_msg->msg.num_cmds; i++) {
 		req = cache_rpm_request(ctrlr, state, &rpm_msg->msg.cmds[i]);
@@ -190,15 +182,13 @@ static int __rpmh_write(const struct device *dev, enum rpmh_state state,
 			return PTR_ERR(req);
 	}
 
-	rpm_msg->msg.state = state;
-
 	if (state == RPMH_ACTIVE_ONLY_STATE) {
 		WARN_ON(irqs_disabled());
 		ret = rpmh_rsc_send_data(ctrlr_to_drv(ctrlr), &rpm_msg->msg);
 	} else {
 		/* Clean up our call by spoofing tx_done */
 		ret = 0;
-		rpmh_tx_done(&rpm_msg->msg, ret);
+		rpmh_tx_done(&rpm_msg->msg);
 	}
 
 	return ret;
@@ -254,7 +244,7 @@ EXPORT_SYMBOL(rpmh_write_async);
 /**
  * rpmh_write: Write a set of RPMH commands and block until response
  *
- * @rc: The RPMH handle got from rpmh_get_client
+ * @dev: The device making the request
  * @state: Active/sleep set
  * @cmd: The payload data
  * @n: The number of elements in @cmd
@@ -268,11 +258,9 @@ int rpmh_write(const struct device *dev, enum rpmh_state state,
 	DEFINE_RPMH_MSG_ONSTACK(dev, state, &compl, rpm_msg);
 	int ret;
 
-	if (!cmd || !n || n > MAX_RPMH_PAYLOAD)
-		return -EINVAL;
-
-	memcpy(rpm_msg.cmd, cmd, n * sizeof(*cmd));
-	rpm_msg.msg.num_cmds = n;
+	ret = __fill_rpmh_msg(&rpm_msg, state, cmd, n);
+	if (ret)
+		return ret;
 
 	ret = __rpmh_write(dev, state, &rpm_msg);
 	if (ret)
@@ -456,7 +444,7 @@ int rpmh_flush(struct rpmh_ctrlr *ctrlr)
 
 	if (!ctrlr->dirty) {
 		pr_debug("Skipping flush, TCS has latest data.\n");
-		goto exit;
+		goto write_next_wakeup;
 	}
 
 	/* Invalidate the TCSes first to avoid stale data */
@@ -485,6 +473,8 @@ int rpmh_flush(struct rpmh_ctrlr *ctrlr)
 
 	ctrlr->dirty = false;
 
+write_next_wakeup:
+	rpmh_rsc_write_next_wakeup(ctrlr_to_drv(ctrlr));
 exit:
 	spin_unlock(&ctrlr->cache_lock);
 	return ret;

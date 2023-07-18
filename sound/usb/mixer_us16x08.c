@@ -637,10 +637,10 @@ static int snd_get_meter_comp_index(struct snd_us16x08_meter_store *store)
 		}
 	} else {
 		/* skip channels with no compressor active */
-		while (!store->comp_store->val[
+		while (store->comp_index <= SND_US16X08_MAX_CHANNELS
+			&& !store->comp_store->val[
 			COMP_STORE_IDX(SND_US16X08_ID_COMP_SWITCH)]
-			[store->comp_index - 1]
-			&& store->comp_index <= SND_US16X08_MAX_CHANNELS) {
+			[store->comp_index - 1]) {
 			store->comp_index++;
 		}
 		ret = store->comp_index++;
@@ -1076,7 +1076,7 @@ static int add_new_ctl(struct usb_mixer_interface *mixer,
 	else
 		kctl->private_free = snd_usb_mixer_elem_free;
 
-	strlcpy(kctl->id.name, name, sizeof(kctl->id.name));
+	strscpy(kctl->id.name, name, sizeof(kctl->id.name));
 
 	err = snd_usb_mixer_add_control(&elem->head, kctl);
 	if (err < 0)

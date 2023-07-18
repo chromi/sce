@@ -1,4 +1,4 @@
-/FEATURE-DUMP.libbpf
-/bpf_helper_defs.h
 /fixdep
 /resolve_btfids
+/libbpf/
+/libsubcmd/

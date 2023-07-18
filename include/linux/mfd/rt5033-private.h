@@ -91,14 +91,14 @@ enum rt5033_reg {
 #define RT5033_RT_HZ_MASK		0x01
 
 /* RT5033 control register */
-#define RT5033_CTRL_FCCM_BUCK_MASK		0x00
-#define RT5033_CTRL_BUCKOMS_MASK		0x01
-#define RT5033_CTRL_LDOOMS_MASK			0x02
-#define RT5033_CTRL_SLDOOMS_MASK		0x03
-#define RT5033_CTRL_EN_BUCK_MASK		0x04
-#define RT5033_CTRL_EN_LDO_MASK			0x05
-#define RT5033_CTRL_EN_SAFE_LDO_MASK		0x06
-#define RT5033_CTRL_LDO_SLEEP_MASK		0x07
+#define RT5033_CTRL_FCCM_BUCK_MASK		BIT(0)
+#define RT5033_CTRL_BUCKOMS_MASK		BIT(1)
+#define RT5033_CTRL_LDOOMS_MASK			BIT(2)
+#define RT5033_CTRL_SLDOOMS_MASK		BIT(3)
+#define RT5033_CTRL_EN_BUCK_MASK		BIT(4)
+#define RT5033_CTRL_EN_LDO_MASK			BIT(5)
+#define RT5033_CTRL_EN_SAFE_LDO_MASK		BIT(6)
+#define RT5033_CTRL_LDO_SLEEP_MASK		BIT(7)
 
 /* RT5033 BUCK control register */
 #define RT5033_BUCK_CTRL_MASK			0x1f
@@ -107,14 +107,13 @@ enum rt5033_reg {
 #define RT5033_LDO_CTRL_MASK			0x1f
 
 /* RT5033 charger property - model, manufacturer */
-
 #define RT5033_CHARGER_MODEL	"RT5033WSC Charger"
 #define RT5033_MANUFACTURER	"Richtek Technology Corporation"
 
 /*
- * RT5033 charger fast-charge current lmits (as in CHGCTRL1 register),
- * AICR mode limits the input current for example,
- * the AIRC 100 mode limits the input current to 100 mA.
+ * While RT5033 charger can limit the fast-charge current (as in CHGCTRL1
+ * register), AICR mode limits the input current. For example, the AIRC 100
+ * mode limits the input current to 100 mA.
  */
 #define RT5033_AICR_100_MODE			0x20
 #define RT5033_AICR_500_MODE			0x40
@@ -139,10 +138,9 @@ enum rt5033_reg {
 #define RT5033_TE_ENABLE_MASK			0x08
 
 /*
- * RT5033 charger opa mode. RT50300 have two opa mode charger mode
- * and boost mode for OTG
+ * RT5033 charger opa mode. RT5033 has two opa modes for OTG: charger mode
+ * and boost mode.
  */
-
 #define RT5033_CHARGER_MODE			0x00
 #define RT5033_BOOST_MODE			0x01
 
@@ -181,18 +179,17 @@ enum rt5033_reg {
  * RT5033 charger pre-charge threshold volt limits
  * (as in CHGCTRL5 register), uV
  */
-
 #define RT5033_CHARGER_PRE_THRESHOLD_LIMIT_MIN	2300000U
 #define RT5033_CHARGER_PRE_THRESHOLD_STEP_NUM	100000U
 #define RT5033_CHARGER_PRE_THRESHOLD_LIMIT_MAX	3800000U
 
 /*
- * RT5033 charger enable UUG, If UUG enable MOS auto control by H/W charger
+ * RT5033 charger UUG. It enables MOS auto control by H/W charger
  * circuit.
  */
 #define RT5033_CHARGER_UUG_ENABLE		0x02
 
-/* RT5033 charger High impedance mode */
+/* RT5033 charger high impedance mode */
 #define RT5033_CHARGER_HZ_DISABLE		0x00
 #define RT5033_CHARGER_HZ_ENABLE		0x01
 
@@ -247,11 +244,11 @@ enum rt5033_fuel_reg {
 #define RT5033_FUEL_BAT_PRESENT		0x02
 
 /* RT5033 PMIC interrupts */
-#define RT5033_PMIC_IRQ_BUCKOCP		2
-#define RT5033_PMIC_IRQ_BUCKLV		3
-#define RT5033_PMIC_IRQ_SAFELDOLV	4
-#define RT5033_PMIC_IRQ_LDOLV		5
-#define RT5033_PMIC_IRQ_OT		6
-#define RT5033_PMIC_IRQ_VDDA_UV		7
+#define RT5033_PMIC_IRQ_BUCKOCP		BIT(2)
+#define RT5033_PMIC_IRQ_BUCKLV		BIT(3)
+#define RT5033_PMIC_IRQ_SAFELDOLV	BIT(4)
+#define RT5033_PMIC_IRQ_LDOLV		BIT(5)
+#define RT5033_PMIC_IRQ_OT		BIT(6)
+#define RT5033_PMIC_IRQ_VDDA_UV		BIT(7)
 
 #endif /* __RT5033_PRIVATE_H__ */

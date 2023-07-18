@@ -50,7 +50,8 @@ Entries specific to zPCI functions and entries that hold zPCI information.
 * /sys/bus/pci/slots/XXXXXXXX
 
   The slot entries are set up using the function identifier (FID) of the
-  PCI function.
+  PCI function. The format depicted as XXXXXXXX above is 8 hexadecimal digits
+  with 0 padding and lower case hexadecimal digits.
 
   - /sys/bus/pci/slots/XXXXXXXX/power
 
@@ -65,7 +66,7 @@ Entries specific to zPCI functions and entries that hold zPCI information.
 
   - function_handle
     Low-level identifier used for a configured PCI function.
-    It might be useful for debuging.
+    It might be useful for debugging.
 
   - pchid
     Model-dependent location of the I/O adapter.
@@ -88,8 +89,15 @@ Entries specific to zPCI functions and entries that hold zPCI information.
     is attached to.
 
   - uid
-    The unique identifier (UID) is defined when configuring an LPAR and is
-    unique in the LPAR.
+    The user identifier (UID) may be defined as part of the machine
+    configuration or the z/VM or KVM guest configuration. If the accompanying
+    uid_is_unique attribute is 1 the platform guarantees that the UID is unique
+    within that instance and no devices with the same UID can be attached
+    during the lifetime of the system.
+
+  - uid_is_unique
+    Indicates whether the user identifier (UID) is guaranteed to be and remain
+    unique within this Linux instance.
 
   - pfip/segmentX
     The segments determine the isolation of a function.

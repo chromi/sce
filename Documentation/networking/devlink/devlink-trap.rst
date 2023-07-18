@@ -476,6 +476,25 @@ be added to the following table:
    * - ``esp_parsing``
      - ``drop``
      - Traps packets dropped due to an error in the ESP header parsing
+   * - ``blackhole_nexthop``
+     - ``drop``
+     - Traps packets that the device decided to drop in case they hit a
+       blackhole nexthop
+   * - ``dmac_filter``
+     - ``drop``
+     - Traps incoming packets that the device decided to drop because
+       the destination MAC is not configured in the MAC table and
+       the interface is not in promiscuous mode
+   * - ``eapol``
+     - ``control``
+     - Traps "Extensible Authentication Protocol over LAN" (EAPOL) packets
+       specified in IEEE 802.1X
+   * - ``locked_port``
+     - ``drop``
+     - Traps packets that the device decided to drop because they failed the
+       locked bridge port check. That is, packets that were received via a
+       locked port and whose {SMAC, VID} does not correspond to an FDB entry
+       pointing to the port
 
 Driver-specific Packet Traps
 ============================
@@ -486,8 +505,9 @@ help debug packet drops caused by these exceptions. The following list includes
 links to the description of driver-specific traps registered by various device
 drivers:
 
-  * :doc:`netdevsim`
-  * :doc:`mlxsw`
+  * Documentation/networking/devlink/netdevsim.rst
+  * Documentation/networking/devlink/mlxsw.rst
+  * Documentation/networking/devlink/prestera.rst
 
 .. _Generic-Packet-Trap-Groups:
 
@@ -579,6 +599,9 @@ narrow. The description of these groups must be added to the following table:
    * - ``parser_error_drops``
      - Contains packet traps for packets that were marked by the device during
        parsing as erroneous
+   * - ``eapol``
+     - Contains packet traps for "Extensible Authentication Protocol over LAN"
+       (EAPOL) packets specified in IEEE 802.1X
 
 Packet Trap Policers
 ====================

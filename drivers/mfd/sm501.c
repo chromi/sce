@@ -1190,13 +1190,13 @@ static int sm501_register_gpio_i2c(struct sm501_devdata *sm,
 	return 0;
 }
 
-/* sm501_dbg_regs
+/* dbg_regs_show
  *
  * Debug attribute to attach to parent device to show core registers
 */
 
-static ssize_t sm501_dbg_regs(struct device *dev,
-			      struct device_attribute *attr, char *buff)
+static ssize_t dbg_regs_show(struct device *dev,
+			     struct device_attribute *attr, char *buff)
 {
 	struct sm501_devdata *sm = dev_get_drvdata(dev)	;
 	unsigned int reg;
@@ -1213,7 +1213,7 @@ static ssize_t sm501_dbg_regs(struct device *dev,
 }
 
 
-static DEVICE_ATTR(dbg_regs, 0444, sm501_dbg_regs, NULL);
+static DEVICE_ATTR_RO(dbg_regs);
 
 /* sm501_init_reg
  *
@@ -1432,8 +1432,6 @@ static int sm501_plat_probe(struct platform_device *dev)
 
 }
 
-#ifdef CONFIG_PM
-
 /* power management support */
 
 static void sm501_set_power(struct sm501_devdata *sm, int on)
@@ -1509,10 +1507,6 @@ static int sm501_plat_resume(struct platform_device *pdev)
 
 	return 0;
 }
-#else
-#define sm501_plat_suspend NULL
-#define sm501_plat_resume NULL
-#endif
 
 /* Initialisation data for PCI devices */
 
@@ -1714,13 +1708,18 @@ static struct platform_driver sm501_plat_driver = {
 	},
 	.probe		= sm501_plat_probe,
 	.remove		= sm501_plat_remove,
-	.suspend	= sm501_plat_suspend,
-	.resume		= sm501_plat_resume,
+	.suspend	= pm_sleep_ptr(sm501_plat_suspend),
+	.resume		= pm_sleep_ptr(sm501_plat_resume),
 };
 
 static int __init sm501_base_init(void)
 {
-	platform_driver_register(&sm501_plat_driver);
+	int ret;
+
+	ret = platform_driver_register(&sm501_plat_driver);
+	if (ret < 0)
+		return ret;
+
 	return pci_register_driver(&sm501_pci_driver);
 }
 

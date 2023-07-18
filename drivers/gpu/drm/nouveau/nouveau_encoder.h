@@ -26,12 +26,15 @@
 
 #ifndef __NOUVEAU_ENCODER_H__
 #define __NOUVEAU_ENCODER_H__
-
+#include <nvif/outp.h>
 #include <subdev/bios/dcb.h>
 
+#include <drm/display/drm_dp_helper.h>
+#include <drm/display/drm_dp_mst_helper.h>
 #include <drm/drm_encoder_slave.h>
-#include <drm/drm_dp_mst_helper.h>
+
 #include "dispnv04/disp.h"
+
 struct nv50_head_atom;
 struct nouveau_connector;
 
@@ -43,8 +46,8 @@ struct nouveau_encoder {
 	struct drm_encoder_slave base;
 
 	struct dcb_output *dcb;
+	struct nvif_outp outp;
 	int or;
-	int link;
 
 	struct i2c_adapter *i2c;
 	struct nvkm_i2c_aux *aux;
@@ -53,7 +56,12 @@ struct nouveau_encoder {
 	 * actually programmed on the hw, not the proposed crtc */
 	struct drm_crtc *crtc;
 	u32 ctrl;
-	bool audio;
+
+	/* Protected by nouveau_drm.audio.lock */
+	struct {
+		bool enabled;
+		struct drm_connector *connector;
+	} audio;
 
 	struct drm_display_mode mode;
 	int last_dpms;
@@ -133,19 +141,17 @@ enum nouveau_dp_status {
 };
 
 int nouveau_dp_detect(struct nouveau_connector *, struct nouveau_encoder *);
-void nouveau_dp_irq(struct nouveau_drm *drm,
-		    struct nouveau_connector *nv_connector);
+bool nouveau_dp_link_check(struct nouveau_connector *);
+void nouveau_dp_irq(struct work_struct *);
 enum drm_mode_status nv50_dp_mode_valid(struct drm_connector *,
 					struct nouveau_encoder *,
 					const struct drm_display_mode *,
 					unsigned *clock);
 
 struct nouveau_connector *
-nv50_outp_get_new_connector(struct nouveau_encoder *outp,
-			    struct drm_atomic_state *state);
+nv50_outp_get_new_connector(struct drm_atomic_state *state, struct nouveau_encoder *outp);
 struct nouveau_connector *
-nv50_outp_get_old_connector(struct nouveau_encoder *outp,
-			    struct drm_atomic_state *state);
+nv50_outp_get_old_connector(struct drm_atomic_state *state, struct nouveau_encoder *outp);
 
 int nv50_mstm_detect(struct nouveau_encoder *encoder);
 void nv50_mstm_remove(struct nv50_mstm *mstm);

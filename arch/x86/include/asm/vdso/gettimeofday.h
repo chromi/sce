@@ -58,7 +58,8 @@ extern struct ms_hyperv_tsc_page hvclock_page
 #endif
 
 #ifdef CONFIG_TIME_NS
-static __always_inline const struct vdso_data *__arch_get_timens_vdso_data(void)
+static __always_inline
+const struct vdso_data *__arch_get_timens_vdso_data(const struct vdso_data *vd)
 {
 	return __timens_vdso_data;
 }
@@ -316,6 +317,8 @@ u64 vdso_calc_delta(u64 cycles, u64 last, u64 mask, u32 mult)
 	return 0;
 }
 #define vdso_calc_delta vdso_calc_delta
+
+int __vdso_clock_gettime64(clockid_t clock, struct __kernel_timespec *ts);
 
 #endif /* !__ASSEMBLY__ */
 

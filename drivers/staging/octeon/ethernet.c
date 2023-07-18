@@ -350,7 +350,7 @@ static int cvm_oct_set_mac_filter(struct net_device *dev)
 	    (cvmx_helper_interface_get_mode(interface) !=
 		CVMX_HELPER_INTERFACE_MODE_SPI)) {
 		int i;
-		u8 *ptr = dev->dev_addr;
+		const u8 *ptr = dev->dev_addr;
 		u64 mac = 0;
 		int index = INDEX(priv->port);
 
@@ -407,14 +407,10 @@ static int cvm_oct_common_set_mac_address(struct net_device *dev, void *addr)
 int cvm_oct_common_init(struct net_device *dev)
 {
 	struct octeon_ethernet *priv = netdev_priv(dev);
-	const u8 *mac = NULL;
+	int ret;
 
-	if (priv->of_node)
-		mac = of_get_mac_address(priv->of_node);
-
-	if (!IS_ERR_OR_NULL(mac))
-		ether_addr_copy(dev->dev_addr, mac);
-	else
+	ret = of_get_ethdev_address(priv->of_node, dev);
+	if (ret)
 		eth_hw_addr_random(dev);
 
 	/*
@@ -528,7 +524,7 @@ static const struct net_device_ops cvm_oct_npi_netdev_ops = {
 	.ndo_start_xmit		= cvm_oct_xmit,
 	.ndo_set_rx_mode	= cvm_oct_common_set_multicast_list,
 	.ndo_set_mac_address	= cvm_oct_common_set_mac_address,
-	.ndo_do_ioctl		= cvm_oct_ioctl,
+	.ndo_eth_ioctl		= cvm_oct_ioctl,
 	.ndo_change_mtu		= cvm_oct_common_change_mtu,
 	.ndo_get_stats		= cvm_oct_common_get_stats,
 #ifdef CONFIG_NET_POLL_CONTROLLER
@@ -544,7 +540,7 @@ static const struct net_device_ops cvm_oct_xaui_netdev_ops = {
 	.ndo_start_xmit		= cvm_oct_xmit,
 	.ndo_set_rx_mode	= cvm_oct_common_set_multicast_list,
 	.ndo_set_mac_address	= cvm_oct_common_set_mac_address,
-	.ndo_do_ioctl		= cvm_oct_ioctl,
+	.ndo_eth_ioctl		= cvm_oct_ioctl,
 	.ndo_change_mtu		= cvm_oct_common_change_mtu,
 	.ndo_get_stats		= cvm_oct_common_get_stats,
 #ifdef CONFIG_NET_POLL_CONTROLLER
@@ -560,7 +556,7 @@ static const struct net_device_ops cvm_oct_sgmii_netdev_ops = {
 	.ndo_start_xmit		= cvm_oct_xmit,
 	.ndo_set_rx_mode	= cvm_oct_common_set_multicast_list,
 	.ndo_set_mac_address	= cvm_oct_common_set_mac_address,
-	.ndo_do_ioctl		= cvm_oct_ioctl,
+	.ndo_eth_ioctl		= cvm_oct_ioctl,
 	.ndo_change_mtu		= cvm_oct_common_change_mtu,
 	.ndo_get_stats		= cvm_oct_common_get_stats,
 #ifdef CONFIG_NET_POLL_CONTROLLER
@@ -574,7 +570,7 @@ static const struct net_device_ops cvm_oct_spi_netdev_ops = {
 	.ndo_start_xmit		= cvm_oct_xmit,
 	.ndo_set_rx_mode	= cvm_oct_common_set_multicast_list,
 	.ndo_set_mac_address	= cvm_oct_common_set_mac_address,
-	.ndo_do_ioctl		= cvm_oct_ioctl,
+	.ndo_eth_ioctl		= cvm_oct_ioctl,
 	.ndo_change_mtu		= cvm_oct_common_change_mtu,
 	.ndo_get_stats		= cvm_oct_common_get_stats,
 #ifdef CONFIG_NET_POLL_CONTROLLER
@@ -590,7 +586,7 @@ static const struct net_device_ops cvm_oct_rgmii_netdev_ops = {
 	.ndo_start_xmit		= cvm_oct_xmit,
 	.ndo_set_rx_mode	= cvm_oct_common_set_multicast_list,
 	.ndo_set_mac_address	= cvm_oct_common_set_mac_address,
-	.ndo_do_ioctl		= cvm_oct_ioctl,
+	.ndo_eth_ioctl		= cvm_oct_ioctl,
 	.ndo_change_mtu		= cvm_oct_common_change_mtu,
 	.ndo_get_stats		= cvm_oct_common_get_stats,
 #ifdef CONFIG_NET_POLL_CONTROLLER
@@ -603,7 +599,7 @@ static const struct net_device_ops cvm_oct_pow_netdev_ops = {
 	.ndo_start_xmit		= cvm_oct_xmit_pow,
 	.ndo_set_rx_mode	= cvm_oct_common_set_multicast_list,
 	.ndo_set_mac_address	= cvm_oct_common_set_mac_address,
-	.ndo_do_ioctl		= cvm_oct_ioctl,
+	.ndo_eth_ioctl		= cvm_oct_ioctl,
 	.ndo_change_mtu		= cvm_oct_common_change_mtu,
 	.ndo_get_stats		= cvm_oct_common_get_stats,
 #ifdef CONFIG_NET_POLL_CONTROLLER
@@ -614,14 +610,11 @@ static const struct net_device_ops cvm_oct_pow_netdev_ops = {
 static struct device_node *cvm_oct_of_get_child
 				(const struct device_node *parent, int reg_val)
 {
-	struct device_node *node = NULL;
-	int size;
+	struct device_node *node;
 	const __be32 *addr;
+	int size;
 
-	for (;;) {
-		node = of_get_next_child(parent, node);
-		if (!node)
-			break;
+	for_each_child_of_node(parent, node) {
 		addr = of_get_property(node, "reg", &size);
 		if (addr && (be32_to_cpu(*addr) == reg_val))
 			break;
@@ -931,7 +924,7 @@ static int cvm_oct_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int cvm_oct_remove(struct platform_device *pdev)
+static void cvm_oct_remove(struct platform_device *pdev)
 {
 	int port;
 
@@ -972,7 +965,6 @@ static int cvm_oct_remove(struct platform_device *pdev)
 	if (CVMX_FPA_OUTPUT_BUFFER_POOL != CVMX_FPA_PACKET_POOL)
 		cvm_oct_mem_empty_fpa(CVMX_FPA_OUTPUT_BUFFER_POOL,
 				      CVMX_FPA_OUTPUT_BUFFER_POOL_SIZE, 128);
-	return 0;
 }
 
 static const struct of_device_id cvm_oct_match[] = {
@@ -985,7 +977,7 @@ MODULE_DEVICE_TABLE(of, cvm_oct_match);
 
 static struct platform_driver cvm_oct_driver = {
 	.probe		= cvm_oct_probe,
-	.remove		= cvm_oct_remove,
+	.remove_new	= cvm_oct_remove,
 	.driver		= {
 		.name	= KBUILD_MODNAME,
 		.of_match_table = cvm_oct_match,

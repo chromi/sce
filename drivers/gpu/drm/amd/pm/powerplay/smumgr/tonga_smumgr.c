@@ -2545,7 +2545,7 @@ static int tonga_thermal_setup_fan_table(struct pp_hwmgr *hwmgr)
 					(uint32_t)sizeof(fan_table),
 					SMC_RAM_END);
 
-	return 0;
+	return res;
 }
 
 
@@ -2554,7 +2554,7 @@ static int tonga_program_mem_timing_parameters(struct pp_hwmgr *hwmgr)
 	struct smu7_hwmgr *data = (struct smu7_hwmgr *)(hwmgr->backend);
 
 	if (data->need_update_smu7_dpm_table &
-		(DPMTABLE_OD_UPDATE_SCLK + DPMTABLE_OD_UPDATE_MCLK))
+		(DPMTABLE_OD_UPDATE_SCLK | DPMTABLE_OD_UPDATE_MCLK))
 		return tonga_program_memory_timing_parameters(hwmgr);
 
 	return 0;

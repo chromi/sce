@@ -32,7 +32,6 @@
 
 MODULE_AUTHOR("Eric Brower <ebrower@usa.net>");
 MODULE_DESCRIPTION("User-programmable flash device on Sun Microsystems boardsets");
-MODULE_SUPPORTED_DEVICE(DRIVER_NAME);
 MODULE_LICENSE("GPL");
 MODULE_VERSION("2.1");
 
@@ -63,10 +62,8 @@ int uflash_devinit(struct platform_device *op, struct device_node *dp)
 	}
 
 	up = kzalloc(sizeof(struct uflash_dev), GFP_KERNEL);
-	if (!up) {
-		printk(KERN_ERR PFX "Cannot allocate struct uflash_dev\n");
+	if (!up)
 		return -ENOMEM;
-	}
 
 	/* copy defaults and tweak parameters */
 	memcpy(&up->map, &uflash_map_templ, sizeof(uflash_map_templ));
@@ -115,7 +112,7 @@ static int uflash_probe(struct platform_device *op)
 	/* Flashprom must have the "user" property in order to
 	 * be used by this driver.
 	 */
-	if (!of_find_property(dp, "user", NULL))
+	if (!of_property_read_bool(dp, "user"))
 		return -ENODEV;
 
 	return uflash_devinit(op, dp);

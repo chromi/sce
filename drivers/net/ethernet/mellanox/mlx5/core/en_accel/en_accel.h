@@ -37,8 +37,9 @@
 #include <linux/skbuff.h>
 #include <linux/netdevice.h>
 #include "en_accel/ipsec_rxtx.h"
-#include "en_accel/tls.h"
-#include "en_accel/tls_rxtx.h"
+#include "en_accel/ktls.h"
+#include "en_accel/ktls_txrx.h"
+#include <en_accel/macsec.h>
 #include "en.h"
 #include "en/txrx.h"
 
@@ -51,7 +52,7 @@ static inline bool mlx5_geneve_tx_allowed(struct mlx5_core_dev *mdev)
 }
 
 static inline void
-mlx5e_tx_tunnel_accel(struct sk_buff *skb, struct mlx5_wqe_eth_seg *eseg)
+mlx5e_tx_tunnel_accel(struct sk_buff *skb, struct mlx5_wqe_eth_seg *eseg, u16 ihs)
 {
 	struct mlx5e_swp_spec swp_spec = {};
 	unsigned int offset = 0;
@@ -85,6 +86,8 @@ mlx5e_tx_tunnel_accel(struct sk_buff *skb, struct mlx5_wqe_eth_seg *eseg)
 	}
 
 	mlx5e_set_eseg_swp(skb, eseg, &swp_spec);
+	if (skb_vlan_tag_present(skb) && ihs)
+		mlx5e_eseg_swp_offsets_add_vlan(eseg);
 }
 
 #else
@@ -121,11 +124,11 @@ static inline bool mlx5e_accel_tx_begin(struct net_device *dev,
 		mlx5e_udp_gso_handle_tx_skb(skb);
 
 #ifdef CONFIG_MLX5_EN_TLS
-	if (test_bit(MLX5E_SQ_STATE_TLS, &sq->state)) {
-		/* May send SKBs and WQEs. */
-		if (unlikely(!mlx5e_tls_handle_tx_skb(dev, sq, skb, &state->tls)))
+	/* May send WQEs. */
+	if (mlx5e_ktls_skb_offloaded(skb))
+		if (unlikely(!mlx5e_ktls_handle_tx_skb(dev, sq, skb,
+						       &state->tls)))
 			return false;
-	}
 #endif
 
 #ifdef CONFIG_MLX5_EN_IPSEC
@@ -135,16 +138,16 @@ static inline bool mlx5e_accel_tx_begin(struct net_device *dev,
 	}
 #endif
 
-	return true;
-}
+#ifdef CONFIG_MLX5_EN_MACSEC
+	if (unlikely(mlx5e_macsec_skb_is_offload(skb))) {
+		struct mlx5e_priv *priv = netdev_priv(dev);
 
-static inline bool mlx5e_accel_tx_is_ipsec_flow(struct mlx5e_accel_tx_state *state)
-{
-#ifdef CONFIG_MLX5_EN_IPSEC
-	return mlx5e_ipsec_is_tx_flow(&state->ipsec);
+		if (unlikely(!mlx5e_macsec_handle_tx_skb(priv->macsec, skb)))
+			return false;
+	}
 #endif
 
-	return false;
+	return true;
 }
 
 static inline unsigned int mlx5e_accel_tx_ids_len(struct mlx5e_txqsq *sq,
@@ -161,21 +164,24 @@ static inline unsigned int mlx5e_accel_tx_ids_len(struct mlx5e_txqsq *sq,
 /* Part of the eseg touched by TX offloads */
 #define MLX5E_ACCEL_ESEG_LEN offsetof(struct mlx5_wqe_eth_seg, mss)
 
-static inline bool mlx5e_accel_tx_eseg(struct mlx5e_priv *priv,
+static inline void mlx5e_accel_tx_eseg(struct mlx5e_priv *priv,
 				       struct sk_buff *skb,
-				       struct mlx5_wqe_eth_seg *eseg)
+				       struct mlx5_wqe_eth_seg *eseg, u16 ihs)
 {
 #ifdef CONFIG_MLX5_EN_IPSEC
 	if (xfrm_offload(skb))
 		mlx5e_ipsec_tx_build_eseg(priv, skb, eseg);
 #endif
 
-#if IS_ENABLED(CONFIG_GENEVE)
-	if (skb->encapsulation)
-		mlx5e_tx_tunnel_accel(skb, eseg);
+#ifdef CONFIG_MLX5_EN_MACSEC
+	if (unlikely(mlx5e_macsec_skb_is_offload(skb)))
+		mlx5e_macsec_tx_build_eseg(priv->macsec, skb, eseg);
 #endif
 
-	return true;
+#if IS_ENABLED(CONFIG_GENEVE)
+	if (skb->encapsulation && skb->ip_summed == CHECKSUM_PARTIAL)
+		mlx5e_tx_tunnel_accel(skb, eseg, ihs);
+#endif
 }
 
 static inline void mlx5e_accel_tx_finish(struct mlx5e_txqsq *sq,
@@ -184,7 +190,7 @@ static inline void mlx5e_accel_tx_finish(struct mlx5e_txqsq *sq,
 					 struct mlx5_wqe_inline_seg *inlseg)
 {
 #ifdef CONFIG_MLX5_EN_TLS
-	mlx5e_tls_handle_tx_wqe(sq, &wqe->ctrl, &state->tls);
+	mlx5e_ktls_handle_tx_wqe(&wqe->ctrl, &state->tls);
 #endif
 
 #ifdef CONFIG_MLX5_EN_IPSEC
@@ -202,5 +208,15 @@ static inline int mlx5e_accel_init_rx(struct mlx5e_priv *priv)
 static inline void mlx5e_accel_cleanup_rx(struct mlx5e_priv *priv)
 {
 	mlx5e_ktls_cleanup_rx(priv);
+}
+
+static inline int mlx5e_accel_init_tx(struct mlx5e_priv *priv)
+{
+	return mlx5e_ktls_init_tx(priv);
+}
+
+static inline void mlx5e_accel_cleanup_tx(struct mlx5e_priv *priv)
+{
+	mlx5e_ktls_cleanup_tx(priv);
 }
 #endif /* __MLX5E_EN_ACCEL_H__ */

@@ -10,13 +10,15 @@
 
 #include <linux/bitops.h>
 #include <linux/clk.h>
-#include <linux/io.h>
 #include <linux/init.h>
+#include <linux/io.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
+
+#include <linux/pinctrl/pinconf-generic.h>
+#include <linux/pinctrl/pinconf.h>
 #include <linux/pinctrl/pinctrl.h>
 #include <linux/pinctrl/pinmux.h>
-#include <linux/pinctrl/pinconf-generic.h>
 
 #include "core.h"
 #include "pinctrl-utils.h"
@@ -646,7 +648,7 @@ static const struct pin_config_item lpc18xx_conf_items[ARRAY_SIZE(lpc18xx_params
 static int lpc18xx_pconf_get_usb1(enum pin_config_param param, int *arg, u32 reg)
 {
 	switch (param) {
-	case PIN_CONFIG_LOW_POWER_MODE:
+	case PIN_CONFIG_MODE_LOW_POWER:
 		if (reg & LPC18XX_SCU_USB1_EPWR)
 			*arg = 0;
 		else
@@ -904,7 +906,7 @@ static int lpc18xx_pconf_set_usb1(struct pinctrl_dev *pctldev,
 				  u32 param_val, u32 *reg)
 {
 	switch (param) {
-	case PIN_CONFIG_LOW_POWER_MODE:
+	case PIN_CONFIG_MODE_LOW_POWER:
 		if (param_val)
 			*reg &= ~LPC18XX_SCU_USB1_EPWR;
 		else

@@ -29,7 +29,7 @@ struct elf_siginfo
  * the SVR4 structure, but more Linuxy, with things that Linux does
  * not support and which gdb doesn't really use excluded.
  */
-struct elf_prstatus
+struct elf_prstatus_common
 {
 	struct elf_siginfo pr_info;	/* Info associated with signal */
 	short	pr_cursig;		/* Current signal */
@@ -43,6 +43,11 @@ struct elf_prstatus
 	struct __kernel_old_timeval pr_stime;	/* System time */
 	struct __kernel_old_timeval pr_cutime;	/* Cumulative user time */
 	struct __kernel_old_timeval pr_cstime;	/* Cumulative system time */
+};
+
+struct elf_prstatus
+{
+	struct elf_prstatus_common common;
 	elf_gregset_t pr_reg;	/* GP registers */
 	int pr_fpvalid;		/* True if math co-processor being used.  */
 };
@@ -60,6 +65,11 @@ struct elf_prpsinfo
 	__kernel_gid_t	pr_gid;
 	pid_t	pr_pid, pr_ppid, pr_pgrp, pr_sid;
 	/* Lots missing */
+	/*
+	 * The hard-coded 16 is derived from TASK_COMM_LEN, but it can't be
+	 * changed as it is exposed to userspace. We'd better make it hard-coded
+	 * here.
+	 */
 	char	pr_fname[16];	/* filename of executable */
 	char	pr_psargs[ELF_PRARGSZ];	/* initial part of arg list */
 };
@@ -74,37 +84,19 @@ static inline void elf_core_copy_regs(elf_gregset_t *elfregs, struct pt_regs *re
 #endif
 }
 
-static inline void elf_core_copy_kernel_regs(elf_gregset_t *elfregs, struct pt_regs *regs)
-{
-#ifdef ELF_CORE_COPY_KERNEL_REGS
-	ELF_CORE_COPY_KERNEL_REGS((*elfregs), regs);
-#else
-	elf_core_copy_regs(elfregs, regs);
-#endif
-}
-
 static inline int elf_core_copy_task_regs(struct task_struct *t, elf_gregset_t* elfregs)
 {
 #if defined (ELF_CORE_COPY_TASK_REGS)
 	return ELF_CORE_COPY_TASK_REGS(t, elfregs);
-#elif defined (task_pt_regs)
+#else
 	elf_core_copy_regs(elfregs, task_pt_regs(t));
 #endif
 	return 0;
 }
 
-extern int dump_fpu (struct pt_regs *, elf_fpregset_t *);
+int elf_core_copy_task_fpregs(struct task_struct *t, elf_fpregset_t *fpu);
 
-static inline int elf_core_copy_task_fpregs(struct task_struct *t, struct pt_regs *regs, elf_fpregset_t *fpu)
-{
-#ifdef ELF_CORE_COPY_FPREGS
-	return ELF_CORE_COPY_FPREGS(t, fpu);
-#else
-	return dump_fpu(regs, fpu);
-#endif
-}
-
-#if defined(CONFIG_UM) || defined(CONFIG_IA64)
+#ifdef CONFIG_ARCH_BINFMT_ELF_EXTRA_PHDRS
 /*
  * These functions parameterize elf_core_dump in fs/binfmt_elf.c to write out
  * extra segments containing the gate DSO contents.  Dumping its
@@ -113,14 +105,14 @@ static inline int elf_core_copy_task_fpregs(struct task_struct *t, struct pt_reg
  * Dumping its extra ELF program headers includes all the other information
  * a debugger needs to easily find how the gate DSO was being used.
  */
-extern Elf_Half elf_core_extra_phdrs(void);
+extern Elf_Half elf_core_extra_phdrs(struct coredump_params *cprm);
 extern int
 elf_core_write_extra_phdrs(struct coredump_params *cprm, loff_t offset);
 extern int
 elf_core_write_extra_data(struct coredump_params *cprm);
-extern size_t elf_core_extra_data_size(void);
+extern size_t elf_core_extra_data_size(struct coredump_params *cprm);
 #else
-static inline Elf_Half elf_core_extra_phdrs(void)
+static inline Elf_Half elf_core_extra_phdrs(struct coredump_params *cprm)
 {
 	return 0;
 }
@@ -135,10 +127,10 @@ static inline int elf_core_write_extra_data(struct coredump_params *cprm)
 	return 1;
 }
 
-static inline size_t elf_core_extra_data_size(void)
+static inline size_t elf_core_extra_data_size(struct coredump_params *cprm)
 {
 	return 0;
 }
-#endif
+#endif /* CONFIG_ARCH_BINFMT_ELF_EXTRA_PHDRS */
 
 #endif /* _LINUX_ELFCORE_H */

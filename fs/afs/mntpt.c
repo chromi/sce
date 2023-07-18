@@ -32,7 +32,6 @@ const struct inode_operations afs_mntpt_inode_operations = {
 	.lookup		= afs_mntpt_lookup,
 	.readlink	= page_readlink,
 	.getattr	= afs_getattr,
-	.listxattr	= afs_listxattr,
 };
 
 const struct inode_operations afs_autocell_inode_operations = {
@@ -132,12 +131,6 @@ static int afs_mntpt_set_params(struct fs_context *fc, struct dentry *mntpt)
 		page = read_mapping_page(d_inode(mntpt)->i_mapping, 0, NULL);
 		if (IS_ERR(page))
 			return PTR_ERR(page);
-
-		if (PageError(page)) {
-			ret = afs_bad(AFS_FS_I(d_inode(mntpt)), afs_file_error_mntpt);
-			put_page(page);
-			return ret;
-		}
 
 		buf = kmap(page);
 		ret = -EINVAL;

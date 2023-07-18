@@ -76,7 +76,6 @@ static int rcar_gen3_phy_pcie_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct phy_provider *provider;
 	struct rcar_gen3_phy *phy;
-	struct resource *res;
 	void __iomem *base;
 	int error;
 
@@ -86,8 +85,7 @@ static int rcar_gen3_phy_pcie_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	base = devm_ioremap_resource(dev, res);
+	base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(base))
 		return PTR_ERR(base);
 
@@ -128,11 +126,9 @@ error:
 	return error;
 }
 
-static int rcar_gen3_phy_pcie_remove(struct platform_device *pdev)
+static void rcar_gen3_phy_pcie_remove(struct platform_device *pdev)
 {
 	pm_runtime_disable(&pdev->dev);
-
-	return 0;
 };
 
 static struct platform_driver rcar_gen3_phy_driver = {
@@ -141,7 +137,7 @@ static struct platform_driver rcar_gen3_phy_driver = {
 		.of_match_table	= rcar_gen3_phy_pcie_match_table,
 	},
 	.probe	= rcar_gen3_phy_pcie_probe,
-	.remove = rcar_gen3_phy_pcie_remove,
+	.remove_new = rcar_gen3_phy_pcie_remove,
 };
 
 module_platform_driver(rcar_gen3_phy_driver);

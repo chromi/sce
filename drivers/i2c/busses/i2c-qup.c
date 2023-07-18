@@ -778,7 +778,7 @@ static int qup_i2c_bam_schedule_desc(struct qup_i2c_dev *qup)
 			ret = -EINVAL;
 
 			/* abort TX descriptors */
-			dmaengine_terminate_all(qup->btx.dma);
+			dmaengine_terminate_sync(qup->btx.dma);
 			goto desc_err;
 		}
 
@@ -1290,7 +1290,7 @@ static void qup_i2c_write_rx_tags_v2(struct qup_i2c_dev *qup)
  * 1. Check if tx_tags_sent is false i.e. the start of QUP block so write the
  *    tags to TX FIFO and set tx_tags_sent to true.
  * 2. Check if send_last_word is true. It will be set when last few data bytes
- *    (less than 4 bytes) are reamining to be written in FIFO because of no FIFO
+ *    (less than 4 bytes) are remaining to be written in FIFO because of no FIFO
  *    space. All this data bytes are available in tx_fifo_data so write this
  *    in FIFO.
  * 3. Write the data to TX FIFO and check for cur_blk_len. If it is non zero
@@ -1603,7 +1603,7 @@ out:
 
 static u32 qup_i2c_func(struct i2c_adapter *adap)
 {
-	return I2C_FUNC_I2C | (I2C_FUNC_SMBUS_EMUL & ~I2C_FUNC_SMBUS_QUICK);
+	return I2C_FUNC_I2C | (I2C_FUNC_SMBUS_EMUL_ALL & ~I2C_FUNC_SMBUS_QUICK);
 }
 
 static const struct i2c_algorithm qup_i2c_algo = {
@@ -1752,16 +1752,21 @@ nodma:
 	if (!clk_freq || clk_freq > I2C_MAX_FAST_MODE_PLUS_FREQ) {
 		dev_err(qup->dev, "clock frequency not supported %d\n",
 			clk_freq);
-		return -EINVAL;
+		ret = -EINVAL;
+		goto fail_dma;
 	}
 
 	qup->base = devm_platform_ioremap_resource(pdev, 0);
-	if (IS_ERR(qup->base))
-		return PTR_ERR(qup->base);
+	if (IS_ERR(qup->base)) {
+		ret = PTR_ERR(qup->base);
+		goto fail_dma;
+	}
 
 	qup->irq = platform_get_irq(pdev, 0);
-	if (qup->irq < 0)
-		return qup->irq;
+	if (qup->irq < 0) {
+		ret = qup->irq;
+		goto fail_dma;
+	}
 
 	if (has_acpi_companion(qup->dev)) {
 		ret = device_property_read_u32(qup->dev,
@@ -1775,13 +1780,15 @@ nodma:
 		qup->clk = devm_clk_get(qup->dev, "core");
 		if (IS_ERR(qup->clk)) {
 			dev_err(qup->dev, "Could not get core clock\n");
-			return PTR_ERR(qup->clk);
+			ret = PTR_ERR(qup->clk);
+			goto fail_dma;
 		}
 
 		qup->pclk = devm_clk_get(qup->dev, "iface");
 		if (IS_ERR(qup->pclk)) {
 			dev_err(qup->dev, "Could not get iface clock\n");
-			return PTR_ERR(qup->pclk);
+			ret = PTR_ERR(qup->pclk);
+			goto fail_dma;
 		}
 		qup_i2c_enable_clocks(qup);
 		src_clk_freq = clk_get_rate(qup->clk);
@@ -1797,12 +1804,12 @@ nodma:
 		goto fail;
 
 	ret = devm_request_irq(qup->dev, qup->irq, qup_i2c_interrupt,
-			       IRQF_TRIGGER_HIGH, "i2c_qup", qup);
+			       IRQF_TRIGGER_HIGH | IRQF_NO_AUTOEN,
+			       "i2c_qup", qup);
 	if (ret) {
 		dev_err(qup->dev, "Request %d IRQ failed\n", qup->irq);
 		goto fail;
 	}
-	disable_irq(qup->irq);
 
 	hw_ver = readl(qup->base + QUP_HW_VERSION);
 	dev_dbg(qup->dev, "Revision %x\n", hw_ver);
@@ -1878,7 +1885,7 @@ nodma:
 	qup->adap.dev.of_node = pdev->dev.of_node;
 	qup->is_last = true;
 
-	strlcpy(qup->adap.name, "QUP I2C adapter", sizeof(qup->adap.name));
+	strscpy(qup->adap.name, "QUP I2C adapter", sizeof(qup->adap.name));
 
 	pm_runtime_set_autosuspend_delay(qup->dev, MSEC_PER_SEC);
 	pm_runtime_use_autosuspend(qup->dev);

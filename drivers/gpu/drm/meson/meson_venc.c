@@ -45,7 +45,7 @@
  * The ENCI is designed for PAl or NTSC encoding and can go through the VDAC
  * directly for CVBS encoding or through the ENCI_DVI encoder for HDMI.
  * The ENCP is designed for Progressive encoding but can also generate
- * 1080i interlaced pixels, and was initialy desined to encode pixels for
+ * 1080i interlaced pixels, and was initially designed to encode pixels for
  * VDAC to output RGB ou YUV analog outputs.
  * It's output is only used through the ENCP_DVI encoder for HDMI.
  * The ENCL LVDS encoder is not implemented.
@@ -866,10 +866,10 @@ meson_venc_hdmi_supported_mode(const struct drm_display_mode *mode)
 			    DRM_MODE_FLAG_PVSYNC | DRM_MODE_FLAG_NVSYNC))
 		return MODE_BAD;
 
-	if (mode->hdisplay < 640 || mode->hdisplay > 1920)
+	if (mode->hdisplay < 400 || mode->hdisplay > 1920)
 		return MODE_BAD_HVALUE;
 
-	if (mode->vdisplay < 480 || mode->vdisplay > 1200)
+	if (mode->vdisplay < 480 || mode->vdisplay > 1920)
 		return MODE_BAD_VVALUE;
 
 	return MODE_OK;
@@ -890,8 +890,8 @@ bool meson_venc_hdmi_supported_vic(int vic)
 }
 EXPORT_SYMBOL_GPL(meson_venc_hdmi_supported_vic);
 
-void meson_venc_hdmi_get_dmt_vmode(const struct drm_display_mode *mode,
-				   union meson_hdmi_venc_mode *dmt_mode)
+static void meson_venc_hdmi_get_dmt_vmode(const struct drm_display_mode *mode,
+					  union meson_hdmi_venc_mode *dmt_mode)
 {
 	memset(dmt_mode, 0, sizeof(*dmt_mode));
 

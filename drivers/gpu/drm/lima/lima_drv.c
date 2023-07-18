@@ -255,13 +255,13 @@ static const struct drm_ioctl_desc lima_drm_driver_ioctls[] = {
 
 DEFINE_DRM_GEM_FOPS(lima_drm_driver_fops);
 
-/**
+/*
  * Changelog:
  *
  * - 1.1.0 - add heap buffer support
  */
 
-static struct drm_driver lima_drm_driver = {
+static const struct drm_driver lima_drm_driver = {
 	.driver_features    = DRIVER_RENDER | DRIVER_GEM | DRIVER_SYNCOBJ,
 	.open               = lima_drm_driver_open,
 	.postclose          = lima_drm_driver_postclose,
@@ -392,8 +392,10 @@ static int lima_pdev_probe(struct platform_device *pdev)
 
 	/* Allocate and initialize the DRM device. */
 	ddev = drm_dev_alloc(&lima_drm_driver, &pdev->dev);
-	if (IS_ERR(ddev))
-		return PTR_ERR(ddev);
+	if (IS_ERR(ddev)) {
+		err = PTR_ERR(ddev);
+		goto err_out0;
+	}
 
 	ddev->dev_private = ldev;
 	ldev->ddev = ddev;

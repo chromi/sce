@@ -32,15 +32,17 @@
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_fourcc.h>
-#include <drm/drm_plane_helper.h>
 
+#include "i915_drv.h"
+#include "i915_reg.h"
 #include "intel_atomic.h"
 #include "intel_cdclk.h"
 #include "intel_display_types.h"
 #include "intel_global_state.h"
 #include "intel_hdcp.h"
 #include "intel_psr.h"
-#include "intel_sprite.h"
+#include "intel_fb.h"
+#include "skl_universal_plane.h"
 
 /**
  * intel_digital_connector_atomic_get_property - hook for connector->atomic_get_property.
@@ -61,9 +63,9 @@ int intel_digital_connector_atomic_get_property(struct drm_connector *connector,
 	struct intel_digital_connector_state *intel_conn_state =
 		to_intel_digital_connector_state(state);
 
-	if (property == dev_priv->force_audio_property)
+	if (property == dev_priv->display.properties.force_audio)
 		*val = intel_conn_state->force_audio;
-	else if (property == dev_priv->broadcast_rgb_property)
+	else if (property == dev_priv->display.properties.broadcast_rgb)
 		*val = intel_conn_state->broadcast_rgb;
 	else {
 		drm_dbg_atomic(&dev_priv->drm,
@@ -94,12 +96,12 @@ int intel_digital_connector_atomic_set_property(struct drm_connector *connector,
 	struct intel_digital_connector_state *intel_conn_state =
 		to_intel_digital_connector_state(state);
 
-	if (property == dev_priv->force_audio_property) {
+	if (property == dev_priv->display.properties.force_audio) {
 		intel_conn_state->force_audio = val;
 		return 0;
 	}
 
-	if (property == dev_priv->broadcast_rgb_property) {
+	if (property == dev_priv->display.properties.broadcast_rgb) {
 		intel_conn_state->broadcast_rgb = val;
 		return 0;
 	}
@@ -107,16 +109,6 @@ int intel_digital_connector_atomic_set_property(struct drm_connector *connector,
 	drm_dbg_atomic(&dev_priv->drm, "Unknown property [PROP:%d:%s]\n",
 		       property->base.id, property->name);
 	return -EINVAL;
-}
-
-static bool blob_equal(const struct drm_property_blob *a,
-		       const struct drm_property_blob *b)
-{
-	if (a && b)
-		return a->length == b->length &&
-			!memcmp(a->data, b->data, a->length);
-
-	return !a == !b;
 }
 
 int intel_digital_connector_atomic_check(struct drm_connector *conn,
@@ -133,7 +125,6 @@ int intel_digital_connector_atomic_check(struct drm_connector *conn,
 	struct drm_crtc_state *crtc_state;
 
 	intel_hdcp_atomic_check(conn, old_state, new_state);
-	intel_psr_atomic_check(conn, old_state, new_state);
 
 	if (!new_state->crtc)
 		return 0;
@@ -150,8 +141,8 @@ int intel_digital_connector_atomic_check(struct drm_connector *conn,
 	    new_conn_state->base.picture_aspect_ratio != old_conn_state->base.picture_aspect_ratio ||
 	    new_conn_state->base.content_type != old_conn_state->base.content_type ||
 	    new_conn_state->base.scaling_mode != old_conn_state->base.scaling_mode ||
-	    !blob_equal(new_conn_state->base.hdr_output_metadata,
-			old_conn_state->base.hdr_output_metadata))
+	    new_conn_state->base.privacy_screen_sw_state != old_conn_state->base.privacy_screen_sw_state ||
+	    !drm_connector_atomic_hdr_metadata_equal(old_state, new_state))
 		crtc_state->mode_changed = true;
 
 	return 0;
@@ -199,6 +190,26 @@ intel_connector_needs_modeset(struct intel_atomic_state *state,
 									    new_conn_state->crtc)));
 }
 
+/**
+ * intel_any_crtc_needs_modeset - check if any CRTC needs a modeset
+ * @state: the atomic state corresponding to this modeset
+ *
+ * Returns true if any CRTC in @state needs a modeset.
+ */
+bool intel_any_crtc_needs_modeset(struct intel_atomic_state *state)
+{
+	struct intel_crtc *crtc;
+	struct intel_crtc_state *crtc_state;
+	int i;
+
+	for_each_new_intel_crtc_in_state(state, crtc, crtc_state, i) {
+		if (intel_crtc_needs_modeset(crtc_state))
+			return true;
+	}
+
+	return false;
+}
+
 struct intel_digital_connector_state *
 intel_atomic_get_digital_connector_state(struct intel_atomic_state *state,
 					 struct intel_connector *connector)
@@ -242,6 +253,11 @@ intel_crtc_duplicate_state(struct drm_crtc *crtc)
 	if (crtc_state->hw.gamma_lut)
 		drm_property_blob_get(crtc_state->hw.gamma_lut);
 
+	if (crtc_state->pre_csc_lut)
+		drm_property_blob_get(crtc_state->pre_csc_lut);
+	if (crtc_state->post_csc_lut)
+		drm_property_blob_get(crtc_state->post_csc_lut);
+
 	crtc_state->update_pipe = false;
 	crtc_state->disable_lp_wm = false;
 	crtc_state->disable_cxsr = false;
@@ -251,6 +267,7 @@ intel_crtc_duplicate_state(struct drm_crtc *crtc)
 	crtc_state->preload_luts = false;
 	crtc_state->inherited = false;
 	crtc_state->wm.need_postvbl_update = false;
+	crtc_state->do_async_flip = false;
 	crtc_state->fb_bits = 0;
 	crtc_state->update_planes = 0;
 	crtc_state->dsb = NULL;
@@ -263,21 +280,14 @@ static void intel_crtc_put_color_blobs(struct intel_crtc_state *crtc_state)
 	drm_property_blob_put(crtc_state->hw.degamma_lut);
 	drm_property_blob_put(crtc_state->hw.gamma_lut);
 	drm_property_blob_put(crtc_state->hw.ctm);
+
+	drm_property_blob_put(crtc_state->pre_csc_lut);
+	drm_property_blob_put(crtc_state->post_csc_lut);
 }
 
 void intel_crtc_free_hw_state(struct intel_crtc_state *crtc_state)
 {
 	intel_crtc_put_color_blobs(crtc_state);
-}
-
-void intel_crtc_copy_color_blobs(struct intel_crtc_state *crtc_state)
-{
-	drm_property_replace_blob(&crtc_state->hw.degamma_lut,
-				  crtc_state->uapi.degamma_lut);
-	drm_property_replace_blob(&crtc_state->hw.gamma_lut,
-				  crtc_state->uapi.gamma_lut);
-	drm_property_replace_blob(&crtc_state->hw.ctm,
-				  crtc_state->uapi.ctm);
 }
 
 /**
@@ -301,11 +311,11 @@ intel_crtc_destroy_state(struct drm_crtc *crtc,
 	kfree(crtc_state);
 }
 
-static void intel_atomic_setup_scaler(struct intel_crtc_scaler_state *scaler_state,
-				      int num_scalers_need, struct intel_crtc *intel_crtc,
-				      const char *name, int idx,
-				      struct intel_plane_state *plane_state,
-				      int *scaler_id)
+static int intel_atomic_setup_scaler(struct intel_crtc_scaler_state *scaler_state,
+				     int num_scalers_need, struct intel_crtc *intel_crtc,
+				     const char *name, int idx,
+				     struct intel_plane_state *plane_state,
+				     int *scaler_id)
 {
 	struct drm_i915_private *dev_priv = to_i915(intel_crtc->base.dev);
 	int j;
@@ -325,15 +335,14 @@ static void intel_atomic_setup_scaler(struct intel_crtc_scaler_state *scaler_sta
 
 	if (drm_WARN(&dev_priv->drm, *scaler_id < 0,
 		     "Cannot find scaler for %s:%d\n", name, idx))
-		return;
+		return -EINVAL;
 
 	/* set scaler mode */
 	if (plane_state && plane_state->hw.fb &&
 	    plane_state->hw.fb->format->is_yuv &&
 	    plane_state->hw.fb->format->num_planes > 1) {
 		struct intel_plane *plane = to_intel_plane(plane_state->uapi.plane);
-		if (IS_GEN(dev_priv, 9) &&
-		    !IS_GEMINILAKE(dev_priv)) {
+		if (DISPLAY_VER(dev_priv) == 9) {
 			mode = SKL_PS_SCALER_MODE_NV12;
 		} else if (icl_is_hdr_plane(dev_priv, plane->id)) {
 			/*
@@ -351,7 +360,7 @@ static void intel_atomic_setup_scaler(struct intel_crtc_scaler_state *scaler_sta
 			if (linked)
 				mode |= PS_PLANE_Y_SEL(linked->id);
 		}
-	} else if (INTEL_GEN(dev_priv) > 9 || IS_GEMINILAKE(dev_priv)) {
+	} else if (DISPLAY_VER(dev_priv) >= 10) {
 		mode = PS_SCALER_MODE_NORMAL;
 	} else if (num_scalers_need == 1 && intel_crtc->num_scalers > 1) {
 		/*
@@ -367,9 +376,71 @@ static void intel_atomic_setup_scaler(struct intel_crtc_scaler_state *scaler_sta
 		mode = SKL_PS_SCALER_MODE_DYN;
 	}
 
+	/*
+	 * FIXME: we should also check the scaler factors for pfit, so
+	 * this shouldn't be tied directly to planes.
+	 */
+	if (plane_state && plane_state->hw.fb) {
+		const struct drm_framebuffer *fb = plane_state->hw.fb;
+		const struct drm_rect *src = &plane_state->uapi.src;
+		const struct drm_rect *dst = &plane_state->uapi.dst;
+		int hscale, vscale, max_vscale, max_hscale;
+
+		/*
+		 * FIXME: When two scalers are needed, but only one of
+		 * them needs to downscale, we should make sure that
+		 * the one that needs downscaling support is assigned
+		 * as the first scaler, so we don't reject downscaling
+		 * unnecessarily.
+		 */
+
+		if (DISPLAY_VER(dev_priv) >= 14) {
+			/*
+			 * On versions 14 and up, only the first
+			 * scaler supports a vertical scaling factor
+			 * of more than 1.0, while a horizontal
+			 * scaling factor of 3.0 is supported.
+			 */
+			max_hscale = 0x30000 - 1;
+			if (*scaler_id == 0)
+				max_vscale = 0x30000 - 1;
+			else
+				max_vscale = 0x10000;
+
+		} else if (DISPLAY_VER(dev_priv) >= 10 ||
+			   !intel_format_info_is_yuv_semiplanar(fb->format, fb->modifier)) {
+			max_hscale = 0x30000 - 1;
+			max_vscale = 0x30000 - 1;
+		} else {
+			max_hscale = 0x20000 - 1;
+			max_vscale = 0x20000 - 1;
+		}
+
+		/*
+		 * FIXME: We should change the if-else block above to
+		 * support HQ vs dynamic scaler properly.
+		 */
+
+		/* Check if required scaling is within limits */
+		hscale = drm_rect_calc_hscale(src, dst, 1, max_hscale);
+		vscale = drm_rect_calc_vscale(src, dst, 1, max_vscale);
+
+		if (hscale < 0 || vscale < 0) {
+			drm_dbg_kms(&dev_priv->drm,
+				    "Scaler %d doesn't support required plane scaling\n",
+				    *scaler_id);
+			drm_rect_debug_print("src: ", src, true);
+			drm_rect_debug_print("dst: ", dst, false);
+
+			return -EINVAL;
+		}
+	}
+
 	drm_dbg_kms(&dev_priv->drm, "Attached scaler id %u.%u to %s:%d\n",
 		    intel_crtc->pipe, *scaler_id, name, idx);
 	scaler_state->scalers[*scaler_id].mode = mode;
+
+	return 0;
 }
 
 /**
@@ -429,7 +500,7 @@ int intel_atomic_setup_scalers(struct drm_i915_private *dev_priv,
 	for (i = 0; i < sizeof(scaler_state->scaler_users) * 8; i++) {
 		int *scaler_id;
 		const char *name;
-		int idx;
+		int idx, ret;
 
 		/* skip if scaler not required */
 		if (!(scaler_state->scaler_users & (1 << i)))
@@ -460,7 +531,7 @@ int intel_atomic_setup_scalers(struct drm_i915_private *dev_priv,
 				 * isn't necessary to change between HQ and dyn mode
 				 * on those platforms.
 				 */
-				if (INTEL_GEN(dev_priv) >= 10 || IS_GEMINILAKE(dev_priv))
+				if (DISPLAY_VER(dev_priv) >= 10)
 					continue;
 
 				plane = drm_plane_from_index(&dev_priv->drm, i);
@@ -486,9 +557,11 @@ int intel_atomic_setup_scalers(struct drm_i915_private *dev_priv,
 			scaler_id = &plane_state->scaler_id;
 		}
 
-		intel_atomic_setup_scaler(scaler_state, num_scalers_need,
-					  intel_crtc, name, idx,
-					  plane_state, scaler_id);
+		ret = intel_atomic_setup_scaler(scaler_state, num_scalers_need,
+						intel_crtc, name, idx,
+						plane_state, scaler_id);
+		if (ret < 0)
+			return ret;
 	}
 
 	return 0;

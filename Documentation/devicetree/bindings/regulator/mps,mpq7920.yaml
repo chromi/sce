@@ -29,19 +29,19 @@ properties:
 
     properties:
       mps,switch-freq:
-        $ref: "/schemas/types.yaml#/definitions/uint8"
+        $ref: /schemas/types.yaml#/definitions/uint8
         enum: [0, 1, 2, 3]
         default: 2
         description: |
           switching frequency must be one of following corresponding value
           1.1MHz, 1.65MHz, 2.2MHz, 2.75MHz
 
-    patternProperties:
-      "^ldo[1-4]$":
+      ldortc:
         type: object
         $ref: regulator.yaml#
 
-      "^ldortc$":
+    patternProperties:
+      "^ldo[1-4]$":
         type: object
         $ref: regulator.yaml#
 
@@ -51,14 +51,14 @@ properties:
 
         properties:
           mps,buck-softstart:
-            $ref: "/schemas/types.yaml#/definitions/uint8"
+            $ref: /schemas/types.yaml#/definitions/uint8
             enum: [0, 1, 2, 3]
             description: |
               defines the soft start time of this buck, must be one of the following
               corresponding values 150us, 300us, 610us, 920us
 
           mps,buck-phase-delay:
-            $ref: "/schemas/types.yaml#/definitions/uint8"
+            $ref: /schemas/types.yaml#/definitions/uint8
             enum: [0, 1, 2, 3]
             description: |
               defines the phase delay of this buck, must be one of the following

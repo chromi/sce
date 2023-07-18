@@ -53,7 +53,8 @@
 #include <crypto/algapi.h>
 #include <crypto/hash.h>
 #include <crypto/gcm.h>
-#include <crypto/sha.h>
+#include <crypto/sha1.h>
+#include <crypto/sha2.h>
 #include <crypto/authenc.h>
 #include <crypto/ctr.h>
 #include <crypto/gf128mul.h>
@@ -97,17 +98,17 @@ static int chcr_handle_cipher_resp(struct skcipher_request *req,
 
 static inline  struct chcr_aead_ctx *AEAD_CTX(struct chcr_context *ctx)
 {
-	return ctx->crypto_ctx->aeadctx;
+	return &ctx->crypto_ctx->aeadctx;
 }
 
 static inline struct ablk_ctx *ABLK_CTX(struct chcr_context *ctx)
 {
-	return ctx->crypto_ctx->ablkctx;
+	return &ctx->crypto_ctx->ablkctx;
 }
 
 static inline struct hmac_ctx *HMAC_CTX(struct chcr_context *ctx)
 {
-	return ctx->crypto_ctx->hmacctx;
+	return &ctx->crypto_ctx->hmacctx;
 }
 
 static inline struct chcr_gcm_ctx *GCM_CTX(struct chcr_aead_ctx *gctx)
@@ -123,11 +124,6 @@ static inline struct chcr_authenc_ctx *AUTHENC_CTX(struct chcr_aead_ctx *gctx)
 static inline struct uld_ctx *ULD_CTX(struct chcr_context *ctx)
 {
 	return container_of(ctx->dev, struct uld_ctx, dev);
-}
-
-static inline int is_ofld_imm(const struct sk_buff *skb)
-{
-	return (skb->len <= SGE_MAX_WR_LEN);
 }
 
 static inline void chcr_init_hctx_per_wr(struct chcr_ahash_req_ctx *reqctx)
@@ -214,7 +210,7 @@ static inline int chcr_handle_aead_resp(struct aead_request *req,
 					 unsigned char *input,
 					 int err)
 {
-	struct chcr_aead_reqctx *reqctx = aead_request_ctx(req);
+	struct chcr_aead_reqctx *reqctx = aead_request_ctx_dma(req);
 	struct crypto_aead *tfm = crypto_aead_reqtfm(req);
 	struct chcr_dev *dev = a_ctx(tfm)->dev;
 
@@ -224,7 +220,7 @@ static inline int chcr_handle_aead_resp(struct aead_request *req,
 		reqctx->verify = VERIFY_HW;
 	}
 	chcr_dec_wrcount(dev);
-	req->base.complete(&req->base, err);
+	aead_request_complete(req, err);
 
 	return err;
 }
@@ -722,7 +718,7 @@ static inline int get_qidxs(struct crypto_async_request *req,
 	{
 		struct aead_request *aead_req =
 			container_of(req, struct aead_request, base);
-		struct chcr_aead_reqctx *reqctx = aead_request_ctx(aead_req);
+		struct chcr_aead_reqctx *reqctx = aead_request_ctx_dma(aead_req);
 		*txqidx = reqctx->txqidx;
 		*rxqidx = reqctx->rxqidx;
 		break;
@@ -768,13 +764,14 @@ static inline void create_wreq(struct chcr_context *ctx,
 	struct uld_ctx *u_ctx = ULD_CTX(ctx);
 	unsigned int tx_channel_id, rx_channel_id;
 	unsigned int txqidx = 0, rxqidx = 0;
-	unsigned int qid, fid;
+	unsigned int qid, fid, portno;
 
 	get_qidxs(req, &txqidx, &rxqidx);
 	qid = u_ctx->lldi.rxq_ids[rxqidx];
 	fid = u_ctx->lldi.rxq_ids[0];
+	portno = rxqidx / ctx->rxq_perchan;
 	tx_channel_id = txqidx / ctx->txq_perchan;
-	rx_channel_id = rxqidx / ctx->rxq_perchan;
+	rx_channel_id = cxgb4_port_e2cchan(u_ctx->lldi.ports[portno]);
 
 
 	chcr_req->wreq.op_to_cctx_size = FILL_WR_OP_CCTX_SIZE;
@@ -796,15 +793,13 @@ static inline void create_wreq(struct chcr_context *ctx,
 
 /**
  *	create_cipher_wr - form the WR for cipher operations
- *	@req: cipher req.
- *	@ctx: crypto driver context of the request.
- *	@qid: ingress qid where response of this WR should be received.
- *	@op_type:	encryption or decryption
+ *	@wrparam: Container for create_cipher_wr()'s parameters
  */
 static struct sk_buff *create_cipher_wr(struct cipher_wr_param *wrparam)
 {
 	struct crypto_skcipher *tfm = crypto_skcipher_reqtfm(wrparam->req);
 	struct chcr_context *ctx = c_ctx(tfm);
+	struct uld_ctx *u_ctx = ULD_CTX(ctx);
 	struct ablk_ctx *ablkctx = ABLK_CTX(ctx);
 	struct sk_buff *skb = NULL;
 	struct chcr_wr *chcr_req;
@@ -821,6 +816,7 @@ static struct sk_buff *create_cipher_wr(struct cipher_wr_param *wrparam)
 	struct adapter *adap = padap(ctx->dev);
 	unsigned int rx_channel_id = reqctx->rxqidx / ctx->rxq_perchan;
 
+	rx_channel_id = cxgb4_port_e2cchan(u_ctx->lldi.ports[rx_channel_id]);
 	nents = sg_nents_xlen(reqctx->dstsg,  wrparam->bytes, CHCR_DST_SG_SIZE,
 			      reqctx->dst_ofst);
 	dst_size = get_space_for_phys_dsgl(nents);
@@ -1239,7 +1235,7 @@ complete:
 		complete(&ctx->cbc_aes_aio_done);
 	}
 	chcr_dec_wrcount(dev);
-	req->base.complete(&req->base, err);
+	skcipher_request_complete(req, err);
 	return err;
 }
 
@@ -1558,7 +1554,8 @@ static inline void chcr_free_shash(struct crypto_shash *base_hash)
 
 /**
  *	create_hash_wr - Create hash work request
- *	@req - Cipher req base
+ *	@req: Cipher req base
+ *	@param: Container for create_hash_wr()'s parameters
  */
 static struct sk_buff *create_hash_wr(struct ahash_request *req,
 				      struct hash_wr_param *param)
@@ -1579,6 +1576,7 @@ static struct sk_buff *create_hash_wr(struct ahash_request *req,
 	int error = 0;
 	unsigned int rx_channel_id = req_ctx->rxqidx / ctx->rxq_perchan;
 
+	rx_channel_id = cxgb4_port_e2cchan(u_ctx->lldi.ports[rx_channel_id]);
 	transhdr_len = HASH_TRANSHDR_SIZE(param->kctx_len);
 	req_ctx->hctx_wr.imm = (transhdr_len + param->bfr_len +
 				param->sg_len) <= SGE_MAX_WR_LEN;
@@ -2134,7 +2132,7 @@ unmap:
 
 out:
 	chcr_dec_wrcount(dev);
-	req->base.complete(&req->base, err);
+	ahash_request_complete(req, err);
 }
 
 /*
@@ -2364,7 +2362,7 @@ static void chcr_hmac_cra_exit(struct crypto_tfm *tfm)
 
 inline void chcr_aead_common_exit(struct aead_request *req)
 {
-	struct chcr_aead_reqctx  *reqctx = aead_request_ctx(req);
+	struct chcr_aead_reqctx *reqctx = aead_request_ctx_dma(req);
 	struct crypto_aead *tfm = crypto_aead_reqtfm(req);
 	struct uld_ctx *u_ctx = ULD_CTX(a_ctx(tfm));
 
@@ -2375,7 +2373,7 @@ static int chcr_aead_common_init(struct aead_request *req)
 {
 	struct crypto_aead *tfm = crypto_aead_reqtfm(req);
 	struct chcr_aead_ctx *aeadctx = AEAD_CTX(a_ctx(tfm));
-	struct chcr_aead_reqctx  *reqctx = aead_request_ctx(req);
+	struct chcr_aead_reqctx *reqctx = aead_request_ctx_dma(req);
 	unsigned int authsize = crypto_aead_authsize(tfm);
 	int error = -EINVAL;
 
@@ -2419,7 +2417,7 @@ static int chcr_aead_fallback(struct aead_request *req, unsigned short op_type)
 {
 	struct crypto_aead *tfm = crypto_aead_reqtfm(req);
 	struct chcr_aead_ctx *aeadctx = AEAD_CTX(a_ctx(tfm));
-	struct aead_request *subreq = aead_request_ctx(req);
+	struct aead_request *subreq = aead_request_ctx_dma(req);
 
 	aead_request_set_tfm(subreq, aeadctx->sw_cipher);
 	aead_request_set_callback(subreq, req->base.flags,
@@ -2437,9 +2435,10 @@ static struct sk_buff *create_authenc_wr(struct aead_request *req,
 {
 	struct crypto_aead *tfm = crypto_aead_reqtfm(req);
 	struct chcr_context *ctx = a_ctx(tfm);
+	struct uld_ctx *u_ctx = ULD_CTX(ctx);
 	struct chcr_aead_ctx *aeadctx = AEAD_CTX(ctx);
 	struct chcr_authenc_ctx *actx = AUTHENC_CTX(aeadctx);
-	struct chcr_aead_reqctx *reqctx = aead_request_ctx(req);
+	struct chcr_aead_reqctx *reqctx = aead_request_ctx_dma(req);
 	struct sk_buff *skb = NULL;
 	struct chcr_wr *chcr_req;
 	struct cpl_rx_phys_dsgl *phys_cpl;
@@ -2456,6 +2455,7 @@ static struct sk_buff *create_authenc_wr(struct aead_request *req,
 	struct adapter *adap = padap(ctx->dev);
 	unsigned int rx_channel_id = reqctx->rxqidx / ctx->rxq_perchan;
 
+	rx_channel_id = cxgb4_port_e2cchan(u_ctx->lldi.ports[rx_channel_id]);
 	if (req->cryptlen == 0)
 		return NULL;
 
@@ -2576,7 +2576,7 @@ int chcr_aead_dma_map(struct device *dev,
 		      unsigned short op_type)
 {
 	int error;
-	struct chcr_aead_reqctx  *reqctx = aead_request_ctx(req);
+	struct chcr_aead_reqctx *reqctx = aead_request_ctx_dma(req);
 	struct crypto_aead *tfm = crypto_aead_reqtfm(req);
 	unsigned int authsize = crypto_aead_authsize(tfm);
 	int src_len, dst_len;
@@ -2637,7 +2637,7 @@ void chcr_aead_dma_unmap(struct device *dev,
 			 struct aead_request *req,
 			 unsigned short op_type)
 {
-	struct chcr_aead_reqctx  *reqctx = aead_request_ctx(req);
+	struct chcr_aead_reqctx *reqctx = aead_request_ctx_dma(req);
 	struct crypto_aead *tfm = crypto_aead_reqtfm(req);
 	unsigned int authsize = crypto_aead_authsize(tfm);
 	int src_len, dst_len;
@@ -2678,7 +2678,7 @@ void chcr_add_aead_src_ent(struct aead_request *req,
 			   struct ulptx_sgl *ulptx)
 {
 	struct ulptx_walk ulp_walk;
-	struct chcr_aead_reqctx  *reqctx = aead_request_ctx(req);
+	struct chcr_aead_reqctx *reqctx = aead_request_ctx_dma(req);
 
 	if (reqctx->imm) {
 		u8 *buf = (u8 *)ulptx;
@@ -2704,14 +2704,16 @@ void chcr_add_aead_dst_ent(struct aead_request *req,
 			   struct cpl_rx_phys_dsgl *phys_cpl,
 			   unsigned short qid)
 {
-	struct chcr_aead_reqctx  *reqctx = aead_request_ctx(req);
+	struct chcr_aead_reqctx *reqctx = aead_request_ctx_dma(req);
 	struct crypto_aead *tfm = crypto_aead_reqtfm(req);
 	struct dsgl_walk dsgl_walk;
 	unsigned int authsize = crypto_aead_authsize(tfm);
 	struct chcr_context *ctx = a_ctx(tfm);
+	struct uld_ctx *u_ctx = ULD_CTX(ctx);
 	u32 temp;
 	unsigned int rx_channel_id = reqctx->rxqidx / ctx->rxq_perchan;
 
+	rx_channel_id = cxgb4_port_e2cchan(u_ctx->lldi.ports[rx_channel_id]);
 	dsgl_walk_init(&dsgl_walk, phys_cpl);
 	dsgl_walk_add_page(&dsgl_walk, IV + reqctx->b0_len, reqctx->iv_dma);
 	temp = req->assoclen + req->cryptlen +
@@ -2751,9 +2753,11 @@ void chcr_add_cipher_dst_ent(struct skcipher_request *req,
 	struct chcr_skcipher_req_ctx *reqctx = skcipher_request_ctx(req);
 	struct crypto_skcipher *tfm = crypto_skcipher_reqtfm(wrparam->req);
 	struct chcr_context *ctx = c_ctx(tfm);
+	struct uld_ctx *u_ctx = ULD_CTX(ctx);
 	struct dsgl_walk dsgl_walk;
 	unsigned int rx_channel_id = reqctx->rxqidx / ctx->rxq_perchan;
 
+	rx_channel_id = cxgb4_port_e2cchan(u_ctx->lldi.ports[rx_channel_id]);
 	dsgl_walk_init(&dsgl_walk, phys_cpl);
 	dsgl_walk_add_sg(&dsgl_walk, reqctx->dstsg, wrparam->bytes,
 			 reqctx->dst_ofst);
@@ -2890,7 +2894,7 @@ static int generate_b0(struct aead_request *req, u8 *ivptr,
 	unsigned int l, lp, m;
 	int rc;
 	struct crypto_aead *aead = crypto_aead_reqtfm(req);
-	struct chcr_aead_reqctx *reqctx = aead_request_ctx(req);
+	struct chcr_aead_reqctx *reqctx = aead_request_ctx_dma(req);
 	u8 *b0 = reqctx->scratch_pad;
 
 	m = crypto_aead_authsize(aead);
@@ -2928,7 +2932,7 @@ static int ccm_format_packet(struct aead_request *req,
 			     unsigned short op_type,
 			     unsigned int assoclen)
 {
-	struct chcr_aead_reqctx *reqctx = aead_request_ctx(req);
+	struct chcr_aead_reqctx *reqctx = aead_request_ctx_dma(req);
 	struct crypto_aead *tfm = crypto_aead_reqtfm(req);
 	struct chcr_aead_ctx *aeadctx = AEAD_CTX(a_ctx(tfm));
 	int rc = 0;
@@ -2957,14 +2961,17 @@ static void fill_sec_cpl_for_aead(struct cpl_tx_sec_pdu *sec_cpl,
 {
 	struct crypto_aead *tfm = crypto_aead_reqtfm(req);
 	struct chcr_context *ctx = a_ctx(tfm);
+	struct uld_ctx *u_ctx = ULD_CTX(ctx);
 	struct chcr_aead_ctx *aeadctx = AEAD_CTX(ctx);
-	struct chcr_aead_reqctx *reqctx = aead_request_ctx(req);
+	struct chcr_aead_reqctx *reqctx = aead_request_ctx_dma(req);
 	unsigned int cipher_mode = CHCR_SCMD_CIPHER_MODE_AES_CCM;
 	unsigned int mac_mode = CHCR_SCMD_AUTH_MODE_CBCMAC;
 	unsigned int rx_channel_id = reqctx->rxqidx / ctx->rxq_perchan;
 	unsigned int ccm_xtra;
 	unsigned int tag_offset = 0, auth_offset = 0;
 	unsigned int assoclen;
+
+	rx_channel_id = cxgb4_port_e2cchan(u_ctx->lldi.ports[rx_channel_id]);
 
 	if (get_aead_subtype(tfm) == CRYPTO_ALG_SUB_TYPE_AEAD_RFC4309)
 		assoclen = req->assoclen - 8;
@@ -3029,7 +3036,7 @@ static struct sk_buff *create_aead_ccm_wr(struct aead_request *req,
 {
 	struct crypto_aead *tfm = crypto_aead_reqtfm(req);
 	struct chcr_aead_ctx *aeadctx = AEAD_CTX(a_ctx(tfm));
-	struct chcr_aead_reqctx *reqctx = aead_request_ctx(req);
+	struct chcr_aead_reqctx *reqctx = aead_request_ctx_dma(req);
 	struct sk_buff *skb = NULL;
 	struct chcr_wr *chcr_req;
 	struct cpl_rx_phys_dsgl *phys_cpl;
@@ -3126,8 +3133,9 @@ static struct sk_buff *create_gcm_wr(struct aead_request *req,
 {
 	struct crypto_aead *tfm = crypto_aead_reqtfm(req);
 	struct chcr_context *ctx = a_ctx(tfm);
+	struct uld_ctx *u_ctx = ULD_CTX(ctx);
 	struct chcr_aead_ctx *aeadctx = AEAD_CTX(ctx);
-	struct chcr_aead_reqctx  *reqctx = aead_request_ctx(req);
+	struct chcr_aead_reqctx *reqctx = aead_request_ctx_dma(req);
 	struct sk_buff *skb = NULL;
 	struct chcr_wr *chcr_req;
 	struct cpl_rx_phys_dsgl *phys_cpl;
@@ -3142,6 +3150,7 @@ static struct sk_buff *create_gcm_wr(struct aead_request *req,
 	struct adapter *adap = padap(ctx->dev);
 	unsigned int rx_channel_id = reqctx->rxqidx / ctx->rxq_perchan;
 
+	rx_channel_id = cxgb4_port_e2cchan(u_ctx->lldi.ports[rx_channel_id]);
 	if (get_aead_subtype(tfm) == CRYPTO_ALG_SUB_TYPE_AEAD_RFC4106)
 		assoclen = req->assoclen - 8;
 
@@ -3246,9 +3255,10 @@ static int chcr_aead_cra_init(struct crypto_aead *tfm)
 					       CRYPTO_ALG_ASYNC);
 	if  (IS_ERR(aeadctx->sw_cipher))
 		return PTR_ERR(aeadctx->sw_cipher);
-	crypto_aead_set_reqsize(tfm, max(sizeof(struct chcr_aead_reqctx),
-				 sizeof(struct aead_request) +
-				 crypto_aead_reqsize(aeadctx->sw_cipher)));
+	crypto_aead_set_reqsize_dma(
+		tfm, max(sizeof(struct chcr_aead_reqctx),
+			 sizeof(struct aead_request) +
+			 crypto_aead_reqsize(aeadctx->sw_cipher)));
 	return chcr_device_init(a_ctx(tfm));
 }
 
@@ -3726,7 +3736,7 @@ static int chcr_aead_op(struct aead_request *req,
 			create_wr_t create_wr_fn)
 {
 	struct crypto_aead *tfm = crypto_aead_reqtfm(req);
-	struct chcr_aead_reqctx  *reqctx = aead_request_ctx(req);
+	struct chcr_aead_reqctx *reqctx = aead_request_ctx_dma(req);
 	struct chcr_context *ctx = a_ctx(tfm);
 	struct uld_ctx *u_ctx = ULD_CTX(ctx);
 	struct sk_buff *skb;
@@ -3776,7 +3786,7 @@ static int chcr_aead_op(struct aead_request *req,
 static int chcr_aead_encrypt(struct aead_request *req)
 {
 	struct crypto_aead *tfm = crypto_aead_reqtfm(req);
-	struct chcr_aead_reqctx *reqctx = aead_request_ctx(req);
+	struct chcr_aead_reqctx *reqctx = aead_request_ctx_dma(req);
 	struct chcr_context *ctx = a_ctx(tfm);
 	unsigned int cpu;
 
@@ -3807,7 +3817,7 @@ static int chcr_aead_decrypt(struct aead_request *req)
 	struct crypto_aead *tfm = crypto_aead_reqtfm(req);
 	struct chcr_context *ctx = a_ctx(tfm);
 	struct chcr_aead_ctx *aeadctx = AEAD_CTX(ctx);
-	struct chcr_aead_reqctx *reqctx = aead_request_ctx(req);
+	struct chcr_aead_reqctx *reqctx = aead_request_ctx_dma(req);
 	int size;
 	unsigned int cpu;
 

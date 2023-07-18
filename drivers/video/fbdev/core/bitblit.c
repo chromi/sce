@@ -247,6 +247,9 @@ static void bit_cursor(struct vc_data *vc, struct fb_info *info, int mode,
 
 	cursor.set = 0;
 
+	if (!vc->vc_font.data)
+		return;
+
  	c = scr_readw((u16 *) vc->vc_pos);
 	attribute = get_attribute(info, c);
 	src = vc->vc_font.data + ((c & charmask) * (w * vc->vc_font.height));
@@ -404,6 +407,3 @@ void fbcon_set_bitops(struct fbcon_ops *ops)
 	if (ops->rotate)
 		fbcon_set_rotate(ops);
 }
-
-EXPORT_SYMBOL(fbcon_set_bitops);
-

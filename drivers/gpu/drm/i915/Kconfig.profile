@@ -1,3 +1,17 @@
+config DRM_I915_REQUEST_TIMEOUT
+	int "Default timeout for requests (ms)"
+	default 20000 # milliseconds
+	help
+	  Configures the default timeout after which any user submissions will
+	  be forcefully terminated.
+
+	  Beware setting this value lower, or close to heartbeat interval
+	  rounded to whole seconds times three, in order to avoid allowing
+	  misbehaving applications causing total rendering failure in unrelated
+	  clients.
+
+	  May be 0 to disable the timeout.
+
 config DRM_I915_FENCE_TIMEOUT
 	int "Timeout for unsignaled foreign fences (ms, jiffy granularity)"
 	default 10000 # milliseconds
@@ -43,10 +57,28 @@ config DRM_I915_PREEMPT_TIMEOUT
 	default 640 # milliseconds
 	help
 	  How long to wait (in milliseconds) for a preemption event to occur
-	  when submitting a new context via execlists. If the current context
-	  does not hit an arbitration point and yield to HW before the timer
-	  expires, the HW will be reset to allow the more important context
-	  to execute.
+	  when submitting a new context. If the current context does not hit
+	  an arbitration point and yield to HW before the timer expires, the
+	  HW will be reset to allow the more important context to execute.
+
+	  This is adjustable via
+	  /sys/class/drm/card?/engine/*/preempt_timeout_ms
+
+	  May be 0 to disable the timeout.
+
+	  The compiled in default may get overridden at driver probe time on
+	  certain platforms and certain engines which will be reflected in the
+	  sysfs control.
+
+config DRM_I915_PREEMPT_TIMEOUT_COMPUTE
+	int "Preempt timeout for compute engines (ms, jiffy granularity)"
+	default 7500 # milliseconds
+	help
+	  How long to wait (in milliseconds) for a preemption event to occur
+	  when submitting a new context to a compute capable engine. If the
+	  current context does not hit an arbitration point and yield to HW
+	  before the timer expires, the HW will be reset to allow the more
+	  important context to execute.
 
 	  This is adjustable via
 	  /sys/class/drm/card?/engine/*/preempt_timeout_ms

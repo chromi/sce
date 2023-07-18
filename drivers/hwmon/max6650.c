@@ -321,7 +321,7 @@ static SENSOR_DEVICE_ATTR_RO(gpio2_alarm, alarm, MAX6650_ALRM_GPIO2);
 static umode_t max6650_attrs_visible(struct kobject *kobj, struct attribute *a,
 				     int n)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
+	struct device *dev = kobj_to_dev(kobj);
 	struct max6650_data *data = dev_get_drvdata(dev);
 	struct device_attribute *devattr;
 
@@ -737,7 +737,7 @@ static umode_t max6650_is_visible(const void *_data,
 	return 0;
 }
 
-static const struct hwmon_channel_info *max6650_info[] = {
+static const struct hwmon_channel_info * const max6650_info[] = {
 	HWMON_CHANNEL_INFO(fan, HWMON_F_INPUT | HWMON_F_TARGET | HWMON_F_DIV |
 			   HWMON_F_MIN_ALARM | HWMON_F_MAX_ALARM |
 			   HWMON_F_FAULT,

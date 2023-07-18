@@ -2,7 +2,6 @@
 /*
  * Copyright (c) 2017 Facebook
  */
-#include <sys/resource.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <stdint.h>
@@ -12,6 +11,8 @@
 #include <stdio.h>
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
+
+#include "bpf_util.h"
 
 static int map_fd[7];
 
@@ -29,7 +30,7 @@ static const char * const test_names[] = {
 	"Hash of Hash",
 };
 
-#define NR_TESTS (sizeof(test_names) / sizeof(*test_names))
+#define NR_TESTS ARRAY_SIZE(test_names)
 
 static void check_map_id(int inner_map_fd, int map_in_map_fd, uint32_t key)
 {
@@ -37,7 +38,7 @@ static void check_map_id(int inner_map_fd, int map_in_map_fd, uint32_t key)
 	uint32_t info_len = sizeof(info);
 	int ret, id;
 
-	ret = bpf_obj_get_info_by_fd(inner_map_fd, &info, &info_len);
+	ret = bpf_map_get_info_by_fd(inner_map_fd, &info, &info_len);
 	assert(!ret);
 
 	ret = bpf_map_lookup_elem(map_in_map_fd, &key, &id);
@@ -114,18 +115,12 @@ static void test_map_in_map(void)
 
 int main(int argc, char **argv)
 {
-	struct rlimit r = {RLIM_INFINITY, RLIM_INFINITY};
 	struct bpf_link *link = NULL;
 	struct bpf_program *prog;
 	struct bpf_object *obj;
 	char filename[256];
 
-	if (setrlimit(RLIMIT_MEMLOCK, &r)) {
-		perror("setrlimit(RLIMIT_MEMLOCK)");
-		return 1;
-	}
-
-	snprintf(filename, sizeof(filename), "%s_kern.o", argv[0]);
+	snprintf(filename, sizeof(filename), "%s.bpf.o", argv[0]);
 	obj = bpf_object__open_file(filename, NULL);
 	if (libbpf_get_error(obj)) {
 		fprintf(stderr, "ERROR: opening BPF object file failed\n");

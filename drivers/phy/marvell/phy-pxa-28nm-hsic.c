@@ -162,7 +162,6 @@ static int mv_hsic_phy_probe(struct platform_device *pdev)
 {
 	struct phy_provider *phy_provider;
 	struct mv_hsic_phy *mv_phy;
-	struct resource *r;
 
 	mv_phy = devm_kzalloc(&pdev->dev, sizeof(*mv_phy), GFP_KERNEL);
 	if (!mv_phy)
@@ -176,8 +175,7 @@ static int mv_hsic_phy_probe(struct platform_device *pdev)
 		return PTR_ERR(mv_phy->clk);
 	}
 
-	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	mv_phy->base = devm_ioremap_resource(&pdev->dev, r);
+	mv_phy->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(mv_phy->base))
 		return PTR_ERR(mv_phy->base);
 
@@ -201,7 +199,7 @@ static struct platform_driver mv_hsic_phy_driver = {
 	.probe	= mv_hsic_phy_probe,
 	.driver = {
 		.name   = "mv-hsic-phy",
-		.of_match_table = of_match_ptr(mv_hsic_phy_dt_match),
+		.of_match_table = mv_hsic_phy_dt_match,
 	},
 };
 module_platform_driver(mv_hsic_phy_driver);

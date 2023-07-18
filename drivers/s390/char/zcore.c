@@ -15,6 +15,9 @@
 #include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/debugfs.h>
+#include <linux/panic_notifier.h>
+#include <linux/reboot.h>
+#include <linux/uio.h>
 
 #include <asm/asm-offsets.h>
 #include <asm/ipl.h>
@@ -27,6 +30,7 @@
 #include <asm/checksum.h>
 #include <asm/os_info.h>
 #include <asm/switch_to.h>
+#include <asm/maccess.h>
 #include "sclp.h"
 
 #define TRACE(x...) debug_sprintf_event(zcore_dbf, 1, x)
@@ -48,36 +52,41 @@ static struct dentry *zcore_reipl_file;
 static struct dentry *zcore_hsa_file;
 static struct ipl_parameter_block *zcore_ipl_block;
 
+static DEFINE_MUTEX(hsa_buf_mutex);
 static char hsa_buf[PAGE_SIZE] __aligned(PAGE_SIZE);
 
 /*
- * Copy memory from HSA to user memory (not reentrant):
+ * Copy memory from HSA to iterator (not reentrant):
  *
- * @dest:  User buffer where memory should be copied to
+ * @iter:  Iterator where memory should be copied to
  * @src:   Start address within HSA where data should be copied
  * @count: Size of buffer, which should be copied
  */
-int memcpy_hsa_user(void __user *dest, unsigned long src, size_t count)
+size_t memcpy_hsa_iter(struct iov_iter *iter, unsigned long src, size_t count)
 {
-	unsigned long offset, bytes;
+	size_t bytes, copied, res = 0;
+	unsigned long offset;
 
 	if (!hsa_available)
-		return -ENODATA;
+		return 0;
 
+	mutex_lock(&hsa_buf_mutex);
 	while (count) {
 		if (sclp_sdias_copy(hsa_buf, src / PAGE_SIZE + 2, 1)) {
 			TRACE("sclp_sdias_copy() failed\n");
-			return -EIO;
+			break;
 		}
 		offset = src % PAGE_SIZE;
 		bytes = min(PAGE_SIZE - offset, count);
-		if (copy_to_user(dest, hsa_buf + offset, bytes))
-			return -EFAULT;
-		src += bytes;
-		dest += bytes;
-		count -= bytes;
+		copied = copy_to_iter(hsa_buf + offset, bytes, iter);
+		count -= copied;
+		src += copied;
+		res += copied;
+		if (copied < bytes)
+			break;
 	}
-	return 0;
+	mutex_unlock(&hsa_buf_mutex);
+	return res;
 }
 
 /*
@@ -87,25 +96,16 @@ int memcpy_hsa_user(void __user *dest, unsigned long src, size_t count)
  * @src:   Start address within HSA where data should be copied
  * @count: Size of buffer, which should be copied
  */
-int memcpy_hsa_kernel(void *dest, unsigned long src, size_t count)
+static inline int memcpy_hsa_kernel(void *dst, unsigned long src, size_t count)
 {
-	unsigned long offset, bytes;
+	struct iov_iter iter;
+	struct kvec kvec;
 
-	if (!hsa_available)
-		return -ENODATA;
-
-	while (count) {
-		if (sclp_sdias_copy(hsa_buf, src / PAGE_SIZE + 2, 1)) {
-			TRACE("sclp_sdias_copy() failed\n");
-			return -EIO;
-		}
-		offset = src % PAGE_SIZE;
-		bytes = min(PAGE_SIZE - offset, count);
-		memcpy(dest, hsa_buf + offset, bytes);
-		src += bytes;
-		dest += bytes;
-		count -= bytes;
-	}
+	kvec.iov_base = dst;
+	kvec.iov_len = count;
+	iov_iter_kvec(&iter, ITER_DEST, &kvec, 1, count);
+	if (memcpy_hsa_iter(&iter, src, count) < count)
+		return -EIO;
 	return 0;
 }
 
@@ -227,8 +227,7 @@ static int __init zcore_reipl_init(void)
 		rc = memcpy_hsa_kernel(zcore_ipl_block, ipib_info.ipib,
 				       PAGE_SIZE);
 	else
-		rc = memcpy_real(zcore_ipl_block, (void *) ipib_info.ipib,
-				 PAGE_SIZE);
+		rc = memcpy_real(zcore_ipl_block, ipib_info.ipib, PAGE_SIZE);
 	if (rc || (__force u32)csum_partial(zcore_ipl_block, zcore_ipl_block->hdr.len, 0) !=
 	    ipib_info.checksum) {
 		TRACE("Checksum does not match\n");
@@ -238,6 +237,28 @@ static int __init zcore_reipl_init(void)
 	return 0;
 }
 
+static int zcore_reboot_and_on_panic_handler(struct notifier_block *self,
+					     unsigned long	   event,
+					     void		   *data)
+{
+	if (hsa_available)
+		release_hsa();
+
+	return NOTIFY_OK;
+}
+
+static struct notifier_block zcore_reboot_notifier = {
+	.notifier_call	= zcore_reboot_and_on_panic_handler,
+	/* we need to be notified before reipl and kdump */
+	.priority	= INT_MAX,
+};
+
+static struct notifier_block zcore_on_panic_notifier = {
+	.notifier_call	= zcore_reboot_and_on_panic_handler,
+	/* we need to be notified before reipl and kdump */
+	.priority	= INT_MAX,
+};
+
 static int __init zcore_init(void)
 {
 	unsigned char arch;
@@ -245,7 +266,7 @@ static int __init zcore_init(void)
 
 	if (!is_ipl_type_dump())
 		return -ENODATA;
-	if (OLDMEM_BASE)
+	if (oldmem_data.start)
 		return -ENODATA;
 
 	zcore_dbf = debug_register("zcore", 4, 1, 4 * sizeof(long));
@@ -261,6 +282,10 @@ static int __init zcore_init(void)
 		TRACE("type:   nvme\n");
 		TRACE("fid:    %x\n", ipl_info.data.nvme.fid);
 		TRACE("nsid:   %x\n", ipl_info.data.nvme.nsid);
+	} else if (ipl_info.type == IPL_TYPE_ECKD_DUMP) {
+		TRACE("type:   eckd\n");
+		TRACE("devno:  %x\n", ipl_info.data.eckd.dev_id.devno);
+		TRACE("ssid:   %x\n", ipl_info.data.eckd.dev_id.ssid);
 	}
 
 	rc = sclp_sdias_init();
@@ -293,28 +318,15 @@ static int __init zcore_init(void)
 		goto fail;
 
 	zcore_dir = debugfs_create_dir("zcore" , NULL);
-	if (!zcore_dir) {
-		rc = -ENOMEM;
-		goto fail;
-	}
 	zcore_reipl_file = debugfs_create_file("reipl", S_IRUSR, zcore_dir,
 						NULL, &zcore_reipl_fops);
-	if (!zcore_reipl_file) {
-		rc = -ENOMEM;
-		goto fail_dir;
-	}
 	zcore_hsa_file = debugfs_create_file("hsa", S_IRUSR|S_IWUSR, zcore_dir,
 					     NULL, &zcore_hsa_fops);
-	if (!zcore_hsa_file) {
-		rc = -ENOMEM;
-		goto fail_reipl_file;
-	}
-	return 0;
 
-fail_reipl_file:
-	debugfs_remove(zcore_reipl_file);
-fail_dir:
-	debugfs_remove(zcore_dir);
+	register_reboot_notifier(&zcore_reboot_notifier);
+	atomic_notifier_chain_register(&panic_notifier_list, &zcore_on_panic_notifier);
+
+	return 0;
 fail:
 	diag308(DIAG308_REL_HSA, NULL);
 	return rc;

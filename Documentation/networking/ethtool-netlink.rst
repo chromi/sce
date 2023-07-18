@@ -41,6 +41,11 @@ In the message structure descriptions below, if an attribute name is suffixed
 with "+", parent nest can contain multiple attributes of the same type. This
 implements an array of entries.
 
+Attributes that need to be filled-in by device drivers and that are dumped to
+user space based on whether they are valid or not should not use zero as a
+valid value. This avoids the need to explicitly signal the validity of the
+attribute in the device driver API.
+
 
 Request header
 ==============
@@ -101,7 +106,7 @@ modifying a bitmap, the former changes the bit set in mask to values set in
 value and preserves the rest; the latter sets the bits set in the bitmap and
 clears the rest.
 
-Compact form: nested (bitset) atrribute contents:
+Compact form: nested (bitset) attribute contents:
 
   ============================  ======  ============================
   ``ETHTOOL_A_BITSET_NOMASK``   flag    no mask, only a list
@@ -179,7 +184,7 @@ according to message purpose:
 
 Userspace to kernel:
 
-  ===================================== ================================
+  ===================================== =================================
   ``ETHTOOL_MSG_STRSET_GET``            get string set
   ``ETHTOOL_MSG_LINKINFO_GET``          get link settings
   ``ETHTOOL_MSG_LINKINFO_SET``          set link settings
@@ -208,41 +213,62 @@ Userspace to kernel:
   ``ETHTOOL_MSG_CABLE_TEST_ACT``        action start cable test
   ``ETHTOOL_MSG_CABLE_TEST_TDR_ACT``    action start raw TDR cable test
   ``ETHTOOL_MSG_TUNNEL_INFO_GET``       get tunnel offload info
-  ===================================== ================================
+  ``ETHTOOL_MSG_FEC_GET``               get FEC settings
+  ``ETHTOOL_MSG_FEC_SET``               set FEC settings
+  ``ETHTOOL_MSG_MODULE_EEPROM_GET``     read SFP module EEPROM
+  ``ETHTOOL_MSG_STATS_GET``             get standard statistics
+  ``ETHTOOL_MSG_PHC_VCLOCKS_GET``       get PHC virtual clocks info
+  ``ETHTOOL_MSG_MODULE_SET``            set transceiver module parameters
+  ``ETHTOOL_MSG_MODULE_GET``            get transceiver module parameters
+  ``ETHTOOL_MSG_PSE_SET``               set PSE parameters
+  ``ETHTOOL_MSG_PSE_GET``               get PSE parameters
+  ``ETHTOOL_MSG_RSS_GET``               get RSS settings
+  ``ETHTOOL_MSG_MM_GET``                get MAC merge layer state
+  ``ETHTOOL_MSG_MM_SET``                set MAC merge layer parameters
+  ===================================== =================================
 
 Kernel to userspace:
 
-  ===================================== =================================
-  ``ETHTOOL_MSG_STRSET_GET_REPLY``      string set contents
-  ``ETHTOOL_MSG_LINKINFO_GET_REPLY``    link settings
-  ``ETHTOOL_MSG_LINKINFO_NTF``          link settings notification
-  ``ETHTOOL_MSG_LINKMODES_GET_REPLY``   link modes info
-  ``ETHTOOL_MSG_LINKMODES_NTF``         link modes notification
-  ``ETHTOOL_MSG_LINKSTATE_GET_REPLY``   link state info
-  ``ETHTOOL_MSG_DEBUG_GET_REPLY``       debugging settings
-  ``ETHTOOL_MSG_DEBUG_NTF``             debugging settings notification
-  ``ETHTOOL_MSG_WOL_GET_REPLY``         wake-on-lan settings
-  ``ETHTOOL_MSG_WOL_NTF``               wake-on-lan settings notification
-  ``ETHTOOL_MSG_FEATURES_GET_REPLY``    device features
-  ``ETHTOOL_MSG_FEATURES_SET_REPLY``    optional reply to FEATURES_SET
-  ``ETHTOOL_MSG_FEATURES_NTF``          netdev features notification
-  ``ETHTOOL_MSG_PRIVFLAGS_GET_REPLY``   private flags
-  ``ETHTOOL_MSG_PRIVFLAGS_NTF``         private flags
-  ``ETHTOOL_MSG_RINGS_GET_REPLY``       ring sizes
-  ``ETHTOOL_MSG_RINGS_NTF``             ring sizes
-  ``ETHTOOL_MSG_CHANNELS_GET_REPLY``    channel counts
-  ``ETHTOOL_MSG_CHANNELS_NTF``          channel counts
-  ``ETHTOOL_MSG_COALESCE_GET_REPLY``    coalescing parameters
-  ``ETHTOOL_MSG_COALESCE_NTF``          coalescing parameters
-  ``ETHTOOL_MSG_PAUSE_GET_REPLY``       pause parameters
-  ``ETHTOOL_MSG_PAUSE_NTF``             pause parameters
-  ``ETHTOOL_MSG_EEE_GET_REPLY``         EEE settings
-  ``ETHTOOL_MSG_EEE_NTF``               EEE settings
-  ``ETHTOOL_MSG_TSINFO_GET_REPLY``	timestamping info
-  ``ETHTOOL_MSG_CABLE_TEST_NTF``        Cable test results
-  ``ETHTOOL_MSG_CABLE_TEST_TDR_NTF``    Cable test TDR results
-  ``ETHTOOL_MSG_TUNNEL_INFO_GET_REPLY`` tunnel offload info
-  ===================================== =================================
+  ======================================== =================================
+  ``ETHTOOL_MSG_STRSET_GET_REPLY``         string set contents
+  ``ETHTOOL_MSG_LINKINFO_GET_REPLY``       link settings
+  ``ETHTOOL_MSG_LINKINFO_NTF``             link settings notification
+  ``ETHTOOL_MSG_LINKMODES_GET_REPLY``      link modes info
+  ``ETHTOOL_MSG_LINKMODES_NTF``            link modes notification
+  ``ETHTOOL_MSG_LINKSTATE_GET_REPLY``      link state info
+  ``ETHTOOL_MSG_DEBUG_GET_REPLY``          debugging settings
+  ``ETHTOOL_MSG_DEBUG_NTF``                debugging settings notification
+  ``ETHTOOL_MSG_WOL_GET_REPLY``            wake-on-lan settings
+  ``ETHTOOL_MSG_WOL_NTF``                  wake-on-lan settings notification
+  ``ETHTOOL_MSG_FEATURES_GET_REPLY``       device features
+  ``ETHTOOL_MSG_FEATURES_SET_REPLY``       optional reply to FEATURES_SET
+  ``ETHTOOL_MSG_FEATURES_NTF``             netdev features notification
+  ``ETHTOOL_MSG_PRIVFLAGS_GET_REPLY``      private flags
+  ``ETHTOOL_MSG_PRIVFLAGS_NTF``            private flags
+  ``ETHTOOL_MSG_RINGS_GET_REPLY``          ring sizes
+  ``ETHTOOL_MSG_RINGS_NTF``                ring sizes
+  ``ETHTOOL_MSG_CHANNELS_GET_REPLY``       channel counts
+  ``ETHTOOL_MSG_CHANNELS_NTF``             channel counts
+  ``ETHTOOL_MSG_COALESCE_GET_REPLY``       coalescing parameters
+  ``ETHTOOL_MSG_COALESCE_NTF``             coalescing parameters
+  ``ETHTOOL_MSG_PAUSE_GET_REPLY``          pause parameters
+  ``ETHTOOL_MSG_PAUSE_NTF``                pause parameters
+  ``ETHTOOL_MSG_EEE_GET_REPLY``            EEE settings
+  ``ETHTOOL_MSG_EEE_NTF``                  EEE settings
+  ``ETHTOOL_MSG_TSINFO_GET_REPLY``         timestamping info
+  ``ETHTOOL_MSG_CABLE_TEST_NTF``           Cable test results
+  ``ETHTOOL_MSG_CABLE_TEST_TDR_NTF``       Cable test TDR results
+  ``ETHTOOL_MSG_TUNNEL_INFO_GET_REPLY``    tunnel offload info
+  ``ETHTOOL_MSG_FEC_GET_REPLY``            FEC settings
+  ``ETHTOOL_MSG_FEC_NTF``                  FEC settings
+  ``ETHTOOL_MSG_MODULE_EEPROM_GET_REPLY``  read SFP module EEPROM
+  ``ETHTOOL_MSG_STATS_GET_REPLY``          standard statistics
+  ``ETHTOOL_MSG_PHC_VCLOCKS_GET_REPLY``    PHC virtual clocks info
+  ``ETHTOOL_MSG_MODULE_GET_REPLY``         transceiver module parameters
+  ``ETHTOOL_MSG_PSE_GET_REPLY``            PSE parameters
+  ``ETHTOOL_MSG_RSS_GET_REPLY``            RSS settings
+  ``ETHTOOL_MSG_MM_GET_REPLY``             MAC merge layer status
+  ======================================== =================================
 
 ``GET`` requests are sent by userspace applications to retrieve device
 information. They usually do not contain any message specific attributes.
@@ -408,6 +434,7 @@ Kernel response contents:
   ``ETHTOOL_A_LINKMODES_DUPLEX``              u8      duplex mode
   ``ETHTOOL_A_LINKMODES_MASTER_SLAVE_CFG``    u8      Master/slave port mode
   ``ETHTOOL_A_LINKMODES_MASTER_SLAVE_STATE``  u8      Master/slave port state
+  ``ETHTOOL_A_LINKMODES_RATE_MATCHING``       u8      PHY rate matching
   ==========================================  ======  ==========================
 
 For ``ETHTOOL_A_LINKMODES_OURS``, value represents advertised modes and mask
@@ -431,16 +458,18 @@ Request contents:
   ``ETHTOOL_A_LINKMODES_SPEED``               u32     link speed (Mb/s)
   ``ETHTOOL_A_LINKMODES_DUPLEX``              u8      duplex mode
   ``ETHTOOL_A_LINKMODES_MASTER_SLAVE_CFG``    u8      Master/slave port mode
+  ``ETHTOOL_A_LINKMODES_RATE_MATCHING``       u8      PHY rate matching
+  ``ETHTOOL_A_LINKMODES_LANES``               u32     lanes
   ==========================================  ======  ==========================
 
 ``ETHTOOL_A_LINKMODES_OURS`` bit set allows setting advertised link modes. If
 autonegotiation is on (either set now or kept from before), advertised modes
 are not changed (no ``ETHTOOL_A_LINKMODES_OURS`` attribute) and at least one
-of speed and duplex is specified, kernel adjusts advertised modes to all
-supported modes matching speed, duplex or both (whatever is specified). This
-autoselection is done on ethtool side with ioctl interface, netlink interface
-is supposed to allow requesting changes without knowing what exactly kernel
-supports.
+of speed, duplex and lanes is specified, kernel adjusts advertised modes to all
+supported modes matching speed, duplex, lanes or all (whatever is specified).
+This autoselection is done on ethtool side with ioctl interface, netlink
+interface is supposed to allow requesting changes without knowing what exactly
+kernel supports.
 
 
 LINKSTATE_GET
@@ -467,6 +496,7 @@ Kernel response contents:
   ``ETHTOOL_A_LINKSTATE_SQI_MAX``       u32     Max support SQI value
   ``ETHTOOL_A_LINKSTATE_EXT_STATE``     u8      link extended state
   ``ETHTOOL_A_LINKSTATE_EXT_SUBSTATE``  u8      link extended substate
+  ``ETHTOOL_A_LINKSTATE_EXT_DOWN_CNT``  u32     count of link down events
   ====================================  ======  ============================
 
 For most NIC drivers, the value of ``ETHTOOL_A_LINKSTATE_LINK`` returns
@@ -509,6 +539,8 @@ Link extended states:
                                                         power required from cable or module
 
   ``ETHTOOL_LINK_EXT_STATE_OVERHEAT``                   The module is overheated
+
+  ``ETHTOOL_LINK_EXT_STATE_MODULE``                     Transceiver module issue
   ================================================      ============================================
 
 Link extended substates:
@@ -584,6 +616,14 @@ Link extended substates:
                                                                        that is not formally
                                                                        supported, which led to
                                                                        signal integrity issues
+
+  ``ETHTOOL_LINK_EXT_SUBSTATE_BSI_SERDES_REFERENCE_CLOCK_LOST``        The external clock signal for
+                                                                       SerDes is too weak or
+                                                                       unavailable.
+
+  ``ETHTOOL_LINK_EXT_SUBSTATE_BSI_SERDES_ALOS``                        The received signal for
+                                                                       SerDes is too weak because
+                                                                       analog loss of signal.
   =================================================================    =============================
 
   Cable issue substates:
@@ -592,6 +632,14 @@ Link extended substates:
   ``ETHTOOL_LINK_EXT_SUBSTATE_CI_UNSUPPORTED_CABLE``    Unsupported cable
 
   ``ETHTOOL_LINK_EXT_SUBSTATE_CI_CABLE_TEST_FAILURE``   Cable test failure
+  ===================================================   ============================================
+
+  Transceiver module issue substates:
+
+  ===================================================   ============================================
+  ``ETHTOOL_LINK_EXT_SUBSTATE_MODULE_CMIS_NOT_READY``   The CMIS Module State Machine did not reach
+                                                        the ModuleReady state. For example, if the
+                                                        module is stuck at ModuleFault state
   ===================================================   ============================================
 
 DEBUG_GET
@@ -735,7 +783,7 @@ Kernel response contents:
   ``ETHTOOL_A_FEATURES_ACTIVE``         bitset  diff old vs. new active
   ====================================  ======  ==========================
 
-Request constains only one bitset which can be either value/mask pair (request
+Request contains only one bitset which can be either value/mask pair (request
 to change specific feature bits and leave the rest) or only a value (request
 to set all features to specified set).
 
@@ -812,18 +860,50 @@ Request contents:
 
 Kernel response contents:
 
-  ====================================  ======  ==========================
-  ``ETHTOOL_A_RINGS_HEADER``            nested  reply header
-  ``ETHTOOL_A_RINGS_RX_MAX``            u32     max size of RX ring
-  ``ETHTOOL_A_RINGS_RX_MINI_MAX``       u32     max size of RX mini ring
-  ``ETHTOOL_A_RINGS_RX_JUMBO_MAX``      u32     max size of RX jumbo ring
-  ``ETHTOOL_A_RINGS_TX_MAX``            u32     max size of TX ring
-  ``ETHTOOL_A_RINGS_RX``                u32     size of RX ring
-  ``ETHTOOL_A_RINGS_RX_MINI``           u32     size of RX mini ring
-  ``ETHTOOL_A_RINGS_RX_JUMBO``          u32     size of RX jumbo ring
-  ``ETHTOOL_A_RINGS_TX``                u32     size of TX ring
-  ====================================  ======  ==========================
+  =======================================   ======  ===========================
+  ``ETHTOOL_A_RINGS_HEADER``                nested  reply header
+  ``ETHTOOL_A_RINGS_RX_MAX``                u32     max size of RX ring
+  ``ETHTOOL_A_RINGS_RX_MINI_MAX``           u32     max size of RX mini ring
+  ``ETHTOOL_A_RINGS_RX_JUMBO_MAX``          u32     max size of RX jumbo ring
+  ``ETHTOOL_A_RINGS_TX_MAX``                u32     max size of TX ring
+  ``ETHTOOL_A_RINGS_RX``                    u32     size of RX ring
+  ``ETHTOOL_A_RINGS_RX_MINI``               u32     size of RX mini ring
+  ``ETHTOOL_A_RINGS_RX_JUMBO``              u32     size of RX jumbo ring
+  ``ETHTOOL_A_RINGS_TX``                    u32     size of TX ring
+  ``ETHTOOL_A_RINGS_RX_BUF_LEN``            u32     size of buffers on the ring
+  ``ETHTOOL_A_RINGS_TCP_DATA_SPLIT``        u8      TCP header / data split
+  ``ETHTOOL_A_RINGS_CQE_SIZE``              u32     Size of TX/RX CQE
+  ``ETHTOOL_A_RINGS_TX_PUSH``               u8      flag of TX Push mode
+  ``ETHTOOL_A_RINGS_RX_PUSH``               u8      flag of RX Push mode
+  ``ETHTOOL_A_RINGS_TX_PUSH_BUF_LEN``       u32     size of TX push buffer
+  ``ETHTOOL_A_RINGS_TX_PUSH_BUF_LEN_MAX``   u32     max size of TX push buffer
+  =======================================   ======  ===========================
 
+``ETHTOOL_A_RINGS_TCP_DATA_SPLIT`` indicates whether the device is usable with
+page-flipping TCP zero-copy receive (``getsockopt(TCP_ZEROCOPY_RECEIVE)``).
+If enabled the device is configured to place frame headers and data into
+separate buffers. The device configuration must make it possible to receive
+full memory pages of data, for example because MTU is high enough or through
+HW-GRO.
+
+``ETHTOOL_A_RINGS_[RX|TX]_PUSH`` flag is used to enable descriptor fast
+path to send or receive packets. In ordinary path, driver fills descriptors in DRAM and
+notifies NIC hardware. In fast path, driver pushes descriptors to the device
+through MMIO writes, thus reducing the latency. However, enabling this feature
+may increase the CPU cost. Drivers may enforce additional per-packet
+eligibility checks (e.g. on packet size).
+
+``ETHTOOL_A_RINGS_TX_PUSH_BUF_LEN`` specifies the maximum number of bytes of a
+transmitted packet a driver can push directly to the underlying device
+('push' mode). Pushing some of the payload bytes to the device has the
+advantages of reducing latency for small packets by avoiding DMA mapping (same
+as ``ETHTOOL_A_RINGS_TX_PUSH`` parameter) as well as allowing the underlying
+device to process packet headers ahead of fetching its payload.
+This can help the device to make fast actions based on the packet's headers.
+This is similar to the "tx-copybreak" parameter, which copies the packet to a
+preallocated DMA memory area instead of mapping new memory. However,
+tx-push-buff parameter copies the packet directly to the device to allow the
+device to take faster actions on the packet.
 
 RINGS_SET
 =========
@@ -832,18 +912,32 @@ Sets ring sizes like ``ETHTOOL_SRINGPARAM`` ioctl request.
 
 Request contents:
 
-  ====================================  ======  ==========================
+  ====================================  ======  ===========================
   ``ETHTOOL_A_RINGS_HEADER``            nested  reply header
   ``ETHTOOL_A_RINGS_RX``                u32     size of RX ring
   ``ETHTOOL_A_RINGS_RX_MINI``           u32     size of RX mini ring
   ``ETHTOOL_A_RINGS_RX_JUMBO``          u32     size of RX jumbo ring
   ``ETHTOOL_A_RINGS_TX``                u32     size of TX ring
-  ====================================  ======  ==========================
+  ``ETHTOOL_A_RINGS_RX_BUF_LEN``        u32     size of buffers on the ring
+  ``ETHTOOL_A_RINGS_CQE_SIZE``          u32     Size of TX/RX CQE
+  ``ETHTOOL_A_RINGS_TX_PUSH``           u8      flag of TX Push mode
+  ``ETHTOOL_A_RINGS_RX_PUSH``           u8      flag of RX Push mode
+  ``ETHTOOL_A_RINGS_TX_PUSH_BUF_LEN``   u32     size of TX push buffer
+  ====================================  ======  ===========================
 
 Kernel checks that requested ring sizes do not exceed limits reported by
 driver. Driver may impose additional constraints and may not suspport all
 attributes.
 
+
+``ETHTOOL_A_RINGS_CQE_SIZE`` specifies the completion queue event size.
+Completion queue events(CQE) are the events posted by NIC to indicate the
+completion status of a packet when the packet is sent(like send success or
+error) or received(like pointers to packet fragments). The CQE size parameter
+enables to modify the CQE size other than default size if NIC supports it.
+A bigger CQE can have more receive buffer pointers inturn NIC can transfer
+a bigger frame from wire. Based on the NIC hardware, the overall completion
+queue size can be adjusted in the driver if CQE size is modified.
 
 CHANNELS_GET
 ============
@@ -928,12 +1022,39 @@ Kernel response contents:
   ``ETHTOOL_A_COALESCE_TX_USECS_HIGH``         u32     delay (us), high Tx
   ``ETHTOOL_A_COALESCE_TX_MAX_FRAMES_HIGH``    u32     max packets, high Tx
   ``ETHTOOL_A_COALESCE_RATE_SAMPLE_INTERVAL``  u32     rate sampling interval
+  ``ETHTOOL_A_COALESCE_USE_CQE_TX``            bool    timer reset mode, Tx
+  ``ETHTOOL_A_COALESCE_USE_CQE_RX``            bool    timer reset mode, Rx
+  ``ETHTOOL_A_COALESCE_TX_AGGR_MAX_BYTES``     u32     max aggr size, Tx
+  ``ETHTOOL_A_COALESCE_TX_AGGR_MAX_FRAMES``    u32     max aggr packets, Tx
+  ``ETHTOOL_A_COALESCE_TX_AGGR_TIME_USECS``    u32     time (us), aggr, Tx
   ===========================================  ======  =======================
 
 Attributes are only included in reply if their value is not zero or the
 corresponding bit in ``ethtool_ops::supported_coalesce_params`` is set (i.e.
 they are declared as supported by driver).
 
+Timer reset mode (``ETHTOOL_A_COALESCE_USE_CQE_TX`` and
+``ETHTOOL_A_COALESCE_USE_CQE_RX``) controls the interaction between packet
+arrival and the various time based delay parameters. By default timers are
+expected to limit the max delay between any packet arrival/departure and a
+corresponding interrupt. In this mode timer should be started by packet
+arrival (sometimes delivery of previous interrupt) and reset when interrupt
+is delivered.
+Setting the appropriate attribute to 1 will enable ``CQE`` mode, where
+each packet event resets the timer. In this mode timer is used to force
+the interrupt if queue goes idle, while busy queues depend on the packet
+limit to trigger interrupts.
+
+Tx aggregation consists of copying frames into a contiguous buffer so that they
+can be submitted as a single IO operation. ``ETHTOOL_A_COALESCE_TX_AGGR_MAX_BYTES``
+describes the maximum size in bytes for the submitted buffer.
+``ETHTOOL_A_COALESCE_TX_AGGR_MAX_FRAMES`` describes the maximum number of frames
+that can be aggregated into a single buffer.
+``ETHTOOL_A_COALESCE_TX_AGGR_TIME_USECS`` describes the amount of time in usecs,
+counted since the first packet arrival in an aggregated block, after which the
+block should be sent.
+This feature is mainly of interest for specific USB devices which does not cope
+well with frequent small-sized URBs transmissions.
 
 COALESCE_SET
 ============
@@ -966,6 +1087,11 @@ Request contents:
   ``ETHTOOL_A_COALESCE_TX_USECS_HIGH``         u32     delay (us), high Tx
   ``ETHTOOL_A_COALESCE_TX_MAX_FRAMES_HIGH``    u32     max packets, high Tx
   ``ETHTOOL_A_COALESCE_RATE_SAMPLE_INTERVAL``  u32     rate sampling interval
+  ``ETHTOOL_A_COALESCE_USE_CQE_TX``            bool    timer reset mode, Tx
+  ``ETHTOOL_A_COALESCE_USE_CQE_RX``            bool    timer reset mode, Rx
+  ``ETHTOOL_A_COALESCE_TX_AGGR_MAX_BYTES``     u32     max aggr size, Tx
+  ``ETHTOOL_A_COALESCE_TX_AGGR_MAX_FRAMES``    u32     max aggr packets, Tx
+  ``ETHTOOL_A_COALESCE_TX_AGGR_TIME_USECS``    u32     time (us), aggr, Tx
   ===========================================  ======  =======================
 
 Request is rejected if it attributes declared as unsupported by driver (i.e.
@@ -973,17 +1099,31 @@ such that the corresponding bit in ``ethtool_ops::supported_coalesce_params``
 is not set), regardless of their values. Driver may impose additional
 constraints on coalescing parameters and their values.
 
+Compared to requests issued via the ``ioctl()`` netlink version of this request
+will try harder to make sure that values specified by the user have been applied
+and may call the driver twice.
+
 
 PAUSE_GET
-============
+=========
 
-Gets channel counts like ``ETHTOOL_GPAUSE`` ioctl request.
+Gets pause frame settings like ``ETHTOOL_GPAUSEPARAM`` ioctl request.
 
 Request contents:
 
   =====================================  ======  ==========================
   ``ETHTOOL_A_PAUSE_HEADER``             nested  request header
+  ``ETHTOOL_A_PAUSE_STATS_SRC``          u32     source of statistics
   =====================================  ======  ==========================
+
+``ETHTOOL_A_PAUSE_STATS_SRC`` is optional. It takes values from:
+
+.. kernel-doc:: include/uapi/linux/ethtool.h
+    :identifiers: ethtool_mac_stats_src
+
+If absent from the request, stats will be provided with
+an ``ETHTOOL_A_PAUSE_STATS_SRC`` attribute in the response equal to
+``ETHTOOL_MAC_STATS_SRC_AGGREGATE``.
 
 Kernel response contents:
 
@@ -1006,7 +1146,7 @@ the statistics in the following structure:
 Each member has a corresponding attribute defined.
 
 PAUSE_SET
-============
+=========
 
 Sets pause parameters like ``ETHTOOL_GPAUSEPARAM`` ioctl request.
 
@@ -1023,7 +1163,7 @@ Request contents:
 EEE_GET
 =======
 
-Gets channel counts like ``ETHTOOL_GEEE`` ioctl request.
+Gets Energy Efficient Ethernet settings like ``ETHTOOL_GEEE`` ioctl request.
 
 Request contents:
 
@@ -1053,7 +1193,7 @@ first 32 are provided by the ``ethtool_ops`` callback.
 EEE_SET
 =======
 
-Sets pause parameters like ``ETHTOOL_GEEEPARAM`` ioctl request.
+Sets Energy Efficient Ethernet parameters like ``ETHTOOL_SEEE`` ioctl request.
 
 Request contents:
 
@@ -1279,6 +1419,581 @@ Kernel response contents:
 For UDP tunnel table empty ``ETHTOOL_A_TUNNEL_UDP_TABLE_TYPES`` indicates that
 the table contains static entries, hard-coded by the NIC.
 
+FEC_GET
+=======
+
+Gets FEC configuration and state like ``ETHTOOL_GFECPARAM`` ioctl request.
+
+Request contents:
+
+  =====================================  ======  ==========================
+  ``ETHTOOL_A_FEC_HEADER``               nested  request header
+  =====================================  ======  ==========================
+
+Kernel response contents:
+
+  =====================================  ======  ==========================
+  ``ETHTOOL_A_FEC_HEADER``               nested  request header
+  ``ETHTOOL_A_FEC_MODES``                bitset  configured modes
+  ``ETHTOOL_A_FEC_AUTO``                 bool    FEC mode auto selection
+  ``ETHTOOL_A_FEC_ACTIVE``               u32     index of active FEC mode
+  ``ETHTOOL_A_FEC_STATS``                nested  FEC statistics
+  =====================================  ======  ==========================
+
+``ETHTOOL_A_FEC_ACTIVE`` is the bit index of the FEC link mode currently
+active on the interface. This attribute may not be present if device does
+not support FEC.
+
+``ETHTOOL_A_FEC_MODES`` and ``ETHTOOL_A_FEC_AUTO`` are only meaningful when
+autonegotiation is disabled. If ``ETHTOOL_A_FEC_AUTO`` is non-zero driver will
+select the FEC mode automatically based on the parameters of the SFP module.
+This is equivalent to the ``ETHTOOL_FEC_AUTO`` bit of the ioctl interface.
+``ETHTOOL_A_FEC_MODES`` carry the current FEC configuration using link mode
+bits (rather than old ``ETHTOOL_FEC_*`` bits).
+
+``ETHTOOL_A_FEC_STATS`` are reported if ``ETHTOOL_FLAG_STATS`` was set in
+``ETHTOOL_A_HEADER_FLAGS``.
+Each attribute carries an array of 64bit statistics. First entry in the array
+contains the total number of events on the port, while the following entries
+are counters corresponding to lanes/PCS instances. The number of entries in
+the array will be:
+
++--------------+---------------------------------------------+
+| `0`          | device does not support FEC statistics      |
++--------------+---------------------------------------------+
+| `1`          | device does not support per-lane break down |
++--------------+---------------------------------------------+
+| `1 + #lanes` | device has full support for FEC stats       |
++--------------+---------------------------------------------+
+
+Drivers fill in the statistics in the following structure:
+
+.. kernel-doc:: include/linux/ethtool.h
+    :identifiers: ethtool_fec_stats
+
+FEC_SET
+=======
+
+Sets FEC parameters like ``ETHTOOL_SFECPARAM`` ioctl request.
+
+Request contents:
+
+  =====================================  ======  ==========================
+  ``ETHTOOL_A_FEC_HEADER``               nested  request header
+  ``ETHTOOL_A_FEC_MODES``                bitset  configured modes
+  ``ETHTOOL_A_FEC_AUTO``                 bool    FEC mode auto selection
+  =====================================  ======  ==========================
+
+``FEC_SET`` is only meaningful when autonegotiation is disabled. Otherwise
+FEC mode is selected as part of autonegotiation.
+
+``ETHTOOL_A_FEC_MODES`` selects which FEC mode should be used. It's recommended
+to set only one bit, if multiple bits are set driver may choose between them
+in an implementation specific way.
+
+``ETHTOOL_A_FEC_AUTO`` requests the driver to choose FEC mode based on SFP
+module parameters. This does not mean autonegotiation.
+
+MODULE_EEPROM_GET
+=================
+
+Fetch module EEPROM data dump.
+This interface is designed to allow dumps of at most 1/2 page at once. This
+means only dumps of 128 (or less) bytes are allowed, without crossing half page
+boundary located at offset 128. For pages other than 0 only high 128 bytes are
+accessible.
+
+Request contents:
+
+  =======================================  ======  ==========================
+  ``ETHTOOL_A_MODULE_EEPROM_HEADER``       nested  request header
+  ``ETHTOOL_A_MODULE_EEPROM_OFFSET``       u32     offset within a page
+  ``ETHTOOL_A_MODULE_EEPROM_LENGTH``       u32     amount of bytes to read
+  ``ETHTOOL_A_MODULE_EEPROM_PAGE``         u8      page number
+  ``ETHTOOL_A_MODULE_EEPROM_BANK``         u8      bank number
+  ``ETHTOOL_A_MODULE_EEPROM_I2C_ADDRESS``  u8      page I2C address
+  =======================================  ======  ==========================
+
+If ``ETHTOOL_A_MODULE_EEPROM_BANK`` is not specified, bank 0 is assumed.
+
+Kernel response contents:
+
+ +---------------------------------------------+--------+---------------------+
+ | ``ETHTOOL_A_MODULE_EEPROM_HEADER``          | nested | reply header        |
+ +---------------------------------------------+--------+---------------------+
+ | ``ETHTOOL_A_MODULE_EEPROM_DATA``            | binary | array of bytes from |
+ |                                             |        | module EEPROM       |
+ +---------------------------------------------+--------+---------------------+
+
+``ETHTOOL_A_MODULE_EEPROM_DATA`` has an attribute length equal to the amount of
+bytes driver actually read.
+
+STATS_GET
+=========
+
+Get standard statistics for the interface. Note that this is not
+a re-implementation of ``ETHTOOL_GSTATS`` which exposed driver-defined
+stats.
+
+Request contents:
+
+  =======================================  ======  ==========================
+  ``ETHTOOL_A_STATS_HEADER``               nested  request header
+  ``ETHTOOL_A_STATS_SRC``                  u32     source of statistics
+  ``ETHTOOL_A_STATS_GROUPS``               bitset  requested groups of stats
+  =======================================  ======  ==========================
+
+Kernel response contents:
+
+ +-----------------------------------+--------+--------------------------------+
+ | ``ETHTOOL_A_STATS_HEADER``        | nested | reply header                   |
+ +-----------------------------------+--------+--------------------------------+
+ | ``ETHTOOL_A_STATS_SRC``           | u32    | source of statistics           |
+ +-----------------------------------+--------+--------------------------------+
+ | ``ETHTOOL_A_STATS_GRP``           | nested | one or more group of stats     |
+ +-+---------------------------------+--------+--------------------------------+
+ | | ``ETHTOOL_A_STATS_GRP_ID``      | u32    | group ID - ``ETHTOOL_STATS_*`` |
+ +-+---------------------------------+--------+--------------------------------+
+ | | ``ETHTOOL_A_STATS_GRP_SS_ID``   | u32    | string set ID for names        |
+ +-+---------------------------------+--------+--------------------------------+
+ | | ``ETHTOOL_A_STATS_GRP_STAT``    | nested | nest containing a statistic    |
+ +-+---------------------------------+--------+--------------------------------+
+ | | ``ETHTOOL_A_STATS_GRP_HIST_RX`` | nested | histogram statistic (Rx)       |
+ +-+---------------------------------+--------+--------------------------------+
+ | | ``ETHTOOL_A_STATS_GRP_HIST_TX`` | nested | histogram statistic (Tx)       |
+ +-+---------------------------------+--------+--------------------------------+
+
+Users specify which groups of statistics they are requesting via
+the ``ETHTOOL_A_STATS_GROUPS`` bitset. Currently defined values are:
+
+ ====================== ======== ===============================================
+ ETHTOOL_STATS_ETH_MAC  eth-mac  Basic IEEE 802.3 MAC statistics (30.3.1.1.*)
+ ETHTOOL_STATS_ETH_PHY  eth-phy  Basic IEEE 802.3 PHY statistics (30.3.2.1.*)
+ ETHTOOL_STATS_ETH_CTRL eth-ctrl Basic IEEE 802.3 MAC Ctrl statistics (30.3.3.*)
+ ETHTOOL_STATS_RMON     rmon     RMON (RFC 2819) statistics
+ ====================== ======== ===============================================
+
+Each group should have a corresponding ``ETHTOOL_A_STATS_GRP`` in the reply.
+``ETHTOOL_A_STATS_GRP_ID`` identifies which group's statistics nest contains.
+``ETHTOOL_A_STATS_GRP_SS_ID`` identifies the string set ID for the names of
+the statistics in the group, if available.
+
+Statistics are added to the ``ETHTOOL_A_STATS_GRP`` nest under
+``ETHTOOL_A_STATS_GRP_STAT``. ``ETHTOOL_A_STATS_GRP_STAT`` should contain
+single 8 byte (u64) attribute inside - the type of that attribute is
+the statistic ID and the value is the value of the statistic.
+Each group has its own interpretation of statistic IDs.
+Attribute IDs correspond to strings from the string set identified
+by ``ETHTOOL_A_STATS_GRP_SS_ID``. Complex statistics (such as RMON histogram
+entries) are also listed inside ``ETHTOOL_A_STATS_GRP`` and do not have
+a string defined in the string set.
+
+RMON "histogram" counters count number of packets within given size range.
+Because RFC does not specify the ranges beyond the standard 1518 MTU devices
+differ in definition of buckets. For this reason the definition of packet ranges
+is left to each driver.
+
+``ETHTOOL_A_STATS_GRP_HIST_RX`` and ``ETHTOOL_A_STATS_GRP_HIST_TX`` nests
+contain the following attributes:
+
+ ================================= ====== ===================================
+ ETHTOOL_A_STATS_RMON_HIST_BKT_LOW u32    low bound of the packet size bucket
+ ETHTOOL_A_STATS_RMON_HIST_BKT_HI  u32    high bound of the bucket
+ ETHTOOL_A_STATS_RMON_HIST_VAL     u64    packet counter
+ ================================= ====== ===================================
+
+Low and high bounds are inclusive, for example:
+
+ ============================= ==== ====
+ RFC statistic                 low  high
+ ============================= ==== ====
+ etherStatsPkts64Octets          0    64
+ etherStatsPkts512to1023Octets 512  1023
+ ============================= ==== ====
+
+``ETHTOOL_A_STATS_SRC`` is optional. Similar to ``PAUSE_GET``, it takes values
+from ``enum ethtool_mac_stats_src``. If absent from the request, stats will be
+provided with an ``ETHTOOL_A_STATS_SRC`` attribute in the response equal to
+``ETHTOOL_MAC_STATS_SRC_AGGREGATE``.
+
+PHC_VCLOCKS_GET
+===============
+
+Query device PHC virtual clocks information.
+
+Request contents:
+
+  ====================================  ======  ==========================
+  ``ETHTOOL_A_PHC_VCLOCKS_HEADER``      nested  request header
+  ====================================  ======  ==========================
+
+Kernel response contents:
+
+  ====================================  ======  ==========================
+  ``ETHTOOL_A_PHC_VCLOCKS_HEADER``      nested  reply header
+  ``ETHTOOL_A_PHC_VCLOCKS_NUM``         u32     PHC virtual clocks number
+  ``ETHTOOL_A_PHC_VCLOCKS_INDEX``       s32     PHC index array
+  ====================================  ======  ==========================
+
+MODULE_GET
+==========
+
+Gets transceiver module parameters.
+
+Request contents:
+
+  =====================================  ======  ==========================
+  ``ETHTOOL_A_MODULE_HEADER``            nested  request header
+  =====================================  ======  ==========================
+
+Kernel response contents:
+
+  ======================================  ======  ==========================
+  ``ETHTOOL_A_MODULE_HEADER``             nested  reply header
+  ``ETHTOOL_A_MODULE_POWER_MODE_POLICY``  u8      power mode policy
+  ``ETHTOOL_A_MODULE_POWER_MODE``         u8      operational power mode
+  ======================================  ======  ==========================
+
+The optional ``ETHTOOL_A_MODULE_POWER_MODE_POLICY`` attribute encodes the
+transceiver module power mode policy enforced by the host. The default policy
+is driver-dependent, but "auto" is the recommended default and it should be
+implemented by new drivers and drivers where conformance to a legacy behavior
+is not critical.
+
+The optional ``ETHTHOOL_A_MODULE_POWER_MODE`` attribute encodes the operational
+power mode policy of the transceiver module. It is only reported when a module
+is plugged-in. Possible values are:
+
+.. kernel-doc:: include/uapi/linux/ethtool.h
+    :identifiers: ethtool_module_power_mode
+
+MODULE_SET
+==========
+
+Sets transceiver module parameters.
+
+Request contents:
+
+  ======================================  ======  ==========================
+  ``ETHTOOL_A_MODULE_HEADER``             nested  request header
+  ``ETHTOOL_A_MODULE_POWER_MODE_POLICY``  u8      power mode policy
+  ======================================  ======  ==========================
+
+When set, the optional ``ETHTOOL_A_MODULE_POWER_MODE_POLICY`` attribute is used
+to set the transceiver module power policy enforced by the host. Possible
+values are:
+
+.. kernel-doc:: include/uapi/linux/ethtool.h
+    :identifiers: ethtool_module_power_mode_policy
+
+For SFF-8636 modules, low power mode is forced by the host according to table
+6-10 in revision 2.10a of the specification.
+
+For CMIS modules, low power mode is forced by the host according to table 6-12
+in revision 5.0 of the specification.
+
+PSE_GET
+=======
+
+Gets PSE attributes.
+
+Request contents:
+
+  =====================================  ======  ==========================
+  ``ETHTOOL_A_PSE_HEADER``               nested  request header
+  =====================================  ======  ==========================
+
+Kernel response contents:
+
+  ======================================  ======  =============================
+  ``ETHTOOL_A_PSE_HEADER``                nested  reply header
+  ``ETHTOOL_A_PODL_PSE_ADMIN_STATE``         u32  Operational state of the PoDL
+                                                  PSE functions
+  ``ETHTOOL_A_PODL_PSE_PW_D_STATUS``         u32  power detection status of the
+                                                  PoDL PSE.
+  ======================================  ======  =============================
+
+When set, the optional ``ETHTOOL_A_PODL_PSE_ADMIN_STATE`` attribute identifies
+the operational state of the PoDL PSE functions.  The operational state of the
+PSE function can be changed using the ``ETHTOOL_A_PODL_PSE_ADMIN_CONTROL``
+action. This option is corresponding to ``IEEE 802.3-2018`` 30.15.1.1.2
+aPoDLPSEAdminState. Possible values are:
+
+.. kernel-doc:: include/uapi/linux/ethtool.h
+    :identifiers: ethtool_podl_pse_admin_state
+
+When set, the optional ``ETHTOOL_A_PODL_PSE_PW_D_STATUS`` attribute identifies
+the power detection status of the PoDL PSE.  The status depend on internal PSE
+state machine and automatic PD classification support. This option is
+corresponding to ``IEEE 802.3-2018`` 30.15.1.1.3 aPoDLPSEPowerDetectionStatus.
+Possible values are:
+
+.. kernel-doc:: include/uapi/linux/ethtool.h
+    :identifiers: ethtool_podl_pse_pw_d_status
+
+PSE_SET
+=======
+
+Sets PSE parameters.
+
+Request contents:
+
+  ======================================  ======  =============================
+  ``ETHTOOL_A_PSE_HEADER``                nested  request header
+  ``ETHTOOL_A_PODL_PSE_ADMIN_CONTROL``       u32  Control PoDL PSE Admin state
+  ======================================  ======  =============================
+
+When set, the optional ``ETHTOOL_A_PODL_PSE_ADMIN_CONTROL`` attribute is used
+to control PoDL PSE Admin functions. This option is implementing
+``IEEE 802.3-2018`` 30.15.1.2.1 acPoDLPSEAdminControl. See
+``ETHTOOL_A_PODL_PSE_ADMIN_STATE`` for supported values.
+
+RSS_GET
+=======
+
+Get indirection table, hash key and hash function info associated with a
+RSS context of an interface similar to ``ETHTOOL_GRSSH`` ioctl request.
+
+Request contents:
+
+=====================================  ======  ==========================
+  ``ETHTOOL_A_RSS_HEADER``             nested  request header
+  ``ETHTOOL_A_RSS_CONTEXT``            u32     context number
+=====================================  ======  ==========================
+
+Kernel response contents:
+
+=====================================  ======  ==========================
+  ``ETHTOOL_A_RSS_HEADER``             nested  reply header
+  ``ETHTOOL_A_RSS_HFUNC``              u32     RSS hash func
+  ``ETHTOOL_A_RSS_INDIR``              binary  Indir table bytes
+  ``ETHTOOL_A_RSS_HKEY``               binary  Hash key bytes
+=====================================  ======  ==========================
+
+ETHTOOL_A_RSS_HFUNC attribute is bitmap indicating the hash function
+being used. Current supported options are toeplitz, xor or crc32.
+ETHTOOL_A_RSS_INDIR attribute returns RSS indrection table where each byte
+indicates queue number.
+
+PLCA_GET_CFG
+============
+
+Gets the IEEE 802.3cg-2019 Clause 148 Physical Layer Collision Avoidance
+(PLCA) Reconciliation Sublayer (RS) attributes.
+
+Request contents:
+
+  =====================================  ======  ==========================
+  ``ETHTOOL_A_PLCA_HEADER``              nested  request header
+  =====================================  ======  ==========================
+
+Kernel response contents:
+
+  ======================================  ======  =============================
+  ``ETHTOOL_A_PLCA_HEADER``               nested  reply header
+  ``ETHTOOL_A_PLCA_VERSION``              u16     Supported PLCA management
+                                                  interface standard/version
+  ``ETHTOOL_A_PLCA_ENABLED``              u8      PLCA Admin State
+  ``ETHTOOL_A_PLCA_NODE_ID``              u32     PLCA unique local node ID
+  ``ETHTOOL_A_PLCA_NODE_CNT``             u32     Number of PLCA nodes on the
+                                                  network, including the
+                                                  coordinator
+  ``ETHTOOL_A_PLCA_TO_TMR``               u32     Transmit Opportunity Timer
+                                                  value in bit-times (BT)
+  ``ETHTOOL_A_PLCA_BURST_CNT``            u32     Number of additional packets
+                                                  the node is allowed to send
+                                                  within a single TO
+  ``ETHTOOL_A_PLCA_BURST_TMR``            u32     Time to wait for the MAC to
+                                                  transmit a new frame before
+                                                  terminating the burst
+  ======================================  ======  =============================
+
+When set, the optional ``ETHTOOL_A_PLCA_VERSION`` attribute indicates which
+standard and version the PLCA management interface complies to. When not set,
+the interface is vendor-specific and (possibly) supplied by the driver.
+The OPEN Alliance SIG specifies a standard register map for 10BASE-T1S PHYs
+embedding the PLCA Reconcialiation Sublayer. See "10BASE-T1S PLCA Management
+Registers" at https://www.opensig.org/about/specifications/.
+
+When set, the optional ``ETHTOOL_A_PLCA_ENABLED`` attribute indicates the
+administrative state of the PLCA RS. When not set, the node operates in "plain"
+CSMA/CD mode. This option is corresponding to ``IEEE 802.3cg-2019`` 30.16.1.1.1
+aPLCAAdminState / 30.16.1.2.1 acPLCAAdminControl.
+
+When set, the optional ``ETHTOOL_A_PLCA_NODE_ID`` attribute indicates the
+configured local node ID of the PHY. This ID determines which transmit
+opportunity (TO) is reserved for the node to transmit into. This option is
+corresponding to ``IEEE 802.3cg-2019`` 30.16.1.1.4 aPLCALocalNodeID. The valid
+range for this attribute is [0 .. 255] where 255 means "not configured".
+
+When set, the optional ``ETHTOOL_A_PLCA_NODE_CNT`` attribute indicates the
+configured maximum number of PLCA nodes on the mixing-segment. This number
+determines the total number of transmit opportunities generated during a
+PLCA cycle. This attribute is relevant only for the PLCA coordinator, which is
+the node with aPLCALocalNodeID set to 0. Follower nodes ignore this setting.
+This option is corresponding to ``IEEE 802.3cg-2019`` 30.16.1.1.3
+aPLCANodeCount. The valid range for this attribute is [1 .. 255].
+
+When set, the optional ``ETHTOOL_A_PLCA_TO_TMR`` attribute indicates the
+configured value of the transmit opportunity timer in bit-times. This value
+must be set equal across all nodes sharing the medium for PLCA to work
+correctly. This option is corresponding to ``IEEE 802.3cg-2019`` 30.16.1.1.5
+aPLCATransmitOpportunityTimer. The valid range for this attribute is
+[0 .. 255].
+
+When set, the optional ``ETHTOOL_A_PLCA_BURST_CNT`` attribute indicates the
+configured number of extra packets that the node is allowed to send during a
+single transmit opportunity. By default, this attribute is 0, meaning that
+the node can only send a single frame per TO. When greater than 0, the PLCA RS
+keeps the TO after any transmission, waiting for the MAC to send a new frame
+for up to aPLCABurstTimer BTs. This can only happen a number of times per PLCA
+cycle up to the value of this parameter. After that, the burst is over and the
+normal counting of TOs resumes. This option is corresponding to
+``IEEE 802.3cg-2019`` 30.16.1.1.6 aPLCAMaxBurstCount. The valid range for this
+attribute is [0 .. 255].
+
+When set, the optional ``ETHTOOL_A_PLCA_BURST_TMR`` attribute indicates how
+many bit-times the PLCA RS waits for the MAC to initiate a new transmission
+when aPLCAMaxBurstCount is greater than 0. If the MAC fails to send a new
+frame within this time, the burst ends and the counting of TOs resumes.
+Otherwise, the new frame is sent as part of the current burst. This option
+is corresponding to ``IEEE 802.3cg-2019`` 30.16.1.1.7 aPLCABurstTimer. The
+valid range for this attribute is [0 .. 255]. Although, the value should be
+set greater than the Inter-Frame-Gap (IFG) time of the MAC (plus some margin)
+for PLCA burst mode to work as intended.
+
+PLCA_SET_CFG
+============
+
+Sets PLCA RS parameters.
+
+Request contents:
+
+  ======================================  ======  =============================
+  ``ETHTOOL_A_PLCA_HEADER``               nested  request header
+  ``ETHTOOL_A_PLCA_ENABLED``              u8      PLCA Admin State
+  ``ETHTOOL_A_PLCA_NODE_ID``              u8      PLCA unique local node ID
+  ``ETHTOOL_A_PLCA_NODE_CNT``             u8      Number of PLCA nodes on the
+                                                  netkork, including the
+                                                  coordinator
+  ``ETHTOOL_A_PLCA_TO_TMR``               u8      Transmit Opportunity Timer
+                                                  value in bit-times (BT)
+  ``ETHTOOL_A_PLCA_BURST_CNT``            u8      Number of additional packets
+                                                  the node is allowed to send
+                                                  within a single TO
+  ``ETHTOOL_A_PLCA_BURST_TMR``            u8      Time to wait for the MAC to
+                                                  transmit a new frame before
+                                                  terminating the burst
+  ======================================  ======  =============================
+
+For a description of each attribute, see ``PLCA_GET_CFG``.
+
+PLCA_GET_STATUS
+===============
+
+Gets PLCA RS status information.
+
+Request contents:
+
+  =====================================  ======  ==========================
+  ``ETHTOOL_A_PLCA_HEADER``              nested  request header
+  =====================================  ======  ==========================
+
+Kernel response contents:
+
+  ======================================  ======  =============================
+  ``ETHTOOL_A_PLCA_HEADER``               nested  reply header
+  ``ETHTOOL_A_PLCA_STATUS``               u8      PLCA RS operational status
+  ======================================  ======  =============================
+
+When set, the ``ETHTOOL_A_PLCA_STATUS`` attribute indicates whether the node is
+detecting the presence of the BEACON on the network. This flag is
+corresponding to ``IEEE 802.3cg-2019`` 30.16.1.1.2 aPLCAStatus.
+
+MM_GET
+======
+
+Retrieve 802.3 MAC Merge parameters.
+
+Request contents:
+
+  ====================================  ======  ==========================
+  ``ETHTOOL_A_MM_HEADER``               nested  request header
+  ====================================  ======  ==========================
+
+Kernel response contents:
+
+  =================================  ======  ===================================
+  ``ETHTOOL_A_MM_HEADER``            nested  request header
+  ``ETHTOOL_A_MM_PMAC_ENABLED``      bool    set if RX of preemptible and SMD-V
+                                             frames is enabled
+  ``ETHTOOL_A_MM_TX_ENABLED``        bool    set if TX of preemptible frames is
+                                             administratively enabled (might be
+                                             inactive if verification failed)
+  ``ETHTOOL_A_MM_TX_ACTIVE``         bool    set if TX of preemptible frames is
+                                             operationally enabled
+  ``ETHTOOL_A_MM_TX_MIN_FRAG_SIZE``  u32     minimum size of transmitted
+                                             non-final fragments, in octets
+  ``ETHTOOL_A_MM_RX_MIN_FRAG_SIZE``  u32     minimum size of received non-final
+                                             fragments, in octets
+  ``ETHTOOL_A_MM_VERIFY_ENABLED``    bool    set if TX of SMD-V frames is
+                                             administratively enabled
+  ``ETHTOOL_A_MM_VERIFY_STATUS``     u8      state of the verification function
+  ``ETHTOOL_A_MM_VERIFY_TIME``       u32     delay between verification attempts
+  ``ETHTOOL_A_MM_MAX_VERIFY_TIME```  u32     maximum verification interval
+                                             supported by device
+  ``ETHTOOL_A_MM_STATS``             nested  IEEE 802.3-2018 subclause 30.14.1
+                                             oMACMergeEntity statistics counters
+  =================================  ======  ===================================
+
+The attributes are populated by the device driver through the following
+structure:
+
+.. kernel-doc:: include/linux/ethtool.h
+    :identifiers: ethtool_mm_state
+
+The ``ETHTOOL_A_MM_VERIFY_STATUS`` will report one of the values from
+
+.. kernel-doc:: include/uapi/linux/ethtool.h
+    :identifiers: ethtool_mm_verify_status
+
+If ``ETHTOOL_A_MM_VERIFY_ENABLED`` was passed as false in the ``MM_SET``
+command, ``ETHTOOL_A_MM_VERIFY_STATUS`` will report either
+``ETHTOOL_MM_VERIFY_STATUS_INITIAL`` or ``ETHTOOL_MM_VERIFY_STATUS_DISABLED``,
+otherwise it should report one of the other states.
+
+It is recommended that drivers start with the pMAC disabled, and enable it upon
+user space request. It is also recommended that user space does not depend upon
+the default values from ``ETHTOOL_MSG_MM_GET`` requests.
+
+``ETHTOOL_A_MM_STATS`` are reported if ``ETHTOOL_FLAG_STATS`` was set in
+``ETHTOOL_A_HEADER_FLAGS``. The attribute will be empty if driver did not
+report any statistics. Drivers fill in the statistics in the following
+structure:
+
+.. kernel-doc:: include/linux/ethtool.h
+    :identifiers: ethtool_mm_stats
+
+MM_SET
+======
+
+Modifies the configuration of the 802.3 MAC Merge layer.
+
+Request contents:
+
+  =================================  ======  ==========================
+  ``ETHTOOL_A_MM_VERIFY_TIME``       u32     see MM_GET description
+  ``ETHTOOL_A_MM_VERIFY_ENABLED``    bool    see MM_GET description
+  ``ETHTOOL_A_MM_TX_ENABLED``        bool    see MM_GET description
+  ``ETHTOOL_A_MM_PMAC_ENABLED``      bool    see MM_GET description
+  ``ETHTOOL_A_MM_TX_MIN_FRAG_SIZE``  u32     see MM_GET description
+  =================================  ======  ==========================
+
+The attributes are propagated to the driver through the following structure:
+
+.. kernel-doc:: include/linux/ethtool.h
+    :identifiers: ethtool_mm_cfg
+
 Request translation
 ===================
 
@@ -1356,11 +2071,11 @@ are netlink only.
   ``ETHTOOL_GET_DUMP_FLAG``           n/a
   ``ETHTOOL_GET_DUMP_DATA``           n/a
   ``ETHTOOL_GET_TS_INFO``             ``ETHTOOL_MSG_TSINFO_GET``
-  ``ETHTOOL_GMODULEINFO``             n/a
-  ``ETHTOOL_GMODULEEEPROM``           n/a
+  ``ETHTOOL_GMODULEINFO``             ``ETHTOOL_MSG_MODULE_EEPROM_GET``
+  ``ETHTOOL_GMODULEEEPROM``           ``ETHTOOL_MSG_MODULE_EEPROM_GET``
   ``ETHTOOL_GEEE``                    ``ETHTOOL_MSG_EEE_GET``
   ``ETHTOOL_SEEE``                    ``ETHTOOL_MSG_EEE_SET``
-  ``ETHTOOL_GRSSH``                   n/a
+  ``ETHTOOL_GRSSH``                   ``ETHTOOL_MSG_RSS_GET``
   ``ETHTOOL_SRSSH``                   n/a
   ``ETHTOOL_GTUNABLE``                n/a
   ``ETHTOOL_STUNABLE``                n/a
@@ -1372,9 +2087,17 @@ are netlink only.
                                       ``ETHTOOL_MSG_LINKMODES_SET``
   ``ETHTOOL_PHY_GTUNABLE``            n/a
   ``ETHTOOL_PHY_STUNABLE``            n/a
-  ``ETHTOOL_GFECPARAM``               n/a
-  ``ETHTOOL_SFECPARAM``               n/a
-  n/a                                 ''ETHTOOL_MSG_CABLE_TEST_ACT''
-  n/a                                 ''ETHTOOL_MSG_CABLE_TEST_TDR_ACT''
+  ``ETHTOOL_GFECPARAM``               ``ETHTOOL_MSG_FEC_GET``
+  ``ETHTOOL_SFECPARAM``               ``ETHTOOL_MSG_FEC_SET``
+  n/a                                 ``ETHTOOL_MSG_CABLE_TEST_ACT``
+  n/a                                 ``ETHTOOL_MSG_CABLE_TEST_TDR_ACT``
   n/a                                 ``ETHTOOL_MSG_TUNNEL_INFO_GET``
+  n/a                                 ``ETHTOOL_MSG_PHC_VCLOCKS_GET``
+  n/a                                 ``ETHTOOL_MSG_MODULE_GET``
+  n/a                                 ``ETHTOOL_MSG_MODULE_SET``
+  n/a                                 ``ETHTOOL_MSG_PLCA_GET_CFG``
+  n/a                                 ``ETHTOOL_MSG_PLCA_SET_CFG``
+  n/a                                 ``ETHTOOL_MSG_PLCA_GET_STATUS``
+  n/a                                 ``ETHTOOL_MSG_MM_GET``
+  n/a                                 ``ETHTOOL_MSG_MM_SET``
   =================================== =====================================

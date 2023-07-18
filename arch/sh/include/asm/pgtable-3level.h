@@ -28,13 +28,19 @@
 #define pmd_ERROR(e) \
 	printk("%s:%d: bad pmd %016llx.\n", __FILE__, __LINE__, pmd_val(e))
 
-typedef struct { unsigned long long pmd; } pmd_t;
+typedef union {
+	struct {
+		unsigned long pmd_low;
+		unsigned long pmd_high;
+	};
+	unsigned long long pmd;
+} pmd_t;
 #define pmd_val(x)	((x).pmd)
-#define __pmd(x)	((pmd_t) { (x) } )
+#define __pmd(x)	((pmd_t) { .pmd = (x) } )
 
-static inline unsigned long pud_page_vaddr(pud_t pud)
+static inline pmd_t *pud_pgtable(pud_t pud)
 {
-	return pud_val(pud);
+	return (pmd_t *)(unsigned long)pud_val(pud);
 }
 
 /* only used by the stubbed out hugetlb gup code, should never be called */

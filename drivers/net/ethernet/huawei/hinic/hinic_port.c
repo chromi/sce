@@ -17,9 +17,6 @@
 #include "hinic_port.h"
 #include "hinic_dev.h"
 
-#define HINIC_MIN_MTU_SIZE              256
-#define HINIC_MAX_JUMBO_FRAME_SIZE      15872
-
 enum mac_op {
 	MAC_DEL,
 	MAC_SET,
@@ -128,7 +125,7 @@ int hinic_port_get_mac(struct hinic_dev *nic_dev, u8 *addr)
 	err = hinic_port_msg_cmd(hwdev, HINIC_PORT_CMD_GET_MAC,
 				 &port_mac_cmd, sizeof(port_mac_cmd),
 				 &port_mac_cmd, &out_size);
-	if (err || (out_size != sizeof(port_mac_cmd)) || port_mac_cmd.status) {
+	if (err || out_size != sizeof(port_mac_cmd) || port_mac_cmd.status) {
 		dev_err(&pdev->dev, "Failed to get mac, err: %d, status: 0x%x, out size: 0x%x\n",
 			err, port_mac_cmd.status, out_size);
 		return -EFAULT;
@@ -147,24 +144,12 @@ int hinic_port_get_mac(struct hinic_dev *nic_dev, u8 *addr)
  **/
 int hinic_port_set_mtu(struct hinic_dev *nic_dev, int new_mtu)
 {
-	struct net_device *netdev = nic_dev->netdev;
 	struct hinic_hwdev *hwdev = nic_dev->hwdev;
 	struct hinic_port_mtu_cmd port_mtu_cmd;
 	struct hinic_hwif *hwif = hwdev->hwif;
 	u16 out_size = sizeof(port_mtu_cmd);
 	struct pci_dev *pdev = hwif->pdev;
-	int err, max_frame;
-
-	if (new_mtu < HINIC_MIN_MTU_SIZE) {
-		netif_err(nic_dev, drv, netdev, "mtu < MIN MTU size");
-		return -EINVAL;
-	}
-
-	max_frame = new_mtu + ETH_HLEN + ETH_FCS_LEN;
-	if (max_frame > HINIC_MAX_JUMBO_FRAME_SIZE) {
-		netif_err(nic_dev, drv, netdev, "mtu > MAX MTU size");
-		return -EINVAL;
-	}
+	int err;
 
 	port_mtu_cmd.func_idx = HINIC_HWIF_FUNC_IDX(hwif);
 	port_mtu_cmd.mtu = new_mtu;
@@ -263,7 +248,7 @@ int hinic_port_link_state(struct hinic_dev *nic_dev,
 	err = hinic_port_msg_cmd(hwdev, HINIC_PORT_CMD_GET_LINK_STATE,
 				 &link_cmd, sizeof(link_cmd),
 				 &link_cmd, &out_size);
-	if (err || (out_size != sizeof(link_cmd)) || link_cmd.status) {
+	if (err || out_size != sizeof(link_cmd) || link_cmd.status) {
 		dev_err(&pdev->dev, "Failed to get link state, err: %d, status: 0x%x, out size: 0x%x\n",
 			err, link_cmd.status, out_size);
 		return -EINVAL;
@@ -297,7 +282,7 @@ int hinic_port_set_state(struct hinic_dev *nic_dev, enum hinic_port_state state)
 	err = hinic_port_msg_cmd(hwdev, HINIC_PORT_CMD_SET_PORT_STATE,
 				 &port_state, sizeof(port_state),
 				 &port_state, &out_size);
-	if (err || (out_size != sizeof(port_state)) || port_state.status) {
+	if (err || out_size != sizeof(port_state) || port_state.status) {
 		dev_err(&pdev->dev, "Failed to set port state, err: %d, status: 0x%x, out size: 0x%x\n",
 			err, port_state.status, out_size);
 		return -EFAULT;
@@ -329,7 +314,7 @@ int hinic_port_set_func_state(struct hinic_dev *nic_dev,
 	err = hinic_port_msg_cmd(hwdev, HINIC_PORT_CMD_SET_FUNC_STATE,
 				 &func_state, sizeof(func_state),
 				 &func_state, &out_size);
-	if (err || (out_size != sizeof(func_state)) || func_state.status) {
+	if (err || out_size != sizeof(func_state) || func_state.status) {
 		dev_err(&pdev->dev, "Failed to set port func state, err: %d, status: 0x%x, out size: 0x%x\n",
 			err, func_state.status, out_size);
 		return -EFAULT;
@@ -359,7 +344,7 @@ int hinic_port_get_cap(struct hinic_dev *nic_dev,
 	err = hinic_port_msg_cmd(hwdev, HINIC_PORT_CMD_GET_CAP,
 				 port_cap, sizeof(*port_cap),
 				 port_cap, &out_size);
-	if (err || (out_size != sizeof(*port_cap)) || port_cap->status) {
+	if (err || out_size != sizeof(*port_cap) || port_cap->status) {
 		dev_err(&pdev->dev,
 			"Failed to get port capabilities, err: %d, status: 0x%x, out size: 0x%x\n",
 			err, port_cap->status, out_size);
@@ -460,6 +445,39 @@ int hinic_set_rx_vlan_offload(struct hinic_dev *nic_dev, u8 en)
 	}
 
 	return 0;
+}
+
+int hinic_set_vlan_fliter(struct hinic_dev *nic_dev, u32 en)
+{
+	struct hinic_hwdev *hwdev = nic_dev->hwdev;
+	struct hinic_hwif *hwif = hwdev->hwif;
+	struct pci_dev *pdev = hwif->pdev;
+	struct hinic_vlan_filter vlan_filter;
+	u16 out_size = sizeof(vlan_filter);
+	int err;
+
+	if (!hwdev)
+		return -EINVAL;
+
+	vlan_filter.func_idx = HINIC_HWIF_FUNC_IDX(hwif);
+	vlan_filter.enable = en;
+
+	err = hinic_port_msg_cmd(hwdev, HINIC_PORT_CMD_SET_VLAN_FILTER,
+				 &vlan_filter, sizeof(vlan_filter),
+				 &vlan_filter, &out_size);
+	if (vlan_filter.status == HINIC_MGMT_CMD_UNSUPPORTED) {
+		err = HINIC_MGMT_CMD_UNSUPPORTED;
+	} else if ((err == HINIC_MBOX_VF_CMD_ERROR) &&
+			   HINIC_IS_VF(hwif)) {
+		err = HINIC_MGMT_CMD_UNSUPPORTED;
+	} else if (err || !out_size || vlan_filter.status) {
+		dev_err(&pdev->dev,
+			"Failed to set vlan fliter, err: %d, status: 0x%x, out size: 0x%x\n",
+			err, vlan_filter.status, out_size);
+		err = -EINVAL;
+	}
+
+	return err;
 }
 
 int hinic_set_max_qnum(struct hinic_dev *nic_dev, u8 num_rqs)

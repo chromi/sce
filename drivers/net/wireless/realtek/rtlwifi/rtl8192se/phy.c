@@ -115,9 +115,6 @@ static u32 _rtl92s_phy_rf_serial_read(struct ieee80211_hw *hw,
 		retvalue = rtl_get_bbreg(hw, pphyreg->rf_rb,
 					 BLSSI_READBACK_DATA);
 
-	retvalue = rtl_get_bbreg(hw, pphyreg->rf_rb,
-				 BLSSI_READBACK_DATA);
-
 	rtl_dbg(rtlpriv, COMP_RF, DBG_TRACE, "RFR-%d Addr[0x%x]=0x%x\n",
 		rfpath, pphyreg->rf_rb, retvalue);
 
@@ -1017,7 +1014,7 @@ bool rtl92s_phy_bb_config(struct ieee80211_hw *hw)
 {
 	struct rtl_priv *rtlpriv = rtl_priv(hw);
 	struct rtl_phy *rtlphy = &(rtlpriv->phy);
-	bool rtstatus = true;
+	bool rtstatus;
 	u8 pathmap, index, rf_num = 0;
 	u8 path1, path2;
 

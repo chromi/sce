@@ -980,7 +980,6 @@ static void e752x_check(struct mem_ctl_info *mci)
 {
 	struct e752x_error_info info;
 
-	edac_dbg(3, "\n");
 	e752x_get_error_info(mci, &info);
 	e752x_process_error_info(mci, &info, 1);
 }
@@ -1463,7 +1462,7 @@ module_init(e752x_init);
 module_exit(e752x_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Linux Networx (http://lnxi.com) Tom Zimmerman\n");
+MODULE_AUTHOR("Linux Networx (http://lnxi.com) Tom Zimmerman");
 MODULE_DESCRIPTION("MC support for Intel e752x/3100 memory controllers");
 
 module_param(force_function_unhide, int, 0444);

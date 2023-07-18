@@ -549,6 +549,7 @@ static int srpt_format_guid(char *buf, unsigned int size, const __be64 *guid)
  */
 static int srpt_refresh_port(struct srpt_port *sport)
 {
+	struct ib_mad_agent *mad_agent;
 	struct ib_mad_reg_req reg_req;
 	struct ib_port_modify port_modify;
 	struct ib_port_attr port_attr;
@@ -565,12 +566,9 @@ static int srpt_refresh_port(struct srpt_port *sport)
 	if (ret)
 		return ret;
 
-	sport->port_guid_id.wwn.priv = sport;
-	srpt_format_guid(sport->port_guid_id.name,
-			 sizeof(sport->port_guid_id.name),
+	srpt_format_guid(sport->guid_name, ARRAY_SIZE(sport->guid_name),
 			 &sport->gid.global.interface_id);
-	sport->port_gid_id.wwn.priv = sport;
-	snprintf(sport->port_gid_id.name, sizeof(sport->port_gid_id.name),
+	snprintf(sport->gid_name, ARRAY_SIZE(sport->gid_name),
 		 "0x%016llx%016llx",
 		 be64_to_cpu(sport->gid.global.subnet_prefix),
 		 be64_to_cpu(sport->gid.global.interface_id));
@@ -596,24 +594,26 @@ static int srpt_refresh_port(struct srpt_port *sport)
 		set_bit(IB_MGMT_METHOD_GET, reg_req.method_mask);
 		set_bit(IB_MGMT_METHOD_SET, reg_req.method_mask);
 
-		sport->mad_agent = ib_register_mad_agent(sport->sdev->device,
-							 sport->port,
-							 IB_QPT_GSI,
-							 &reg_req, 0,
-							 srpt_mad_send_handler,
-							 srpt_mad_recv_handler,
-							 sport, 0);
-		if (IS_ERR(sport->mad_agent)) {
+		mad_agent = ib_register_mad_agent(sport->sdev->device,
+						  sport->port,
+						  IB_QPT_GSI,
+						  &reg_req, 0,
+						  srpt_mad_send_handler,
+						  srpt_mad_recv_handler,
+						  sport, 0);
+		if (IS_ERR(mad_agent)) {
 			pr_err("%s-%d: MAD agent registration failed (%ld). Note: this is expected if SR-IOV is enabled.\n",
 			       dev_name(&sport->sdev->device->dev), sport->port,
-			       PTR_ERR(sport->mad_agent));
+			       PTR_ERR(mad_agent));
 			sport->mad_agent = NULL;
 			memset(&port_modify, 0, sizeof(port_modify));
 			port_modify.clr_port_cap_mask = IB_PORT_DEVICE_MGMT_SUP;
 			ib_modify_port(sport->sdev->device, sport->port, 0,
 				       &port_modify);
-
+			return 0;
 		}
+
+		sport->mad_agent = mad_agent;
 	}
 
 	return 0;
@@ -1424,7 +1424,7 @@ static int srpt_build_cmd_rsp(struct srpt_rdma_ch *ch,
 
 		srp_rsp->flags |= SRP_RSP_FLAG_SNSVALID;
 		srp_rsp->sense_data_len = cpu_to_be32(sense_data_len);
-		memcpy(srp_rsp + 1, sense_data, sense_data_len);
+		memcpy(srp_rsp->data, sense_data, sense_data_len);
 	}
 
 	return sizeof(*srp_rsp) + sense_data_len;
@@ -1528,16 +1528,20 @@ static void srpt_handle_cmd(struct srpt_rdma_ch *ch,
 		goto busy;
 	}
 
-	rc = target_submit_cmd_map_sgls(cmd, ch->sess, srp_cmd->cdb,
-			       &send_ioctx->sense_data[0],
-			       scsilun_to_int(&srp_cmd->lun), data_len,
-			       TCM_SIMPLE_TAG, dir, TARGET_SCF_ACK_KREF,
-			       sg, sg_cnt, NULL, 0, NULL, 0);
+	rc = target_init_cmd(cmd, ch->sess, &send_ioctx->sense_data[0],
+			     scsilun_to_int(&srp_cmd->lun), data_len,
+			     TCM_SIMPLE_TAG, dir, TARGET_SCF_ACK_KREF);
 	if (rc != 0) {
 		pr_debug("target_submit_cmd() returned %d for tag %#llx\n", rc,
 			 srp_cmd->tag);
 		goto busy;
 	}
+
+	if (target_submit_prep(cmd, srp_cmd->cdb, sg, sg_cnt, NULL, 0, NULL, 0,
+			       GFP_KERNEL))
+		return;
+
+	target_submit(cmd);
 	return;
 
 busy:
@@ -2085,7 +2089,7 @@ static void srpt_release_channel_work(struct work_struct *w)
 	se_sess = ch->sess;
 	BUG_ON(!se_sess);
 
-	target_sess_cmd_list_set_waiting(se_sess);
+	target_stop_session(se_sess);
 	target_wait_for_sess_cmds(se_sess);
 
 	target_remove_session(se_sess);
@@ -2217,13 +2221,13 @@ static int srpt_cm_req_recv(struct srpt_device *const sdev,
 	ch->zw_cqe.done = srpt_zerolength_write_done;
 	INIT_WORK(&ch->release_work, srpt_release_channel_work);
 	ch->sport = sport;
-	if (ib_cm_id) {
-		ch->ib_cm.cm_id = ib_cm_id;
-		ib_cm_id->context = ch;
-	} else {
+	if (rdma_cm_id) {
 		ch->using_rdma_cm = true;
 		ch->rdma_cm.cm_id = rdma_cm_id;
 		rdma_cm_id->context = ch;
+	} else {
+		ch->ib_cm.cm_id = ib_cm_id;
+		ib_cm_id->context = ch;
 	}
 	/*
 	 * ch->rq_size should be at least as large as the initiator queue
@@ -2299,7 +2303,7 @@ static int srpt_cm_req_recv(struct srpt_device *const sdev,
 		goto free_recv_ring;
 	}
 
-	strlcpy(ch->sess_name, src_addr, sizeof(ch->sess_name));
+	strscpy(ch->sess_name, src_addr, sizeof(ch->sess_name));
 	snprintf(i_port_id, sizeof(i_port_id), "0x%016llx%016llx",
 			be64_to_cpu(*(__be64 *)nexus->i_port_id),
 			be64_to_cpu(*(__be64 *)(nexus->i_port_id + 8)));
@@ -2310,31 +2314,35 @@ static int srpt_cm_req_recv(struct srpt_device *const sdev,
 	tag_num = ch->rq_size;
 	tag_size = 1; /* ib_srpt does not use se_sess->sess_cmd_map */
 
-	mutex_lock(&sport->port_guid_id.mutex);
-	list_for_each_entry(stpg, &sport->port_guid_id.tpg_list, entry) {
-		if (!IS_ERR_OR_NULL(ch->sess))
-			break;
-		ch->sess = target_setup_session(&stpg->tpg, tag_num,
+	if (sport->guid_id) {
+		mutex_lock(&sport->guid_id->mutex);
+		list_for_each_entry(stpg, &sport->guid_id->tpg_list, entry) {
+			if (!IS_ERR_OR_NULL(ch->sess))
+				break;
+			ch->sess = target_setup_session(&stpg->tpg, tag_num,
 						tag_size, TARGET_PROT_NORMAL,
 						ch->sess_name, ch, NULL);
+		}
+		mutex_unlock(&sport->guid_id->mutex);
 	}
-	mutex_unlock(&sport->port_guid_id.mutex);
 
-	mutex_lock(&sport->port_gid_id.mutex);
-	list_for_each_entry(stpg, &sport->port_gid_id.tpg_list, entry) {
-		if (!IS_ERR_OR_NULL(ch->sess))
-			break;
-		ch->sess = target_setup_session(&stpg->tpg, tag_num,
+	if (sport->gid_id) {
+		mutex_lock(&sport->gid_id->mutex);
+		list_for_each_entry(stpg, &sport->gid_id->tpg_list, entry) {
+			if (!IS_ERR_OR_NULL(ch->sess))
+				break;
+			ch->sess = target_setup_session(&stpg->tpg, tag_num,
 					tag_size, TARGET_PROT_NORMAL, i_port_id,
 					ch, NULL);
-		if (!IS_ERR_OR_NULL(ch->sess))
-			break;
-		/* Retry without leading "0x" */
-		ch->sess = target_setup_session(&stpg->tpg, tag_num,
+			if (!IS_ERR_OR_NULL(ch->sess))
+				break;
+			/* Retry without leading "0x" */
+			ch->sess = target_setup_session(&stpg->tpg, tag_num,
 						tag_size, TARGET_PROT_NORMAL,
 						i_port_id + 2, ch, NULL);
+		}
+		mutex_unlock(&sport->gid_id->mutex);
 	}
-	mutex_unlock(&sport->port_gid_id.mutex);
 
 	if (IS_ERR_OR_NULL(ch->sess)) {
 		WARN_ON_ONCE(ch->sess == NULL);
@@ -2378,6 +2386,7 @@ static int srpt_cm_req_recv(struct srpt_device *const sdev,
 		pr_info("rejected SRP_LOGIN_REQ because target %s_%d is not enabled\n",
 			dev_name(&sdev->device->dev), port_num);
 		mutex_unlock(&sport->mutex);
+		ret = -EINVAL;
 		goto reject;
 	}
 
@@ -2853,7 +2862,6 @@ static void srpt_queue_response(struct se_cmd *cmd)
 			&ch->sq_wr_avail) < 0)) {
 		pr_warn("%s: IB send queue full (needed %d)\n",
 				__func__, ioctx->n_rdma);
-		ret = -ENOMEM;
 		goto out;
 	}
 
@@ -2979,7 +2987,12 @@ static int srpt_release_sport(struct srpt_port *sport)
 	return 0;
 }
 
-static struct se_wwn *__srpt_lookup_wwn(const char *name)
+struct port_and_port_id {
+	struct srpt_port *sport;
+	struct srpt_port_id **port_id;
+};
+
+static struct port_and_port_id __srpt_lookup_port(const char *name)
 {
 	struct ib_device *dev;
 	struct srpt_device *sdev;
@@ -2994,25 +3007,38 @@ static struct se_wwn *__srpt_lookup_wwn(const char *name)
 		for (i = 0; i < dev->phys_port_cnt; i++) {
 			sport = &sdev->port[i];
 
-			if (strcmp(sport->port_guid_id.name, name) == 0)
-				return &sport->port_guid_id.wwn;
-			if (strcmp(sport->port_gid_id.name, name) == 0)
-				return &sport->port_gid_id.wwn;
+			if (strcmp(sport->guid_name, name) == 0) {
+				kref_get(&sdev->refcnt);
+				return (struct port_and_port_id){
+					sport, &sport->guid_id};
+			}
+			if (strcmp(sport->gid_name, name) == 0) {
+				kref_get(&sdev->refcnt);
+				return (struct port_and_port_id){
+					sport, &sport->gid_id};
+			}
 		}
 	}
 
-	return NULL;
+	return (struct port_and_port_id){};
 }
 
-static struct se_wwn *srpt_lookup_wwn(const char *name)
+/**
+ * srpt_lookup_port() - Look up an RDMA port by name
+ * @name: ASCII port name
+ *
+ * Increments the RDMA port reference count if an RDMA port pointer is returned.
+ * The caller must drop that reference count by calling srpt_port_put_ref().
+ */
+static struct port_and_port_id srpt_lookup_port(const char *name)
 {
-	struct se_wwn *wwn;
+	struct port_and_port_id papi;
 
 	spin_lock(&srpt_dev_lock);
-	wwn = __srpt_lookup_wwn(name);
+	papi = __srpt_lookup_port(name);
 	spin_unlock(&srpt_dev_lock);
 
-	return wwn;
+	return papi;
 }
 
 static void srpt_free_srq(struct srpt_device *sdev)
@@ -3097,6 +3123,18 @@ static int srpt_use_srq(struct srpt_device *sdev, bool use_srq)
 	return ret;
 }
 
+static void srpt_free_sdev(struct kref *refcnt)
+{
+	struct srpt_device *sdev = container_of(refcnt, typeof(*sdev), refcnt);
+
+	kfree(sdev);
+}
+
+static void srpt_sdev_put(struct srpt_device *sdev)
+{
+	kref_put(&sdev->refcnt, srpt_free_sdev);
+}
+
 /**
  * srpt_add_one - InfiniBand device addition callback function
  * @device: Describes a HCA.
@@ -3105,7 +3143,8 @@ static int srpt_add_one(struct ib_device *device)
 {
 	struct srpt_device *sdev;
 	struct srpt_port *sport;
-	int i, ret;
+	int ret;
+	u32 i;
 
 	pr_debug("device = %p\n", device);
 
@@ -3114,6 +3153,7 @@ static int srpt_add_one(struct ib_device *device)
 	if (!sdev)
 		return -ENOMEM;
 
+	kref_init(&sdev->refcnt);
 	sdev->device = device;
 	mutex_init(&sdev->sdev_mutex);
 
@@ -3154,7 +3194,7 @@ static int srpt_add_one(struct ib_device *device)
 	 * if this HCA is gone bad and replaced by different HCA
 	 */
 	ret = sdev->cm_id ?
-		ib_cm_listen(sdev->cm_id, cpu_to_be64(srpt_service_guid), 0) :
+		ib_cm_listen(sdev->cm_id, cpu_to_be64(srpt_service_guid)) :
 		0;
 	if (ret < 0) {
 		pr_err("ib_cm_listen() failed: %d (cm_id state = %d)\n", ret,
@@ -3177,10 +3217,6 @@ static int srpt_add_one(struct ib_device *device)
 		sport->port_attrib.srp_sq_size = DEF_SRPT_SQ_SIZE;
 		sport->port_attrib.use_srq = false;
 		INIT_WORK(&sport->work, srpt_refresh_port_work);
-		mutex_init(&sport->port_guid_id.mutex);
-		INIT_LIST_HEAD(&sport->port_guid_id.tpg_list);
-		mutex_init(&sport->port_gid_id.mutex);
-		INIT_LIST_HEAD(&sport->port_gid_id.tpg_list);
 
 		ret = srpt_refresh_port(sport);
 		if (ret) {
@@ -3209,7 +3245,7 @@ err_ring:
 	srpt_free_srq(sdev);
 	ib_dealloc_pd(sdev->pd);
 free_dev:
-	kfree(sdev);
+	srpt_sdev_put(sdev);
 	pr_info("%s(%s) failed.\n", __func__, dev_name(&device->dev));
 	return ret;
 }
@@ -3253,7 +3289,7 @@ static void srpt_remove_one(struct ib_device *device, void *client_data)
 
 	ib_dealloc_pd(sdev->pd);
 
-	kfree(sdev);
+	srpt_sdev_put(sdev);
 }
 
 static struct ib_client srpt_client = {
@@ -3267,11 +3303,6 @@ static int srpt_check_true(struct se_portal_group *se_tpg)
 	return 1;
 }
 
-static int srpt_check_false(struct se_portal_group *se_tpg)
-{
-	return 0;
-}
-
 static struct srpt_port *srpt_tpg_to_sport(struct se_portal_group *tpg)
 {
 	return tpg->se_tpg_wwn->priv;
@@ -3281,10 +3312,10 @@ static struct srpt_port_id *srpt_wwn_to_sport_id(struct se_wwn *wwn)
 {
 	struct srpt_port *sport = wwn->priv;
 
-	if (wwn == &sport->port_guid_id.wwn)
-		return &sport->port_guid_id;
-	if (wwn == &sport->port_gid_id.wwn)
-		return &sport->port_gid_id;
+	if (sport->guid_id && &sport->guid_id->wwn == wwn)
+		return sport->guid_id;
+	if (sport->gid_id && &sport->gid_id->wwn == wwn)
+		return sport->gid_id;
 	WARN_ON_ONCE(true);
 	return NULL;
 }
@@ -3297,11 +3328,6 @@ static char *srpt_get_fabric_wwn(struct se_portal_group *tpg)
 }
 
 static u16 srpt_get_tag(struct se_portal_group *tpg)
-{
-	return 1;
-}
-
-static u32 srpt_tpg_get_inst_index(struct se_portal_group *se_tpg)
 {
 	return 1;
 }
@@ -3343,24 +3369,6 @@ static void srpt_close_session(struct se_session *se_sess)
 	struct srpt_rdma_ch *ch = se_sess->fabric_sess_ptr;
 
 	srpt_disconnect_ch_sync(ch);
-}
-
-/**
- * srpt_sess_get_index - return the value of scsiAttIntrPortIndex (SCSI-MIB)
- * @se_sess: SCSI target session.
- *
- * A quote from RFC 4455 (SCSI-MIB) about this MIB object:
- * This object represents an arbitrary integer used to uniquely identify a
- * particular attached remote initiator port to a particular SCSI target port
- * within a particular SCSI target device within a particular SCSI instance.
- */
-static u32 srpt_sess_get_index(struct se_session *se_sess)
-{
-	return 0;
-}
-
-static void srpt_set_default_node_attrs(struct se_node_acl *nacl)
-{
 }
 
 /* Note: only used from inside debug printk's by the TCM core. */
@@ -3448,7 +3456,7 @@ static ssize_t srpt_tpg_attrib_srp_max_rdma_size_show(struct config_item *item,
 	struct se_portal_group *se_tpg = attrib_to_tpg(item);
 	struct srpt_port *sport = srpt_tpg_to_sport(se_tpg);
 
-	return sprintf(page, "%u\n", sport->port_attrib.srp_max_rdma_size);
+	return sysfs_emit(page, "%u\n", sport->port_attrib.srp_max_rdma_size);
 }
 
 static ssize_t srpt_tpg_attrib_srp_max_rdma_size_store(struct config_item *item,
@@ -3485,7 +3493,7 @@ static ssize_t srpt_tpg_attrib_srp_max_rsp_size_show(struct config_item *item,
 	struct se_portal_group *se_tpg = attrib_to_tpg(item);
 	struct srpt_port *sport = srpt_tpg_to_sport(se_tpg);
 
-	return sprintf(page, "%u\n", sport->port_attrib.srp_max_rsp_size);
+	return sysfs_emit(page, "%u\n", sport->port_attrib.srp_max_rsp_size);
 }
 
 static ssize_t srpt_tpg_attrib_srp_max_rsp_size_store(struct config_item *item,
@@ -3522,7 +3530,7 @@ static ssize_t srpt_tpg_attrib_srp_sq_size_show(struct config_item *item,
 	struct se_portal_group *se_tpg = attrib_to_tpg(item);
 	struct srpt_port *sport = srpt_tpg_to_sport(se_tpg);
 
-	return sprintf(page, "%u\n", sport->port_attrib.srp_sq_size);
+	return sysfs_emit(page, "%u\n", sport->port_attrib.srp_sq_size);
 }
 
 static ssize_t srpt_tpg_attrib_srp_sq_size_store(struct config_item *item,
@@ -3559,7 +3567,7 @@ static ssize_t srpt_tpg_attrib_use_srq_show(struct config_item *item,
 	struct se_portal_group *se_tpg = attrib_to_tpg(item);
 	struct srpt_port *sport = srpt_tpg_to_sport(se_tpg);
 
-	return sprintf(page, "%d\n", sport->port_attrib.use_srq);
+	return sysfs_emit(page, "%d\n", sport->port_attrib.use_srq);
 }
 
 static ssize_t srpt_tpg_attrib_use_srq_store(struct config_item *item,
@@ -3649,7 +3657,7 @@ out:
 
 static ssize_t srpt_rdma_cm_port_show(struct config_item *item, char *page)
 {
-	return sprintf(page, "%d\n", rdma_cm_port);
+	return sysfs_emit(page, "%d\n", rdma_cm_port);
 }
 
 static ssize_t srpt_rdma_cm_port_store(struct config_item *item,
@@ -3700,46 +3708,16 @@ static struct configfs_attribute *srpt_da_attrs[] = {
 	NULL,
 };
 
-static ssize_t srpt_tpg_enable_show(struct config_item *item, char *page)
+static int srpt_enable_tpg(struct se_portal_group *se_tpg, bool enable)
 {
-	struct se_portal_group *se_tpg = to_tpg(item);
 	struct srpt_port *sport = srpt_tpg_to_sport(se_tpg);
-
-	return snprintf(page, PAGE_SIZE, "%d\n", sport->enabled);
-}
-
-static ssize_t srpt_tpg_enable_store(struct config_item *item,
-		const char *page, size_t count)
-{
-	struct se_portal_group *se_tpg = to_tpg(item);
-	struct srpt_port *sport = srpt_tpg_to_sport(se_tpg);
-	unsigned long tmp;
-	int ret;
-
-	ret = kstrtoul(page, 0, &tmp);
-	if (ret < 0) {
-		pr_err("Unable to extract srpt_tpg_store_enable\n");
-		return -EINVAL;
-	}
-
-	if ((tmp != 0) && (tmp != 1)) {
-		pr_err("Illegal value for srpt_tpg_store_enable: %lu\n", tmp);
-		return -EINVAL;
-	}
 
 	mutex_lock(&sport->mutex);
-	srpt_set_enabled(sport, tmp);
+	srpt_set_enabled(sport, enable);
 	mutex_unlock(&sport->mutex);
 
-	return count;
+	return 0;
 }
-
-CONFIGFS_ATTR(srpt_tpg_, enable);
-
-static struct configfs_attribute *srpt_tpg_attrs[] = {
-	&srpt_tpg_attr_enable,
-	NULL,
-};
 
 /**
  * srpt_make_tpg - configfs callback invoked for mkdir /sys/kernel/config/target/$driver/$port/$tpg
@@ -3799,7 +3777,31 @@ static struct se_wwn *srpt_make_tport(struct target_fabric_configfs *tf,
 				      struct config_group *group,
 				      const char *name)
 {
-	return srpt_lookup_wwn(name) ? : ERR_PTR(-EINVAL);
+	struct port_and_port_id papi = srpt_lookup_port(name);
+	struct srpt_port *sport = papi.sport;
+	struct srpt_port_id *port_id;
+
+	if (!papi.port_id)
+		return ERR_PTR(-EINVAL);
+	if (*papi.port_id) {
+		/* Attempt to create a directory that already exists. */
+		WARN_ON_ONCE(true);
+		return &(*papi.port_id)->wwn;
+	}
+	port_id = kzalloc(sizeof(*port_id), GFP_KERNEL);
+	if (!port_id) {
+		srpt_sdev_put(sport->sdev);
+		return ERR_PTR(-ENOMEM);
+	}
+	mutex_init(&port_id->mutex);
+	INIT_LIST_HEAD(&port_id->tpg_list);
+	port_id->wwn.priv = sport;
+	memcpy(port_id->name, port_id == sport->guid_id ? sport->guid_name :
+	       sport->gid_name, ARRAY_SIZE(port_id->name));
+
+	*papi.port_id = port_id;
+
+	return &port_id->wwn;
 }
 
 /**
@@ -3808,11 +3810,23 @@ static struct se_wwn *srpt_make_tport(struct target_fabric_configfs *tf,
  */
 static void srpt_drop_tport(struct se_wwn *wwn)
 {
+	struct srpt_port_id *port_id = container_of(wwn, typeof(*port_id), wwn);
+	struct srpt_port *sport = wwn->priv;
+
+	if (sport->guid_id == port_id)
+		sport->guid_id = NULL;
+	else if (sport->gid_id == port_id)
+		sport->gid_id = NULL;
+	else
+		WARN_ON_ONCE(true);
+
+	srpt_sdev_put(sport->sdev);
+	kfree(port_id);
 }
 
 static ssize_t srpt_wwn_version_show(struct config_item *item, char *buf)
 {
-	return scnprintf(buf, PAGE_SIZE, "\n");
+	return sysfs_emit(buf, "\n");
 }
 
 CONFIGFS_ATTR_RO(srpt_wwn_, version);
@@ -3827,18 +3841,13 @@ static const struct target_core_fabric_ops srpt_template = {
 	.fabric_name			= "srpt",
 	.tpg_get_wwn			= srpt_get_fabric_wwn,
 	.tpg_get_tag			= srpt_get_tag,
-	.tpg_check_demo_mode		= srpt_check_false,
 	.tpg_check_demo_mode_cache	= srpt_check_true,
 	.tpg_check_demo_mode_write_protect = srpt_check_true,
-	.tpg_check_prod_mode_write_protect = srpt_check_false,
-	.tpg_get_inst_index		= srpt_tpg_get_inst_index,
 	.release_cmd			= srpt_release_cmd,
 	.check_stop_free		= srpt_check_stop_free,
 	.close_session			= srpt_close_session,
-	.sess_get_index			= srpt_sess_get_index,
 	.sess_get_initiator_sid		= NULL,
 	.write_pending			= srpt_write_pending,
-	.set_default_node_attributes	= srpt_set_default_node_attrs,
 	.get_cmd_state			= srpt_get_tcm_cmd_state,
 	.queue_data_in			= srpt_queue_data_in,
 	.queue_status			= srpt_queue_status,
@@ -3851,12 +3860,12 @@ static const struct target_core_fabric_ops srpt_template = {
 	.fabric_make_wwn		= srpt_make_tport,
 	.fabric_drop_wwn		= srpt_drop_tport,
 	.fabric_make_tpg		= srpt_make_tpg,
+	.fabric_enable_tpg		= srpt_enable_tpg,
 	.fabric_drop_tpg		= srpt_drop_tpg,
 	.fabric_init_nodeacl		= srpt_init_nodeacl,
 
 	.tfc_discovery_attrs		= srpt_da_attrs,
 	.tfc_wwn_attrs			= srpt_wwn_attrs,
-	.tfc_tpg_base_attrs		= srpt_tpg_attrs,
 	.tfc_tpg_attrib_attrs		= srpt_tpg_attrib_attrs,
 };
 

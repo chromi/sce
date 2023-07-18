@@ -123,11 +123,11 @@ static int expkey_parse(struct cache_detail *cd, char *mesg, int mlen)
 
 	/* OK, we seem to have a valid key */
 	key.h.flags = 0;
-	key.h.expiry_time = get_expiry(&mesg);
-	if (key.h.expiry_time == 0)
+	err = get_expiry(&mesg, &key.h.expiry_time);
+	if (err)
 		goto out;
 
-	key.ek_client = dom;	
+	key.ek_client = dom;
 	key.ek_fsidtype = fsidtype;
 	memcpy(key.ek_fsid, buf, len);
 
@@ -331,12 +331,29 @@ static void nfsd4_fslocs_free(struct nfsd4_fs_locations *fsloc)
 	fsloc->locations = NULL;
 }
 
+static int export_stats_init(struct export_stats *stats)
+{
+	stats->start_time = ktime_get_seconds();
+	return nfsd_percpu_counters_init(stats->counter, EXP_STATS_COUNTERS_NUM);
+}
+
+static void export_stats_reset(struct export_stats *stats)
+{
+	nfsd_percpu_counters_reset(stats->counter, EXP_STATS_COUNTERS_NUM);
+}
+
+static void export_stats_destroy(struct export_stats *stats)
+{
+	nfsd_percpu_counters_destroy(stats->counter, EXP_STATS_COUNTERS_NUM);
+}
+
 static void svc_export_put(struct kref *ref)
 {
 	struct svc_export *exp = container_of(ref, struct svc_export, h.ref);
 	path_put(&exp->ex_path);
 	auth_domain_put(exp->ex_client);
 	nfsd4_fslocs_free(&exp->ex_fslocs);
+	export_stats_destroy(&exp->ex_stats);
 	kfree(exp->ex_uuid);
 	kfree_rcu(exp, ex_rcu);
 }
@@ -369,8 +386,9 @@ static struct svc_export *svc_export_update(struct svc_export *new,
 					    struct svc_export *old);
 static struct svc_export *svc_export_lookup(struct svc_export *);
 
-static int check_export(struct inode *inode, int *flags, unsigned char *uuid)
+static int check_export(struct path *path, int *flags, unsigned char *uuid)
 {
+	struct inode *inode = d_inode(path->dentry);
 
 	/*
 	 * We currently export only dirs, regular files, and (for v4
@@ -394,6 +412,7 @@ static int check_export(struct inode *inode, int *flags, unsigned char *uuid)
 	 *       or an FSID number (so NFSEXP_FSID or ->uuid is needed).
 	 * 2:  We must be able to find an inode from a filehandle.
 	 *       This means that s_export_op must be set.
+	 * 3: We must not currently be on an idmapped mount.
 	 */
 	if (!(inode->i_sb->s_type->fs_flags & FS_REQUIRES_DEV) &&
 	    !(*flags & NFSEXP_FSID) &&
@@ -408,8 +427,18 @@ static int check_export(struct inode *inode, int *flags, unsigned char *uuid)
 		return -EINVAL;
 	}
 
-	return 0;
+	if (is_idmapped_mnt(path->mnt)) {
+		dprintk("exp_export: export of idmapped mounts not yet supported.\n");
+		return -EINVAL;
+	}
 
+	if (inode->i_sb->s_export_op->flags & EXPORT_OP_NOSUBTREECHK &&
+	    !(*flags & NFSEXP_NOSUBTREECHECK)) {
+		dprintk("%s: %s does not support subtree checking!\n",
+			__func__, inode->i_sb->s_type->name);
+		return -EINVAL;
+	}
+	return 0;
 }
 
 #ifdef CONFIG_NFSD_V4
@@ -516,6 +545,29 @@ static inline int
 secinfo_parse(char **mesg, char *buf, struct svc_export *exp) { return 0; }
 #endif
 
+static int xprtsec_parse(char **mesg, char *buf, struct svc_export *exp)
+{
+	unsigned int i, mode, listsize;
+	int err;
+
+	err = get_uint(mesg, &listsize);
+	if (err)
+		return err;
+	if (listsize > NFSEXP_XPRTSEC_NUM)
+		return -EINVAL;
+
+	exp->ex_xprtsec_modes = 0;
+	for (i = 0; i < listsize; i++) {
+		err = get_uint(mesg, &mode);
+		if (err)
+			return err;
+		if (mode > NFSEXP_XPRTSEC_MTLS)
+			return -EINVAL;
+		exp->ex_xprtsec_modes |= mode;
+	}
+	return 0;
+}
+
 static inline int
 nfsd_uuid_parse(char **mesg, char *buf, unsigned char **puuid)
 {
@@ -578,11 +630,11 @@ static int svc_export_parse(struct cache_detail *cd, char *mesg, int mlen)
 	exp.ex_client = dom;
 	exp.cd = cd;
 	exp.ex_devid_map = NULL;
+	exp.ex_xprtsec_modes = NFSEXP_XPRTSEC_ALL;
 
 	/* expiry */
-	err = -EINVAL;
-	exp.h.expiry_time = get_expiry(&mesg);
-	if (exp.h.expiry_time == 0)
+	err = get_expiry(&mesg, &exp.h.expiry_time);
+	if (err)
 		goto out3;
 
 	/* flags */
@@ -594,7 +646,7 @@ static int svc_export_parse(struct cache_detail *cd, char *mesg, int mlen)
 		if (err || an_int < 0)
 			goto out3;
 		exp.ex_flags= an_int;
-	
+
 		/* anon uid */
 		err = get_int(&mesg, &an_int);
 		if (err)
@@ -620,6 +672,8 @@ static int svc_export_parse(struct cache_detail *cd, char *mesg, int mlen)
 				err = nfsd_uuid_parse(&mesg, buf, &exp.ex_uuid);
 			else if (strcmp(buf, "secinfo") == 0)
 				err = secinfo_parse(&mesg, buf, &exp);
+			else if (strcmp(buf, "xprtsec") == 0)
+				err = xprtsec_parse(&mesg, buf, &exp);
 			else
 				/* quietly ignore unknown words and anything
 				 * following. Newer user-space can try to set
@@ -630,10 +684,10 @@ static int svc_export_parse(struct cache_detail *cd, char *mesg, int mlen)
 				goto out4;
 		}
 
-		err = check_export(d_inode(exp.ex_path.dentry), &exp.ex_flags,
-				   exp.ex_uuid);
+		err = check_export(&exp.ex_path, &exp.ex_flags, exp.ex_uuid);
 		if (err)
 			goto out4;
+
 		/*
 		 * No point caching this if it would immediately expire.
 		 * Also, this protects exportfs's dummy export from the
@@ -686,22 +740,47 @@ static void exp_flags(struct seq_file *m, int flag, int fsid,
 		kuid_t anonu, kgid_t anong, struct nfsd4_fs_locations *fslocs);
 static void show_secinfo(struct seq_file *m, struct svc_export *exp);
 
+static int is_export_stats_file(struct seq_file *m)
+{
+	/*
+	 * The export_stats file uses the same ops as the exports file.
+	 * We use the file's name to determine the reported info per export.
+	 * There is no rename in nsfdfs, so d_name.name is stable.
+	 */
+	return !strcmp(m->file->f_path.dentry->d_name.name, "export_stats");
+}
+
 static int svc_export_show(struct seq_file *m,
 			   struct cache_detail *cd,
 			   struct cache_head *h)
 {
-	struct svc_export *exp ;
+	struct svc_export *exp;
+	bool export_stats = is_export_stats_file(m);
 
-	if (h ==NULL) {
-		seq_puts(m, "#path domain(flags)\n");
+	if (h == NULL) {
+		if (export_stats)
+			seq_puts(m, "#path domain start-time\n#\tstats\n");
+		else
+			seq_puts(m, "#path domain(flags)\n");
 		return 0;
 	}
 	exp = container_of(h, struct svc_export, h);
 	seq_path(m, &exp->ex_path, " \t\n\\");
 	seq_putc(m, '\t');
 	seq_escape(m, exp->ex_client->name, " \t\n\\");
+	if (export_stats) {
+		seq_printf(m, "\t%lld\n", exp->ex_stats.start_time);
+		seq_printf(m, "\tfh_stale: %lld\n",
+			   percpu_counter_sum_positive(&exp->ex_stats.counter[EXP_STATS_FH_STALE]));
+		seq_printf(m, "\tio_read: %lld\n",
+			   percpu_counter_sum_positive(&exp->ex_stats.counter[EXP_STATS_IO_READ]));
+		seq_printf(m, "\tio_write: %lld\n",
+			   percpu_counter_sum_positive(&exp->ex_stats.counter[EXP_STATS_IO_WRITE]));
+		seq_putc(m, '\n');
+		return 0;
+	}
 	seq_putc(m, '(');
-	if (test_bit(CACHE_VALID, &h->flags) && 
+	if (test_bit(CACHE_VALID, &h->flags) &&
 	    !test_bit(CACHE_NEGATIVE, &h->flags)) {
 		exp_flags(m, exp->ex_flags, exp->ex_fsid,
 			  exp->ex_anon_uid, exp->ex_anon_gid, &exp->ex_fslocs);
@@ -742,6 +821,7 @@ static void svc_export_init(struct cache_head *cnew, struct cache_head *citem)
 	new->ex_layout_types = 0;
 	new->ex_uuid = NULL;
 	new->cd = item->cd;
+	export_stats_reset(&new->ex_stats);
 }
 
 static void export_update(struct cache_head *cnew, struct cache_head *citem)
@@ -769,15 +849,21 @@ static void export_update(struct cache_head *cnew, struct cache_head *citem)
 	for (i = 0; i < MAX_SECINFO_LIST; i++) {
 		new->ex_flavors[i] = item->ex_flavors[i];
 	}
+	new->ex_xprtsec_modes = item->ex_xprtsec_modes;
 }
 
 static struct cache_head *svc_export_alloc(void)
 {
 	struct svc_export *i = kmalloc(sizeof(*i), GFP_KERNEL);
-	if (i)
-		return &i->h;
-	else
+	if (!i)
 		return NULL;
+
+	if (export_stats_init(&i->ex_stats)) {
+		kfree(i);
+		return NULL;
+	}
+
+	return &i->h;
 }
 
 static const struct cache_detail svc_export_cache_template = {
@@ -975,9 +1061,26 @@ static struct svc_export *exp_find(struct cache_detail *cd,
 
 __be32 check_nfsd_access(struct svc_export *exp, struct svc_rqst *rqstp)
 {
-	struct exp_flavor_info *f;
-	struct exp_flavor_info *end = exp->ex_flavors + exp->ex_nflavors;
+	struct exp_flavor_info *f, *end = exp->ex_flavors + exp->ex_nflavors;
+	struct svc_xprt *xprt = rqstp->rq_xprt;
 
+	if (exp->ex_xprtsec_modes & NFSEXP_XPRTSEC_NONE) {
+		if (!test_bit(XPT_TLS_SESSION, &xprt->xpt_flags))
+			goto ok;
+	}
+	if (exp->ex_xprtsec_modes & NFSEXP_XPRTSEC_TLS) {
+		if (test_bit(XPT_TLS_SESSION, &xprt->xpt_flags) &&
+		    !test_bit(XPT_PEER_AUTH, &xprt->xpt_flags))
+			goto ok;
+	}
+	if (exp->ex_xprtsec_modes & NFSEXP_XPRTSEC_MTLS) {
+		if (test_bit(XPT_TLS_SESSION, &xprt->xpt_flags) &&
+		    test_bit(XPT_PEER_AUTH, &xprt->xpt_flags))
+			goto ok;
+	}
+	goto denied;
+
+ok:
 	/* legacy gss-only clients are always OK: */
 	if (exp->ex_client == rqstp->rq_gssclient)
 		return 0;
@@ -1002,6 +1105,7 @@ __be32 check_nfsd_access(struct svc_export *exp, struct svc_rqst *rqstp)
 	if (nfsd4_spo_must_allow(rqstp))
 		return 0;
 
+denied:
 	return rqstp->rq_vers < 4 ? nfserr_acces : nfserr_wrongsec;
 }
 
@@ -1239,10 +1343,14 @@ static int e_show(struct seq_file *m, void *p)
 	struct cache_head *cp = p;
 	struct svc_export *exp = container_of(cp, struct svc_export, h);
 	struct cache_detail *cd = m->private;
+	bool export_stats = is_export_stats_file(m);
 
 	if (p == SEQ_START_TOKEN) {
 		seq_puts(m, "# Version 1.1\n");
-		seq_puts(m, "# Path Client(Flags) # IPs\n");
+		if (export_stats)
+			seq_puts(m, "# Path Client Start-time\n#\tStats\n");
+		else
+			seq_puts(m, "# Path Client(Flags) # IPs\n");
 		return 0;
 	}
 

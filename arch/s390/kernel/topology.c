@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  *    Copyright IBM Corp. 2007, 2011
- *    Author(s): Heiko Carstens <heiko.carstens@de.ibm.com>
  */
 
 #define KMSG_COMPONENT "cpu"
@@ -62,22 +61,23 @@ static struct mask_info drawer_info;
 struct cpu_topology_s390 cpu_topology[NR_CPUS];
 EXPORT_SYMBOL_GPL(cpu_topology);
 
-static cpumask_t cpu_group_map(struct mask_info *info, unsigned int cpu)
+static void cpu_group_map(cpumask_t *dst, struct mask_info *info, unsigned int cpu)
 {
-	cpumask_t mask;
+	static cpumask_t mask;
 
-	cpumask_copy(&mask, cpumask_of(cpu));
+	cpumask_clear(&mask);
+	if (!cpumask_test_cpu(cpu, &cpu_setup_mask))
+		goto out;
+	cpumask_set_cpu(cpu, &mask);
 	switch (topology_mode) {
 	case TOPOLOGY_MODE_HW:
 		while (info) {
 			if (cpumask_test_cpu(cpu, &info->mask)) {
-				mask = info->mask;
+				cpumask_copy(&mask, &info->mask);
 				break;
 			}
 			info = info->next;
 		}
-		if (cpumask_empty(&mask))
-			cpumask_copy(&mask, cpumask_of(cpu));
 		break;
 	case TOPOLOGY_MODE_PACKAGE:
 		cpumask_copy(&mask, cpu_present_mask);
@@ -85,27 +85,32 @@ static cpumask_t cpu_group_map(struct mask_info *info, unsigned int cpu)
 	default:
 		fallthrough;
 	case TOPOLOGY_MODE_SINGLE:
-		cpumask_copy(&mask, cpumask_of(cpu));
 		break;
 	}
-	cpumask_and(&mask, &mask, cpu_online_mask);
-	return mask;
+	cpumask_and(&mask, &mask, &cpu_setup_mask);
+out:
+	cpumask_copy(dst, &mask);
 }
 
-static cpumask_t cpu_thread_map(unsigned int cpu)
+static void cpu_thread_map(cpumask_t *dst, unsigned int cpu)
 {
-	cpumask_t mask;
-	int i;
+	static cpumask_t mask;
+	unsigned int max_cpu;
 
-	cpumask_copy(&mask, cpumask_of(cpu));
+	cpumask_clear(&mask);
+	if (!cpumask_test_cpu(cpu, &cpu_setup_mask))
+		goto out;
+	cpumask_set_cpu(cpu, &mask);
 	if (topology_mode != TOPOLOGY_MODE_HW)
-		return mask;
+		goto out;
 	cpu -= cpu % (smp_cpu_mtid + 1);
-	for (i = 0; i <= smp_cpu_mtid; i++)
-		if (cpu_present(cpu + i))
-			cpumask_set_cpu(cpu + i, &mask);
-	cpumask_and(&mask, &mask, cpu_online_mask);
-	return mask;
+	max_cpu = min(cpu + smp_cpu_mtid, nr_cpu_ids - 1);
+	for (; cpu <= max_cpu; cpu++) {
+		if (cpumask_test_cpu(cpu, &cpu_setup_mask))
+			cpumask_set_cpu(cpu, &mask);
+	}
+out:
+	cpumask_copy(dst, &mask);
 }
 
 #define TOPOLOGY_CORE_BITS	64
@@ -119,25 +124,26 @@ static void add_cpus_to_mask(struct topology_core *tl_core,
 	unsigned int core;
 
 	for_each_set_bit(core, &tl_core->mask, TOPOLOGY_CORE_BITS) {
-		unsigned int rcore;
-		int lcpu, i;
+		unsigned int max_cpu, rcore;
+		int cpu;
 
 		rcore = TOPOLOGY_CORE_BITS - 1 - core + tl_core->origin;
-		lcpu = smp_find_processor_id(rcore << smp_cpu_mt_shift);
-		if (lcpu < 0)
+		cpu = smp_find_processor_id(rcore << smp_cpu_mt_shift);
+		if (cpu < 0)
 			continue;
-		for (i = 0; i <= smp_cpu_mtid; i++) {
-			topo = &cpu_topology[lcpu + i];
+		max_cpu = min(cpu + smp_cpu_mtid, nr_cpu_ids - 1);
+		for (; cpu <= max_cpu; cpu++) {
+			topo = &cpu_topology[cpu];
 			topo->drawer_id = drawer->id;
 			topo->book_id = book->id;
 			topo->socket_id = socket->id;
 			topo->core_id = rcore;
-			topo->thread_id = lcpu + i;
+			topo->thread_id = cpu;
 			topo->dedicated = tl_core->d;
-			cpumask_set_cpu(lcpu + i, &drawer->mask);
-			cpumask_set_cpu(lcpu + i, &book->mask);
-			cpumask_set_cpu(lcpu + i, &socket->mask);
-			smp_cpu_set_polarization(lcpu + i, tl_core->pp);
+			cpumask_set_cpu(cpu, &drawer->mask);
+			cpumask_set_cpu(cpu, &book->mask);
+			cpumask_set_cpu(cpu, &socket->mask);
+			smp_cpu_set_polarization(cpu, tl_core->pp);
 		}
 	}
 }
@@ -250,10 +256,10 @@ void update_cpu_masks(void)
 
 	for_each_possible_cpu(cpu) {
 		topo = &cpu_topology[cpu];
-		topo->thread_mask = cpu_thread_map(cpu);
-		topo->core_mask = cpu_group_map(&socket_info, cpu);
-		topo->book_mask = cpu_group_map(&book_info, cpu);
-		topo->drawer_mask = cpu_group_map(&drawer_info, cpu);
+		cpu_thread_map(&topo->thread_mask, cpu);
+		cpu_group_map(&topo->core_mask, &socket_info, cpu);
+		cpu_group_map(&topo->book_mask, &book_info, cpu);
+		cpu_group_map(&topo->drawer_mask, &drawer_info, cpu);
 		topo->booted_cores = 0;
 		if (topology_mode != TOPOLOGY_MODE_HW) {
 			id = topology_mode == TOPOLOGY_MODE_PACKAGE ? 0 : cpu;
@@ -401,7 +407,7 @@ static ssize_t dispatching_store(struct device *dev,
 	if (val != 0 && val != 1)
 		return -EINVAL;
 	rc = 0;
-	get_online_cpus();
+	cpus_read_lock();
 	mutex_lock(&smp_cpu_state_mutex);
 	if (cpu_management == val)
 		goto out;
@@ -412,7 +418,7 @@ static ssize_t dispatching_store(struct device *dev,
 	topology_expect_change();
 out:
 	mutex_unlock(&smp_cpu_state_mutex);
-	put_online_cpus();
+	cpus_read_unlock();
 	return rc ? rc : count;
 }
 static DEVICE_ATTR_RW(dispatching);
@@ -564,6 +570,7 @@ void __init topology_init_early(void)
 	alloc_masks(info, &book_info, 2);
 	alloc_masks(info, &drawer_info, 3);
 out:
+	cpumask_set_cpu(0, &cpu_setup_mask);
 	__arch_update_cpu_topology();
 	__arch_update_dedicated_flag(NULL);
 }
@@ -632,24 +639,23 @@ static struct ctl_table topology_ctl_table[] = {
 	{ },
 };
 
-static struct ctl_table topology_dir_table[] = {
-	{
-		.procname	= "s390",
-		.maxlen		= 0,
-		.mode		= 0555,
-		.child		= topology_ctl_table,
-	},
-	{ },
-};
-
 static int __init topology_init(void)
 {
+	struct device *dev_root;
+	int rc = 0;
+
 	timer_setup(&topology_timer, topology_timer_fn, TIMER_DEFERRABLE);
 	if (MACHINE_HAS_TOPOLOGY)
 		set_topology_timer();
 	else
 		topology_update_polarization_simple();
-	register_sysctl_table(topology_dir_table);
-	return device_create_file(cpu_subsys.dev_root, &dev_attr_dispatching);
+	register_sysctl("s390", topology_ctl_table);
+
+	dev_root = bus_get_dev_root(&cpu_subsys);
+	if (dev_root) {
+		rc = device_create_file(dev_root, &dev_attr_dispatching);
+		put_device(dev_root);
+	}
+	return rc;
 }
 device_initcall(topology_init);

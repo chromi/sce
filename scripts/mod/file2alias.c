@@ -34,18 +34,22 @@ typedef Elf64_Addr	kernel_ulong_t;
 typedef uint32_t	__u32;
 typedef uint16_t	__u16;
 typedef unsigned char	__u8;
+
+/* UUID types for backward compatibility, don't use in new code */
 typedef struct {
 	__u8 b[16];
 } guid_t;
 
-/* backwards compatibility, don't use in new code */
-typedef struct {
-	__u8 b[16];
-} uuid_le;
 typedef struct {
 	__u8 b[16];
 } uuid_t;
+
 #define	UUID_STRING_LEN		36
+
+/* MEI UUID type, don't use anywhere else */
+typedef struct {
+	__u8 b[16];
+} uuid_le;
 
 /* Big exception to the "don't include kernel headers into userspace, which
  * even potentially has different endianness and word sizes, since
@@ -115,6 +119,17 @@ static inline void add_uuid(char *str, uuid_le uuid)
 		uuid.b[12], uuid.b[13], uuid.b[14], uuid.b[15]);
 }
 
+static inline void add_guid(char *str, guid_t guid)
+{
+	int len = strlen(str);
+
+	sprintf(str + len, "%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X",
+		guid.b[3], guid.b[2], guid.b[1], guid.b[0],
+		guid.b[5], guid.b[4], guid.b[7], guid.b[6],
+		guid.b[8], guid.b[9], guid.b[10], guid.b[11],
+		guid.b[12], guid.b[13], guid.b[14], guid.b[15]);
+}
+
 /**
  * Check that sizeof(device_id type) are consistent with size of section
  * in .o file. If in-consistent then userspace and kernel does not agree
@@ -129,25 +144,22 @@ static void device_id_check(const char *modname, const char *device_id,
 	int i;
 
 	if (size % id_size || size < id_size) {
-		fatal("%s: sizeof(struct %s_device_id)=%lu is not a modulo "
-		      "of the size of "
-		      "section __mod_%s__<identifier>_device_table=%lu.\n"
-		      "Fix definition of struct %s_device_id "
-		      "in mod_devicetable.h\n",
+		fatal("%s: sizeof(struct %s_device_id)=%lu is not a modulo of the size of section __mod_%s__<identifier>_device_table=%lu.\n"
+		      "Fix definition of struct %s_device_id in mod_devicetable.h\n",
 		      modname, device_id, id_size, device_id, size, device_id);
 	}
 	/* Verify last one is a terminator */
 	for (i = 0; i < id_size; i++ ) {
 		if (*(uint8_t*)(symval+size-id_size+i)) {
-			fprintf(stderr,"%s: struct %s_device_id is %lu bytes.  "
-				"The last of %lu is:\n",
+			fprintf(stderr,
+				"%s: struct %s_device_id is %lu bytes.  The last of %lu is:\n",
 				modname, device_id, id_size, size / id_size);
 			for (i = 0; i < id_size; i++ )
 				fprintf(stderr,"0x%02x ",
 					*(uint8_t*)(symval+size-id_size+i) );
 			fprintf(stderr,"\n");
-			fatal("%s: struct %s_device_id is not terminated "
-				"with a NULL entry!\n", modname, device_id);
+			fatal("%s: struct %s_device_id is not terminated with a NULL entry!\n",
+			      modname, device_id);
 		}
 	}
 }
@@ -426,7 +438,7 @@ static int do_ieee1394_entry(const char *filename,
 	return 1;
 }
 
-/* Looks like: pci:vNdNsvNsdNbcNscNiN. */
+/* Looks like: pci:vNdNsvNsdNbcNscNiN or <prefix>_pci:vNdNsvNsdNbcNscNiN. */
 static int do_pci_entry(const char *filename,
 			void *symval, char *alias)
 {
@@ -440,8 +452,21 @@ static int do_pci_entry(const char *filename,
 	DEF_FIELD(symval, pci_device_id, subdevice);
 	DEF_FIELD(symval, pci_device_id, class);
 	DEF_FIELD(symval, pci_device_id, class_mask);
+	DEF_FIELD(symval, pci_device_id, override_only);
 
-	strcpy(alias, "pci:");
+	switch (override_only) {
+	case 0:
+		strcpy(alias, "pci:");
+		break;
+	case PCI_ID_F_VFIO_DRIVER_OVERRIDE:
+		strcpy(alias, "vfio_pci:");
+		break;
+	default:
+		warn("Unknown PCI driver_override alias %08X\n",
+		     override_only);
+		return 0;
+	}
+
 	ADD(alias, "v", vendor != PCI_ANY_ID, vendor);
 	ADD(alias, "d", device != PCI_ANY_ID, device);
 	ADD(alias, "sv", subvendor != PCI_ANY_ID, subvendor);
@@ -709,8 +734,6 @@ static int do_vio_entry(const char *filename, void *symval,
 	add_wildcard(alias);
 	return 1;
 }
-
-#define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
 
 static void do_input(char *alias,
 		     kernel_ulong_t *arr, unsigned int min, unsigned int max)
@@ -1132,8 +1155,7 @@ static int do_amba_entry(const char *filename,
 	DEF_FIELD(symval, amba_id, mask);
 
 	if ((id & mask) != id)
-		fatal("%s: Masked-off bit(s) of AMBA device ID are non-zero: "
-		      "id=0x%08X, mask=0x%08X.  Please fix this driver.\n",
+		fatal("%s: Masked-off bit(s) of AMBA device ID are non-zero: id=0x%08X, mask=0x%08X.  Please fix this driver.\n",
 		      filename, id, mask);
 
 	p += sprintf(alias, "amba:d");
@@ -1364,7 +1386,80 @@ static int do_mhi_entry(const char *filename, void *symval, char *alias)
 {
 	DEF_FIELD_ADDR(symval, mhi_device_id, chan);
 	sprintf(alias, MHI_DEVICE_MODALIAS_FMT, *chan);
+	return 1;
+}
 
+/* Looks like: mhi_ep:S */
+static int do_mhi_ep_entry(const char *filename, void *symval, char *alias)
+{
+	DEF_FIELD_ADDR(symval, mhi_device_id, chan);
+	sprintf(alias, MHI_EP_DEVICE_MODALIAS_FMT, *chan);
+
+	return 1;
+}
+
+/* Looks like: ishtp:{guid} */
+static int do_ishtp_entry(const char *filename, void *symval, char *alias)
+{
+	DEF_FIELD(symval, ishtp_device_id, guid);
+
+	strcpy(alias, ISHTP_MODULE_PREFIX "{");
+	add_guid(alias, guid);
+	strcat(alias, "}");
+
+	return 1;
+}
+
+static int do_auxiliary_entry(const char *filename, void *symval, char *alias)
+{
+	DEF_FIELD_ADDR(symval, auxiliary_device_id, name);
+	sprintf(alias, AUXILIARY_MODULE_PREFIX "%s", *name);
+
+	return 1;
+}
+
+/*
+ * Looks like: ssam:dNcNtNiNfN
+ *
+ * N is exactly 2 digits, where each is an upper-case hex digit.
+ */
+static int do_ssam_entry(const char *filename, void *symval, char *alias)
+{
+	DEF_FIELD(symval, ssam_device_id, match_flags);
+	DEF_FIELD(symval, ssam_device_id, domain);
+	DEF_FIELD(symval, ssam_device_id, category);
+	DEF_FIELD(symval, ssam_device_id, target);
+	DEF_FIELD(symval, ssam_device_id, instance);
+	DEF_FIELD(symval, ssam_device_id, function);
+
+	sprintf(alias, "ssam:d%02Xc%02X", domain, category);
+	ADD(alias, "t", match_flags & SSAM_MATCH_TARGET, target);
+	ADD(alias, "i", match_flags & SSAM_MATCH_INSTANCE, instance);
+	ADD(alias, "f", match_flags & SSAM_MATCH_FUNCTION, function);
+
+	return 1;
+}
+
+/* Looks like: dfl:tNfN */
+static int do_dfl_entry(const char *filename, void *symval, char *alias)
+{
+	DEF_FIELD(symval, dfl_device_id, type);
+	DEF_FIELD(symval, dfl_device_id, feature_id);
+
+	sprintf(alias, "dfl:t%04Xf%04X", type, feature_id);
+
+	add_wildcard(alias);
+	return 1;
+}
+
+/* Looks like: cdx:vNdN */
+static int do_cdx_entry(const char *filename, void *symval,
+			char *alias)
+{
+	DEF_FIELD(symval, cdx_device_id, vendor);
+	DEF_FIELD(symval, cdx_device_id, device);
+
+	sprintf(alias, "cdx:v%08Xd%08Xd", vendor, device);
 	return 1;
 }
 
@@ -1442,6 +1537,12 @@ static const struct devtable devtable[] = {
 	{"tee", SIZE_tee_client_device_id, do_tee_entry},
 	{"wmi", SIZE_wmi_device_id, do_wmi_entry},
 	{"mhi", SIZE_mhi_device_id, do_mhi_entry},
+	{"mhi_ep", SIZE_mhi_device_id, do_mhi_ep_entry},
+	{"auxiliary", SIZE_auxiliary_device_id, do_auxiliary_entry},
+	{"ssam", SIZE_ssam_device_id, do_ssam_entry},
+	{"dfl", SIZE_dfl_device_id, do_dfl_entry},
+	{"ishtp", SIZE_ishtp_device_id, do_ishtp_entry},
+	{"cdx", SIZE_cdx_device_id, do_cdx_entry},
 };
 
 /* Create MODULE_ALIAS() statements.
@@ -1482,9 +1583,7 @@ void handle_moddevtable(struct module *mod, struct elf_info *info,
 		zeros = calloc(1, sym->st_size);
 		symval = zeros;
 	} else {
-		symval = (void *)info->hdr
-			+ info->sechdrs[get_secindex(info, sym)].sh_offset
-			+ sym->st_value;
+		symval = sym_get_data(info, sym);
 	}
 
 	/* First handle the "special" cases */

@@ -5,7 +5,7 @@
 #define XCOPY_TARGET_DESC_LEN		32
 #define XCOPY_SEGMENT_DESC_LEN		28
 #define XCOPY_NAA_IEEE_REGEX_LEN	16
-#define XCOPY_MAX_SECTORS		4096
+#define XCOPY_MAX_BYTES			16777216 /* 16 MB */
 
 /*
  * SPC4r37 6.4.6.1
@@ -27,6 +27,7 @@ struct xcopy_op {
 	struct se_device *dst_dev;
 	unsigned char dst_tid_wwn[XCOPY_NAA_IEEE_REGEX_LEN];
 	unsigned char local_dev_wwn[XCOPY_NAA_IEEE_REGEX_LEN];
+	struct percpu_ref *remote_lun_ref;
 
 	sector_t src_lba;
 	sector_t dst_lba;

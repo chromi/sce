@@ -8,6 +8,7 @@
 #define HINIC_PORT_H
 
 #include <linux/types.h>
+#include <linux/ethtool.h>
 #include <linux/etherdevice.h>
 #include <linux/bitops.h>
 
@@ -348,6 +349,16 @@ struct hinic_vlan_cfg {
 	u16     func_id;
 	u8      vlan_rx_offload;
 	u8      rsvd1[5];
+};
+
+struct hinic_vlan_filter {
+	u8	status;
+	u8	version;
+	u8	rsvd0[6];
+
+	u16	func_idx;
+	u8	rsvd1[2];
+	u32	enable;
 };
 
 struct hinic_rss_template_mgmt {
@@ -829,6 +840,8 @@ int hinic_get_vport_stats(struct hinic_dev *nic_dev,
 			  struct hinic_vport_stats *stats);
 
 int hinic_set_rx_vlan_offload(struct hinic_dev *nic_dev, u8 en);
+
+int hinic_set_vlan_fliter(struct hinic_dev *nic_dev, u32 en);
 
 int hinic_get_mgmt_version(struct hinic_dev *nic_dev, u8 *mgmt_ver);
 

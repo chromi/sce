@@ -22,6 +22,7 @@
 
 	aliases {
 		i2c7 = &i2c_max77836;
+		mmc0 = &mshc_0;
 	};
 
 	memory@40000000 {
@@ -31,13 +32,13 @@
 
 	firmware@205f000 {
 		compatible = "samsung,secure-firmware";
-		reg = <0x0205F000 0x1000>;
+		reg = <0x0205f000 0x1000>;
 	};
 
-	gpio_keys {
+	gpio-keys {
 		compatible = "gpio-keys";
 
-		power_key {
+		power-key {
 			gpios = <&gpx2 7 GPIO_ACTIVE_LOW>;
 			linux,code = <KEY_POWER>;
 			label = "power key";
@@ -62,14 +63,14 @@
 		#address-cells = <1>;
 		#size-cells = <0>;
 
-		max77836: subpmic@25 {
+		max77836: pmic@25 {
 			compatible = "maxim,max77836";
 			interrupt-parent = <&gpx1>;
 			interrupts = <5 IRQ_TYPE_NONE>;
 			reg = <0x25>;
 			wakeup-source;
 
-			muic: max77836-muic {
+			extcon {
 				compatible = "maxim,max77836-muic";
 			};
 
@@ -142,7 +143,7 @@
 	assigned-clock-rates = <6000000>;
 
 	thermistor-ap {
-		compatible = "ntc,ncp15wb473";
+		compatible = "murata,ncp15wb473";
 		pullup-uv = <1800000>;
 		pullup-ohm = <100000>;
 		pulldown-ohm = <100000>;
@@ -150,7 +151,7 @@
 	};
 
 	thermistor-battery {
-		compatible = "ntc,ncp15wb473";
+		compatible = "murata,ncp15wb473";
 		pullup-uv = <1800000>;
 		pullup-ohm = <100000>;
 		pulldown-ohm = <100000>;
@@ -197,10 +198,10 @@
 	samsung,i2c-max-bus-freq = <100000>;
 	status = "okay";
 
-	s2mps14_pmic@66 {
+	pmic@66 {
 		compatible = "samsung,s2mps14-pmic";
 		interrupt-parent = <&gpx0>;
-		interrupts = <7 IRQ_TYPE_NONE>;
+		interrupts = <7 IRQ_TYPE_LEVEL_LOW>;
 		reg = <0x66>;
 		wakeup-source;
 
@@ -438,12 +439,12 @@
 	broken-cd;
 	non-removable;
 	cap-mmc-highspeed;
-	desc-num = <4>;
 	mmc-hs200-1_8v;
 	card-detect-delay = <200>;
 	vmmc-supply = <&vemmc_reg>;
 	clock-frequency = <100000000>;
 	max-frequency = <100000000>;
+	mmc-ddr-1_8v;
 	samsung,dw-mshc-ciu-div = <1>;
 	samsung,dw-mshc-sdr-timing = <0 1>;
 	samsung,dw-mshc-ddr-timing = <1 2>;

@@ -99,6 +99,7 @@ static const struct mfd_cell nvec_devices[] = {
  * nvec_register_notifier - Register a notifier with nvec
  * @nvec: A &struct nvec_chip
  * @nb: The notifier block to register
+ * @events: Unused
  *
  * Registers a notifier with @nvec. The notifier will be added to an atomic
  * notifier chain that is called for all received messages except those that
@@ -125,7 +126,7 @@ int nvec_unregister_notifier(struct nvec_chip *nvec, struct notifier_block *nb)
 }
 EXPORT_SYMBOL_GPL(nvec_unregister_notifier);
 
-/**
+/*
  * nvec_status_notifier - The final notifier
  *
  * Prints a message about control events not handled in the notifier
@@ -343,8 +344,8 @@ static void nvec_toggle_global_events(struct nvec_chip *nvec, bool state)
 
 /**
  * nvec_event_mask - fill the command string with event bitfield
- * ev: points to event command string
- * mask: bit to insert into the event mask
+ * @ev: points to event command string
+ * @mask: bit to insert into the event mask
  *
  * Configure event command expects a 32 bit bitfield which describes
  * which events to enable. The bitfield has the following structure
@@ -382,8 +383,8 @@ static void nvec_request_master(struct work_struct *work)
 		msg = list_first_entry(&nvec->tx_data, struct nvec_msg, node);
 		spin_unlock_irqrestore(&nvec->tx_lock, flags);
 		nvec_gpio_set_value(nvec, 0);
-		err = wait_for_completion_interruptible_timeout(
-				&nvec->ec_transfer, msecs_to_jiffies(5000));
+		err = wait_for_completion_interruptible_timeout(&nvec->ec_transfer,
+								msecs_to_jiffies(5000));
 
 		if (err == 0) {
 			dev_warn(nvec->dev, "timeout waiting for ec transfer\n");
@@ -881,7 +882,7 @@ static int tegra_nvec_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int tegra_nvec_remove(struct platform_device *pdev)
+static void tegra_nvec_remove(struct platform_device *pdev)
 {
 	struct nvec_chip *nvec = platform_get_drvdata(pdev);
 
@@ -892,8 +893,6 @@ static int tegra_nvec_remove(struct platform_device *pdev)
 	cancel_work_sync(&nvec->tx_work);
 	/* FIXME: needs check whether nvec is responsible for power off */
 	pm_power_off = NULL;
-
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -941,7 +940,7 @@ MODULE_DEVICE_TABLE(of, nvidia_nvec_of_match);
 
 static struct platform_driver nvec_device_driver = {
 	.probe   = tegra_nvec_probe,
-	.remove  = tegra_nvec_remove,
+	.remove_new = tegra_nvec_remove,
 	.driver  = {
 		.name = "nvec",
 		.pm = &nvec_pm_ops,

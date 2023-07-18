@@ -18,7 +18,6 @@
  */
 #include <linux/module.h>
 #include <linux/mtd/rawnand.h>
-#include <linux/mtd/nand_ecc.h>
 #include <linux/mtd/partitions.h>
 #include <linux/mtd/ndfc.h>
 #include <linux/slab.h>
@@ -146,7 +145,7 @@ static int ndfc_chip_init(struct ndfc_controller *ndfc,
 	chip->controller = &ndfc->ndfc_control;
 	chip->legacy.read_buf = ndfc_read_buf;
 	chip->legacy.write_buf = ndfc_write_buf;
-	chip->ecc.correct = nand_correct_data;
+	chip->ecc.correct = rawnand_sw_hamming_correct;
 	chip->ecc.hwctl = ndfc_enable_hwecc;
 	chip->ecc.calculate = ndfc_calculate_ecc;
 	chip->ecc.engine_type = NAND_ECC_ENGINE_TYPE_ON_HOST;
@@ -241,7 +240,7 @@ static int ndfc_probe(struct platform_device *ofdev)
 	return 0;
 }
 
-static int ndfc_remove(struct platform_device *ofdev)
+static void ndfc_remove(struct platform_device *ofdev)
 {
 	struct ndfc_controller *ndfc = dev_get_drvdata(&ofdev->dev);
 	struct nand_chip *chip = &ndfc->chip;
@@ -252,8 +251,6 @@ static int ndfc_remove(struct platform_device *ofdev)
 	WARN_ON(ret);
 	nand_cleanup(chip);
 	kfree(mtd->name);
-
-	return 0;
 }
 
 static const struct of_device_id ndfc_match[] = {
@@ -268,7 +265,7 @@ static struct platform_driver ndfc_driver = {
 		.of_match_table = ndfc_match,
 	},
 	.probe = ndfc_probe,
-	.remove = ndfc_remove,
+	.remove_new = ndfc_remove,
 };
 
 module_platform_driver(ndfc_driver);

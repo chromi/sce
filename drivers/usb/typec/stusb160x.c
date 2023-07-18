@@ -682,8 +682,17 @@ static int stusb160x_probe(struct i2c_client *client)
 	}
 
 	fwnode = device_get_named_child_node(chip->dev, "connector");
-	if (IS_ERR(fwnode))
-		return PTR_ERR(fwnode);
+	if (!fwnode)
+		return -ENODEV;
+
+	/*
+	 * This fwnode has a "compatible" property, but is never populated as a
+	 * struct device. Instead we simply parse it to read the properties.
+	 * This it breaks fw_devlink=on. To maintain backward compatibility
+	 * with existing DT files, we work around this by deleting any
+	 * fwnode_links to/from this fwnode.
+	 */
+	fw_devlink_purge_absent_suppliers(fwnode);
 
 	/*
 	 * When both VDD and VSYS power supplies are present, the low power
@@ -739,19 +748,16 @@ static int stusb160x_probe(struct i2c_client *client)
 	typec_set_pwr_opmode(chip->port, chip->pwr_opmode);
 
 	if (client->irq) {
-		ret = stusb160x_irq_init(chip, client->irq);
-		if (ret)
-			goto port_unregister;
-
 		chip->role_sw = fwnode_usb_role_switch_get(fwnode);
 		if (IS_ERR(chip->role_sw)) {
-			ret = PTR_ERR(chip->role_sw);
-			if (ret != -EPROBE_DEFER)
-				dev_err(chip->dev,
-					"Failed to get usb role switch: %d\n",
-					ret);
+			ret = dev_err_probe(chip->dev, PTR_ERR(chip->role_sw),
+					    "Failed to get usb role switch\n");
 			goto port_unregister;
 		}
+
+		ret = stusb160x_irq_init(chip, client->irq);
+		if (ret)
+			goto role_sw_put;
 	} else {
 		/*
 		 * If Source or Dual power role, need to enable VDD supply
@@ -775,6 +781,9 @@ static int stusb160x_probe(struct i2c_client *client)
 
 	return 0;
 
+role_sw_put:
+	if (chip->role_sw)
+		usb_role_switch_put(chip->role_sw);
 port_unregister:
 	typec_unregister_port(chip->port);
 all_reg_disable:
@@ -789,7 +798,7 @@ fwnode_put:
 	return ret;
 }
 
-static int stusb160x_remove(struct i2c_client *client)
+static void stusb160x_remove(struct i2c_client *client)
 {
 	struct stusb160x *chip = i2c_get_clientdata(client);
 
@@ -811,8 +820,6 @@ static int stusb160x_remove(struct i2c_client *client)
 
 	if (chip->main_supply)
 		regulator_disable(chip->main_supply);
-
-	return 0;
 }
 
 static int __maybe_unused stusb160x_suspend(struct device *dev)

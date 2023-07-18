@@ -96,12 +96,20 @@ static int set_mux_gmac2_gmac0_to_gephy(struct mtk_eth *eth, int path)
 
 static int set_mux_u3_gmac2_to_qphy(struct mtk_eth *eth, int path)
 {
-	unsigned int val = 0;
+	unsigned int val = 0, mask = 0, reg = 0;
 	bool updated = true;
 
 	switch (path) {
 	case MTK_ETH_PATH_GMAC2_SGMII:
-		val = CO_QPHY_SEL;
+		if (MTK_HAS_CAPS(eth->soc->caps, MTK_U3_COPHY_V2)) {
+			reg = USB_PHY_SWITCH_REG;
+			val = SGMII_QPHY_SEL;
+			mask = QPHY_SEL_MASK;
+		} else {
+			reg = INFRA_MISC2;
+			val = CO_QPHY_SEL;
+			mask = val;
+		}
 		break;
 	default:
 		updated = false;
@@ -109,7 +117,7 @@ static int set_mux_u3_gmac2_to_qphy(struct mtk_eth *eth, int path)
 	}
 
 	if (updated)
-		regmap_update_bits(eth->infra, INFRA_MISC2, CO_QPHY_SEL, val);
+		regmap_update_bits(eth->infra, reg, mask, val);
 
 	dev_dbg(eth->dev, "path %s in %s updated = %d\n",
 		mtk_eth_path_name(path), __func__, updated);
@@ -241,22 +249,18 @@ out:
 
 int mtk_gmac_sgmii_path_setup(struct mtk_eth *eth, int mac_id)
 {
-	int err, path;
+	int path;
 
 	path = (mac_id == 0) ?  MTK_ETH_PATH_GMAC1_SGMII :
 				MTK_ETH_PATH_GMAC2_SGMII;
 
 	/* Setup proper MUXes along the path */
-	err = mtk_eth_mux_setup(eth, path);
-	if (err)
-		return err;
-
-	return 0;
+	return mtk_eth_mux_setup(eth, path);
 }
 
 int mtk_gmac_gephy_path_setup(struct mtk_eth *eth, int mac_id)
 {
-	int err, path = 0;
+	int path = 0;
 
 	if (mac_id == 1)
 		path = MTK_ETH_PATH_GMAC2_GEPHY;
@@ -265,25 +269,17 @@ int mtk_gmac_gephy_path_setup(struct mtk_eth *eth, int mac_id)
 		return -EINVAL;
 
 	/* Setup proper MUXes along the path */
-	err = mtk_eth_mux_setup(eth, path);
-	if (err)
-		return err;
-
-	return 0;
+	return mtk_eth_mux_setup(eth, path);
 }
 
 int mtk_gmac_rgmii_path_setup(struct mtk_eth *eth, int mac_id)
 {
-	int err, path;
+	int path;
 
 	path = (mac_id == 0) ?  MTK_ETH_PATH_GMAC1_RGMII :
 				MTK_ETH_PATH_GMAC2_RGMII;
 
 	/* Setup proper MUXes along the path */
-	err = mtk_eth_mux_setup(eth, path);
-	if (err)
-		return err;
-
-	return 0;
+	return mtk_eth_mux_setup(eth, path);
 }
 

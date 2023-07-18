@@ -392,7 +392,7 @@ static int vl6180_set_it(struct vl6180_data *data, int val, int val2)
 {
 	int ret, it_ms;
 
-	it_ms = (val2 + 500) / 1000; /* round to ms */
+	it_ms = DIV_ROUND_CLOSEST(val2, 1000); /* round to ms */
 	if (val != 0 || it_ms < 1 || it_ms > 512)
 		return -EINVAL;
 
@@ -493,8 +493,7 @@ static int vl6180_init(struct vl6180_data *data)
 	return vl6180_hold(data, false);
 }
 
-static int vl6180_probe(struct i2c_client *client,
-			  const struct i2c_device_id *id)
+static int vl6180_probe(struct i2c_client *client)
 {
 	struct vl6180_data *data;
 	struct iio_dev *indio_dev;
@@ -539,7 +538,7 @@ static struct i2c_driver vl6180_driver = {
 		.name   = VL6180_DRV_NAME,
 		.of_match_table = vl6180_of_match,
 	},
-	.probe  = vl6180_probe,
+	.probe_new = vl6180_probe,
 	.id_table = vl6180_id,
 };
 

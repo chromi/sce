@@ -16,7 +16,7 @@ mt76x2_eeprom_get_macaddr(struct mt76x02_dev *dev)
 {
 	void *src = dev->mt76.eeprom.data + MT_EE_MAC_ADDR;
 
-	memcpy(dev->mt76.macaddr, src, ETH_ALEN);
+	memcpy(dev->mphy.macaddr, src, ETH_ALEN);
 	return 0;
 }
 
@@ -280,7 +280,7 @@ void mt76x2_read_rx_gain(struct mt76x02_dev *dev)
 }
 EXPORT_SYMBOL_GPL(mt76x2_read_rx_gain);
 
-void mt76x2_get_rate_power(struct mt76x02_dev *dev, struct mt76_rate_power *t,
+void mt76x2_get_rate_power(struct mt76x02_dev *dev, struct mt76x02_rate_power *t,
 			   struct ieee80211_channel *chan)
 {
 	bool is_5ghz;
@@ -324,22 +324,10 @@ void mt76x2_get_rate_power(struct mt76x02_dev *dev, struct mt76_rate_power *t,
 	t->ht[12] = t->ht[13] = mt76x02_rate_power_val(val);
 	t->ht[14] = t->ht[15] = mt76x02_rate_power_val(val >> 8);
 
-	val = mt76x02_eeprom_get(dev, MT_EE_TX_POWER_VHT_MCS0);
-	t->vht[0] = t->vht[1] = mt76x02_rate_power_val(val);
-	t->vht[2] = t->vht[3] = mt76x02_rate_power_val(val >> 8);
-
-	val = mt76x02_eeprom_get(dev, MT_EE_TX_POWER_VHT_MCS4);
-	t->vht[4] = t->vht[5] = mt76x02_rate_power_val(val);
-	t->vht[6] = t->vht[7] = mt76x02_rate_power_val(val >> 8);
-
 	val = mt76x02_eeprom_get(dev, MT_EE_TX_POWER_VHT_MCS8);
 	if (!is_5ghz)
 		val >>= 8;
-	t->vht[8] = t->vht[9] = mt76x02_rate_power_val(val >> 8);
-
-	memcpy(t->stbc, t->ht, sizeof(t->stbc[0]) * 8);
-	t->stbc[8] = t->vht[8];
-	t->stbc[9] = t->vht[9];
+	t->vht[0] = t->vht[1] = mt76x02_rate_power_val(val >> 8);
 }
 EXPORT_SYMBOL_GPL(mt76x2_get_rate_power);
 
@@ -502,8 +490,8 @@ int mt76x2_eeprom_init(struct mt76x02_dev *dev)
 
 	mt76x02_eeprom_parse_hw_cap(dev);
 	mt76x2_eeprom_get_macaddr(dev);
-	mt76_eeprom_override(&dev->mt76);
-	dev->mt76.macaddr[0] &= ~BIT(1);
+	mt76_eeprom_override(&dev->mphy);
+	dev->mphy.macaddr[0] &= ~BIT(1);
 
 	return 0;
 }

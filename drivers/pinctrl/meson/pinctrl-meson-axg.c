@@ -400,6 +400,7 @@ static struct meson_pmx_group meson_axg_periphs_groups[] = {
 	GPIO_GROUP(GPIOA_15),
 	GPIO_GROUP(GPIOA_16),
 	GPIO_GROUP(GPIOA_17),
+	GPIO_GROUP(GPIOA_18),
 	GPIO_GROUP(GPIOA_19),
 	GPIO_GROUP(GPIOA_20),
 
@@ -1080,6 +1081,7 @@ static const struct of_device_id meson_axg_pinctrl_dt_match[] = {
 	},
 	{ },
 };
+MODULE_DEVICE_TABLE(of, meson_axg_pinctrl_dt_match);
 
 static struct platform_driver meson_axg_pinctrl_driver = {
 	.probe		= meson_pinctrl_probe,
@@ -1089,4 +1091,5 @@ static struct platform_driver meson_axg_pinctrl_driver = {
 	},
 };
 
-builtin_platform_driver(meson_axg_pinctrl_driver);
+module_platform_driver(meson_axg_pinctrl_driver);
+MODULE_LICENSE("Dual BSD/GPL");

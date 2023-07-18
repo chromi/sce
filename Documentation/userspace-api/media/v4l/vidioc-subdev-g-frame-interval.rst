@@ -76,7 +76,7 @@ the same sub-device is not defined.
 
 .. c:type:: v4l2_subdev_frame_interval
 
-.. tabularcolumns:: |p{4.4cm}|p{4.4cm}|p{8.7cm}|
+.. tabularcolumns:: |p{4.4cm}|p{4.4cm}|p{8.5cm}|
 
 .. flat-table:: struct v4l2_subdev_frame_interval
     :header-rows:  0
@@ -90,7 +90,10 @@ the same sub-device is not defined.
       - ``interval``
       - Period, in seconds, between consecutive video frames.
     * - __u32
-      - ``reserved``\ [9]
+      - ``stream``
+      - Stream identifier.
+    * - __u32
+      - ``reserved``\ [8]
       - Reserved for future extensions. Applications and drivers must set
 	the array to zero.
 

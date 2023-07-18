@@ -82,7 +82,7 @@ pldm_check_fw_space(struct pldmfw_priv *data, size_t offset, size_t length)
  * @bytes_to_move: number of bytes to move the offset forward by
  *
  * Check that there is enough space past the current offset, and then move the
- * offset forward by this ammount.
+ * offset forward by this amount.
  *
  * Returns: zero on success, or -EFAULT if the image is too small to fit the
  * expected length.
@@ -875,5 +875,4 @@ out_release_data:
 EXPORT_SYMBOL(pldmfw_flash_image);
 
 MODULE_AUTHOR("Jacob Keller <jacob.e.keller@intel.com>");
-MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("PLDM firmware flash update library");

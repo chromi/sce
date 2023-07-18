@@ -30,6 +30,20 @@
 
 #define CY_CORE_STARTUP_RETRY_COUNT		3
 
+static const char * const cyttsp4_tch_abs_string[] = {
+	[CY_TCH_X]	= "X",
+	[CY_TCH_Y]	= "Y",
+	[CY_TCH_P]	= "P",
+	[CY_TCH_T]	= "T",
+	[CY_TCH_E]	= "E",
+	[CY_TCH_O]	= "O",
+	[CY_TCH_W]	= "W",
+	[CY_TCH_MAJ]	= "MAJ",
+	[CY_TCH_MIN]	= "MIN",
+	[CY_TCH_OR]	= "OR",
+	[CY_TCH_NUM_ABS] = "INVALID"
+};
+
 static const u8 ldr_exit[] = {
 	0xFF, 0x01, 0x3B, 0x00, 0x00, 0x4F, 0x6D, 0x17
 };
@@ -1730,7 +1744,6 @@ static void cyttsp4_free_si_ptrs(struct cyttsp4 *cd)
 	kfree(si->btn_rec_data);
 }
 
-#ifdef CONFIG_PM
 static int cyttsp4_core_sleep(struct cyttsp4 *cd)
 {
 	int rc;
@@ -1863,13 +1876,9 @@ static int cyttsp4_core_resume(struct device *dev)
 
 	return 0;
 }
-#endif
 
-const struct dev_pm_ops cyttsp4_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(cyttsp4_core_suspend, cyttsp4_core_resume)
-	SET_RUNTIME_PM_OPS(cyttsp4_core_suspend, cyttsp4_core_resume, NULL)
-};
-EXPORT_SYMBOL_GPL(cyttsp4_pm_ops);
+EXPORT_GPL_RUNTIME_DEV_PM_OPS(cyttsp4_pm_ops,
+			      cyttsp4_core_suspend, cyttsp4_core_resume, NULL);
 
 static int cyttsp4_mt_open(struct input_dev *input)
 {

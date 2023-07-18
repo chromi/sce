@@ -32,7 +32,6 @@
 MODULE_AUTHOR("Vivien Chappelier <vivien.chappelier@linux-mips.org>");
 MODULE_DESCRIPTION("SGI O2 Audio");
 MODULE_LICENSE("GPL");
-MODULE_SUPPORTED_DEVICE("{{Silicon Graphics, O2 Audio}}");
 
 static int index = SNDRV_DEFAULT_IDX1;  /* Index 0-MAX */
 static char *id = SNDRV_DEFAULT_STR1;   /* ID for this card */
@@ -909,17 +908,16 @@ static int snd_sgio2audio_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int snd_sgio2audio_remove(struct platform_device *pdev)
+static void snd_sgio2audio_remove(struct platform_device *pdev)
 {
 	struct snd_card *card = platform_get_drvdata(pdev);
 
 	snd_card_free(card);
-	return 0;
 }
 
 static struct platform_driver sgio2audio_driver = {
 	.probe	= snd_sgio2audio_probe,
-	.remove	= snd_sgio2audio_remove,
+	.remove_new = snd_sgio2audio_remove,
 	.driver = {
 		.name	= "sgio2audio",
 	}

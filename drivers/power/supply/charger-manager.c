@@ -570,7 +570,7 @@ static int cm_get_target_status(struct charger_manager *cm)
 		return POWER_SUPPLY_STATUS_DISCHARGING;
 
 	if (cm_check_thermal_status(cm)) {
-		/* Check if discharging duration exeeds limit. */
+		/* Check if discharging duration exceeds limit. */
 		if (check_charging_duration(cm))
 			goto charging_ok;
 		return POWER_SUPPLY_STATUS_NOT_CHARGING;
@@ -578,7 +578,7 @@ static int cm_get_target_status(struct charger_manager *cm)
 
 	switch (cm->battery_status) {
 	case POWER_SUPPLY_STATUS_CHARGING:
-		/* Check if charging duration exeeds limit. */
+		/* Check if charging duration exceeds limit. */
 		if (check_charging_duration(cm))
 			return POWER_SUPPLY_STATUS_FULL;
 		fallthrough;
@@ -723,9 +723,9 @@ static int charger_get_property(struct power_supply *psy,
 		val->intval = cm->battery_status;
 		break;
 	case POWER_SUPPLY_PROP_HEALTH:
-		if (cm->emergency_stop > 0)
+		if (cm->emergency_stop == CM_BATT_OVERHEAT)
 			val->intval = POWER_SUPPLY_HEALTH_OVERHEAT;
-		else if (cm->emergency_stop < 0)
+		else if (cm->emergency_stop == CM_BATT_COLD)
 			val->intval = POWER_SUPPLY_HEALTH_COLD;
 		else
 			val->intval = POWER_SUPPLY_HEALTH_GOOD;
@@ -985,13 +985,10 @@ static int charger_extcon_init(struct charger_manager *cm,
 	cable->nb.notifier_call = charger_extcon_notifier;
 
 	cable->extcon_dev = extcon_get_extcon_dev(cable->extcon_name);
-	if (IS_ERR_OR_NULL(cable->extcon_dev)) {
+	if (IS_ERR(cable->extcon_dev)) {
 		pr_err("Cannot find extcon_dev for %s (cable: %s)\n",
 			cable->extcon_name, cable->name);
-		if (cable->extcon_dev == NULL)
-			return -EPROBE_DEFER;
-		else
-			return PTR_ERR(cable->extcon_dev);
+		return PTR_ERR(cable->extcon_dev);
 	}
 
 	for (i = 0; i < ARRAY_SIZE(extcon_mapping); i++) {
@@ -1078,7 +1075,7 @@ static ssize_t charger_name_show(struct device *dev,
 	struct charger_regulator *charger
 		= container_of(attr, struct charger_regulator, attr_name);
 
-	return sprintf(buf, "%s\n", charger->regulator_name);
+	return sysfs_emit(buf, "%s\n", charger->regulator_name);
 }
 
 static ssize_t charger_state_show(struct device *dev,
@@ -1091,7 +1088,7 @@ static ssize_t charger_state_show(struct device *dev,
 	if (!charger->externally_control)
 		state = regulator_is_enabled(charger->consumer);
 
-	return sprintf(buf, "%s\n", state ? "enabled" : "disabled");
+	return sysfs_emit(buf, "%s\n", state ? "enabled" : "disabled");
 }
 
 static ssize_t charger_externally_control_show(struct device *dev,
@@ -1100,7 +1097,7 @@ static ssize_t charger_externally_control_show(struct device *dev,
 	struct charger_regulator *charger = container_of(attr,
 			struct charger_regulator, attr_externally_control);
 
-	return sprintf(buf, "%d\n", charger->externally_control);
+	return sysfs_emit(buf, "%d\n", charger->externally_control);
 }
 
 static ssize_t charger_externally_control_store(struct device *dev,
@@ -1279,6 +1276,7 @@ static const struct of_device_id charger_manager_match[] = {
 	},
 	{},
 };
+MODULE_DEVICE_TABLE(of, charger_manager_match);
 
 static struct charger_desc *of_cm_parse_desc(struct device *dev)
 {
@@ -1333,7 +1331,7 @@ static struct charger_desc *of_cm_parse_desc(struct device *dev)
 	of_property_read_string(np, "cm-thermal-zone", &desc->thermal_zone);
 
 	of_property_read_u32(np, "cm-battery-cold", &desc->temp_min);
-	if (of_get_property(np, "cm-battery-cold-in-minus", NULL))
+	if (of_property_read_bool(np, "cm-battery-cold-in-minus"))
 		desc->temp_min *= -1;
 	of_property_read_u32(np, "cm-battery-hot", &desc->temp_max);
 	of_property_read_u32(np, "cm-battery-temp-diff", &desc->temp_diff);
@@ -1604,7 +1602,7 @@ static int charger_manager_probe(struct platform_device *pdev)
 	mutex_unlock(&cm_list_mtx);
 
 	/*
-	 * Charger-manager is capable of waking up the systme from sleep
+	 * Charger-manager is capable of waking up the system from sleep
 	 * when event is happened through cm_notify_event()
 	 */
 	device_init_wakeup(&pdev->dev, true);

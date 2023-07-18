@@ -45,7 +45,7 @@
 #if 0
 #define dbg(fmt, args...) do { printk(KERN_INFO fmt, ## args); } while(0)
 #else
-#define dbg(fmt, args...) do { } while (0)
+#define dbg(fmt, args...) do { no_printk(KERN_INFO fmt, ## args); } while (0)
 #endif
 
 /*
@@ -512,7 +512,6 @@ s1d13xxxfb_bitblt_copyarea(struct fb_info *info, const struct fb_copyarea *area)
 }
 
 /**
- *
  *	s1d13xxxfb_bitblt_solidfill - accelerated solidfill function
  *	@info : framebuffer structure
  *	@rect : fb_fillrect structure
@@ -749,13 +748,12 @@ static void __s1d13xxxfb_remove(struct platform_device *pdev)
 			   resource_size(&pdev->resource[1]));
 }
 
-static int s1d13xxxfb_remove(struct platform_device *pdev)
+static void s1d13xxxfb_remove(struct platform_device *pdev)
 {
 	struct fb_info *info = platform_get_drvdata(pdev);
 
 	unregister_framebuffer(info);
 	__s1d13xxxfb_remove(pdev);
-	return 0;
 }
 
 static int s1d13xxxfb_probe(struct platform_device *pdev)
@@ -996,7 +994,7 @@ static int s1d13xxxfb_resume(struct platform_device *dev)
 
 static struct platform_driver s1d13xxxfb_driver = {
 	.probe		= s1d13xxxfb_probe,
-	.remove		= s1d13xxxfb_remove,
+	.remove_new	= s1d13xxxfb_remove,
 #ifdef CONFIG_PM
 	.suspend	= s1d13xxxfb_suspend,
 	.resume		= s1d13xxxfb_resume,

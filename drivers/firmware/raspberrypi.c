@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Defines interfaces for interacting wtih the Raspberry Pi firmware's
+ * Defines interfaces for interacting with the Raspberry Pi firmware's
  * property channel.
  *
  * Copyright © 2015 Broadcom
  */
 
 #include <linux/dma-mapping.h>
+#include <linux/kref.h>
 #include <linux/mailbox_client.h>
 #include <linux/module.h>
 #include <linux/of_platform.h>
@@ -27,6 +28,8 @@ struct rpi_firmware {
 	struct mbox_chan *chan; /* The property channel. */
 	struct completion c;
 	u32 enabled;
+
+	struct kref consumers;
 };
 
 static DEFINE_MUTEX(transaction_lock);
@@ -225,12 +228,58 @@ static void rpi_register_clk_driver(struct device *dev)
 						-1, NULL, 0);
 }
 
+unsigned int rpi_firmware_clk_get_max_rate(struct rpi_firmware *fw, unsigned int id)
+{
+	struct rpi_firmware_clk_rate_request msg =
+		RPI_FIRMWARE_CLK_RATE_REQUEST(id);
+	int ret;
+
+	ret = rpi_firmware_property(fw, RPI_FIRMWARE_GET_MAX_CLOCK_RATE,
+				    &msg, sizeof(msg));
+	if (ret)
+		/*
+		 * If our firmware doesn't support that operation, or fails, we
+		 * assume the maximum clock rate is absolute maximum we can
+		 * store over our type.
+		 */
+		 return UINT_MAX;
+
+	return le32_to_cpu(msg.rate);
+}
+EXPORT_SYMBOL_GPL(rpi_firmware_clk_get_max_rate);
+
+static void rpi_firmware_delete(struct kref *kref)
+{
+	struct rpi_firmware *fw = container_of(kref, struct rpi_firmware,
+					       consumers);
+
+	mbox_free_channel(fw->chan);
+	kfree(fw);
+}
+
+void rpi_firmware_put(struct rpi_firmware *fw)
+{
+	kref_put(&fw->consumers, rpi_firmware_delete);
+}
+EXPORT_SYMBOL_GPL(rpi_firmware_put);
+
+static void devm_rpi_firmware_put(void *data)
+{
+	struct rpi_firmware *fw = data;
+
+	rpi_firmware_put(fw);
+}
+
 static int rpi_firmware_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct rpi_firmware *fw;
 
-	fw = devm_kzalloc(dev, sizeof(*fw), GFP_KERNEL);
+	/*
+	 * Memory will be freed by rpi_firmware_delete() once all users have
+	 * released their firmware handles. Don't use devm_kzalloc() here.
+	 */
+	fw = kzalloc(sizeof(*fw), GFP_KERNEL);
 	if (!fw)
 		return -ENOMEM;
 
@@ -241,12 +290,12 @@ static int rpi_firmware_probe(struct platform_device *pdev)
 	fw->chan = mbox_request_channel(&fw->cl, 0);
 	if (IS_ERR(fw->chan)) {
 		int ret = PTR_ERR(fw->chan);
-		if (ret != -EPROBE_DEFER)
-			dev_err(dev, "Failed to get mbox channel: %d\n", ret);
-		return ret;
+		kfree(fw);
+		return dev_err_probe(dev, ret, "Failed to get mbox channel\n");
 	}
 
 	init_completion(&fw->c);
+	kref_init(&fw->consumers);
 
 	platform_set_drvdata(pdev, fw);
 
@@ -275,33 +324,78 @@ static int rpi_firmware_remove(struct platform_device *pdev)
 	rpi_hwmon = NULL;
 	platform_device_unregister(rpi_clk);
 	rpi_clk = NULL;
-	mbox_free_channel(fw->chan);
+
+	rpi_firmware_put(fw);
 
 	return 0;
 }
-
-/**
- * rpi_firmware_get - Get pointer to rpi_firmware structure.
- * @firmware_node:    Pointer to the firmware Device Tree node.
- *
- * Returns NULL is the firmware device is not ready.
- */
-struct rpi_firmware *rpi_firmware_get(struct device_node *firmware_node)
-{
-	struct platform_device *pdev = of_find_device_by_node(firmware_node);
-
-	if (!pdev)
-		return NULL;
-
-	return platform_get_drvdata(pdev);
-}
-EXPORT_SYMBOL_GPL(rpi_firmware_get);
 
 static const struct of_device_id rpi_firmware_of_match[] = {
 	{ .compatible = "raspberrypi,bcm2835-firmware", },
 	{},
 };
 MODULE_DEVICE_TABLE(of, rpi_firmware_of_match);
+
+struct device_node *rpi_firmware_find_node(void)
+{
+	return of_find_matching_node(NULL, rpi_firmware_of_match);
+}
+EXPORT_SYMBOL_GPL(rpi_firmware_find_node);
+
+/**
+ * rpi_firmware_get - Get pointer to rpi_firmware structure.
+ * @firmware_node:    Pointer to the firmware Device Tree node.
+ *
+ * The reference to rpi_firmware has to be released with rpi_firmware_put().
+ *
+ * Returns NULL is the firmware device is not ready.
+ */
+struct rpi_firmware *rpi_firmware_get(struct device_node *firmware_node)
+{
+	struct platform_device *pdev = of_find_device_by_node(firmware_node);
+	struct rpi_firmware *fw;
+
+	if (!pdev)
+		return NULL;
+
+	fw = platform_get_drvdata(pdev);
+	if (!fw)
+		goto err_put_device;
+
+	if (!kref_get_unless_zero(&fw->consumers))
+		goto err_put_device;
+
+	put_device(&pdev->dev);
+
+	return fw;
+
+err_put_device:
+	put_device(&pdev->dev);
+	return NULL;
+}
+EXPORT_SYMBOL_GPL(rpi_firmware_get);
+
+/**
+ * devm_rpi_firmware_get - Get pointer to rpi_firmware structure.
+ * @firmware_node:    Pointer to the firmware Device Tree node.
+ *
+ * Returns NULL is the firmware device is not ready.
+ */
+struct rpi_firmware *devm_rpi_firmware_get(struct device *dev,
+					   struct device_node *firmware_node)
+{
+	struct rpi_firmware *fw;
+
+	fw = rpi_firmware_get(firmware_node);
+	if (!fw)
+		return NULL;
+
+	if (devm_add_action_or_reset(dev, devm_rpi_firmware_put, fw))
+		return NULL;
+
+	return fw;
+}
+EXPORT_SYMBOL_GPL(devm_rpi_firmware_get);
 
 static struct platform_driver rpi_firmware_driver = {
 	.driver = {

@@ -79,6 +79,7 @@ struct gether {
 	/* called on network open/close */
 	void				(*open)(struct gether *);
 	void				(*close)(struct gether *);
+	bool				is_suspend;
 };
 
 #define	DEFAULT_FILTER	(USB_CDC_PACKET_TYPE_BROADCAST \
@@ -244,7 +245,22 @@ unsigned gether_get_qmult(struct net_device *net);
  */
 int gether_get_ifname(struct net_device *net, char *name, int len);
 
+/**
+ * gether_set_ifname - set an ethernet-over-usb link interface name
+ * @net: device representing this link
+ * @name: new interface name
+ * @len: length of @name
+ *
+ * This sets the interface name of this ethernet-over-usb link.
+ * A single terminating newline, if any, is ignored.
+ * Returns zero on success, else negative errno.
+ */
+int gether_set_ifname(struct net_device *net, const char *name, int len);
+
 void gether_cleanup(struct eth_dev *dev);
+
+void gether_suspend(struct gether *link);
+void gether_resume(struct gether *link);
 
 /* connect/disconnect is handled by individual functions */
 struct net_device *gether_connect(struct gether *);

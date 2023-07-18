@@ -124,7 +124,6 @@ teql_reset(struct Qdisc *sch)
 	struct teql_sched_data *dat = qdisc_priv(sch);
 
 	skb_queue_purge(&dat->q);
-	sch->q.qlen = 0;
 }
 
 static void
@@ -133,6 +132,9 @@ teql_destroy(struct Qdisc *sch)
 	struct Qdisc *q, *prev;
 	struct teql_sched_data *dat = qdisc_priv(sch);
 	struct teql_master *master = dat->m;
+
+	if (!master)
+		return;
 
 	prev = master->slaves;
 	if (prev) {
@@ -295,7 +297,7 @@ restart:
 		struct net_device *slave = qdisc_dev(q);
 		struct netdev_queue *slave_txq = netdev_get_tx_queue(slave, 0);
 
-		if (slave_txq->qdisc_sleeping != q)
+		if (rcu_access_pointer(slave_txq->qdisc_sleeping) != q)
 			continue;
 		if (netif_xmit_stopped(netdev_get_tx_queue(slave, subq)) ||
 		    !netif_running(slave)) {
@@ -489,7 +491,7 @@ static int __init teql_init(void)
 
 		master = netdev_priv(dev);
 
-		strlcpy(master->qops.id, dev->name, IFNAMSIZ);
+		strscpy(master->qops.id, dev->name, IFNAMSIZ);
 		err = register_qdisc(&master->qops);
 
 		if (err) {

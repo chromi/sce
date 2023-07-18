@@ -107,8 +107,8 @@ static int vti_rcv_cb(struct sk_buff *skb, int err)
 	dev = tunnel->dev;
 
 	if (err) {
-		dev->stats.rx_errors++;
-		dev->stats.rx_dropped++;
+		DEV_STATS_INC(dev, rx_errors);
+		DEV_STATS_INC(dev, rx_dropped);
 
 		return 0;
 	}
@@ -183,7 +183,7 @@ static netdev_tx_t vti_xmit(struct sk_buff *skb, struct net_device *dev,
 			fl->u.ip4.flowi4_flags |= FLOWI_FLAG_ANYSRC;
 			rt = __ip_route_output_key(dev_net(dev), &fl->u.ip4);
 			if (IS_ERR(rt)) {
-				dev->stats.tx_carrier_errors++;
+				DEV_STATS_INC(dev, tx_carrier_errors);
 				goto tx_error_icmp;
 			}
 			dst = &rt->dst;
@@ -198,14 +198,14 @@ static netdev_tx_t vti_xmit(struct sk_buff *skb, struct net_device *dev,
 			if (dst->error) {
 				dst_release(dst);
 				dst = NULL;
-				dev->stats.tx_carrier_errors++;
+				DEV_STATS_INC(dev, tx_carrier_errors);
 				goto tx_error_icmp;
 			}
 			skb_dst_set(skb, dst);
 			break;
 #endif
 		default:
-			dev->stats.tx_carrier_errors++;
+			DEV_STATS_INC(dev, tx_carrier_errors);
 			goto tx_error_icmp;
 		}
 	}
@@ -213,15 +213,15 @@ static netdev_tx_t vti_xmit(struct sk_buff *skb, struct net_device *dev,
 	dst_hold(dst);
 	dst = xfrm_lookup_route(tunnel->net, dst, fl, NULL, 0);
 	if (IS_ERR(dst)) {
-		dev->stats.tx_carrier_errors++;
+		DEV_STATS_INC(dev, tx_carrier_errors);
 		goto tx_error_icmp;
 	}
 
 	if (dst->flags & DST_XFRM_QUEUE)
-		goto queued;
+		goto xmit;
 
 	if (!vti_state_check(dst->xfrm, parms->iph.daddr, parms->iph.saddr)) {
-		dev->stats.tx_carrier_errors++;
+		DEV_STATS_INC(dev, tx_carrier_errors);
 		dst_release(dst);
 		goto tx_error_icmp;
 	}
@@ -230,7 +230,7 @@ static netdev_tx_t vti_xmit(struct sk_buff *skb, struct net_device *dev,
 
 	if (tdev == dev) {
 		dst_release(dst);
-		dev->stats.collisions++;
+		DEV_STATS_INC(dev, collisions);
 		goto tx_error;
 	}
 
@@ -238,20 +238,22 @@ static netdev_tx_t vti_xmit(struct sk_buff *skb, struct net_device *dev,
 	if (skb->len > mtu) {
 		skb_dst_update_pmtu_no_confirm(skb, mtu);
 		if (skb->protocol == htons(ETH_P_IP)) {
-			icmp_send(skb, ICMP_DEST_UNREACH, ICMP_FRAG_NEEDED,
-				  htonl(mtu));
+			if (!(ip_hdr(skb)->frag_off & htons(IP_DF)))
+				goto xmit;
+			icmp_ndo_send(skb, ICMP_DEST_UNREACH, ICMP_FRAG_NEEDED,
+				      htonl(mtu));
 		} else {
 			if (mtu < IPV6_MIN_MTU)
 				mtu = IPV6_MIN_MTU;
 
-			icmpv6_send(skb, ICMPV6_PKT_TOOBIG, 0, mtu);
+			icmpv6_ndo_send(skb, ICMPV6_PKT_TOOBIG, 0, mtu);
 		}
 
 		dst_release(dst);
 		goto tx_error;
 	}
 
-queued:
+xmit:
 	skb_scrub_packet(skb, !net_eq(tunnel->net, dev_net(dev)));
 	skb_dst_set(skb, dst);
 	skb->dev = skb_dst(skb)->dev;
@@ -265,7 +267,7 @@ queued:
 tx_error_icmp:
 	dst_link_failure(skb);
 tx_error:
-	dev->stats.tx_errors++;
+	DEV_STATS_INC(dev, tx_errors);
 	kfree_skb(skb);
 	return NETDEV_TX_OK;
 }
@@ -302,7 +304,7 @@ static netdev_tx_t vti_tunnel_xmit(struct sk_buff *skb, struct net_device *dev)
 	return vti_xmit(skb, dev, &fl);
 
 tx_err:
-	dev->stats.tx_errors++;
+	DEV_STATS_INC(dev, tx_errors);
 	kfree_skb(skb);
 	return NETDEV_TX_OK;
 }
@@ -349,6 +351,7 @@ static int vti4_err(struct sk_buff *skb, u32 info)
 	case ICMP_DEST_UNREACH:
 		if (icmp_hdr(skb)->code != ICMP_FRAG_NEEDED)
 			return 0;
+		break;
 	case ICMP_REDIRECT:
 		break;
 	default:
@@ -402,9 +405,9 @@ static const struct net_device_ops vti_netdev_ops = {
 	.ndo_init	= vti_tunnel_init,
 	.ndo_uninit	= ip_tunnel_uninit,
 	.ndo_start_xmit	= vti_tunnel_xmit,
-	.ndo_do_ioctl	= ip_tunnel_ioctl,
+	.ndo_siocdevprivate = ip_tunnel_siocdevprivate,
 	.ndo_change_mtu	= ip_tunnel_change_mtu,
-	.ndo_get_stats64 = ip_tunnel_get_stats64,
+	.ndo_get_stats64 = dev_get_tstats64,
 	.ndo_get_iflink = ip_tunnel_get_iflink,
 	.ndo_tunnel_ctl	= vti_tunnel_ctl,
 };
@@ -422,7 +425,7 @@ static int vti_tunnel_init(struct net_device *dev)
 	struct ip_tunnel *tunnel = netdev_priv(dev);
 	struct iphdr *iph = &tunnel->parms.iph;
 
-	memcpy(dev->dev_addr, &iph->saddr, 4);
+	__dev_addr_set(dev, &iph->saddr, 4);
 	memcpy(dev->broadcast, &iph->daddr, 4);
 
 	dev->flags		= IFF_NOARP;

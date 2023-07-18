@@ -78,7 +78,7 @@ modified format should be as close as possible to the original request.
 
 .. c:type:: v4l2_subdev_crop
 
-.. tabularcolumns:: |p{4.4cm}|p{4.4cm}|p{8.7cm}|
+.. tabularcolumns:: |p{4.4cm}|p{4.4cm}|p{8.5cm}|
 
 .. flat-table:: struct v4l2_subdev_crop
     :header-rows:  0
@@ -96,7 +96,10 @@ modified format should be as close as possible to the original request.
       - ``rect``
       - Crop rectangle boundaries, in pixels.
     * - __u32
-      - ``reserved``\ [8]
+      - ``stream``
+      - Stream identifier.
+    * - __u32
+      - ``reserved``\ [7]
       - Reserved for future extensions. Applications and drivers must set
 	the array to zero.
 

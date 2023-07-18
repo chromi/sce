@@ -116,7 +116,7 @@ struct bw2_par {
 
 /**
  *      bw2_blank - Optional function.  Blanks the display.
- *      @blank_mode: the blank mode we want.
+ *      @blank: the blank mode we want.
  *      @info: frame buffer structure that represents a single frame buffer
  */
 static int
@@ -182,7 +182,7 @@ static int bw2_ioctl(struct fb_info *info, unsigned int cmd, unsigned long arg)
 
 static void bw2_init_fix(struct fb_info *info, int linebytes)
 {
-	strlcpy(info->fix.id, "bwtwo", sizeof(info->fix.id));
+	strscpy(info->fix.id, "bwtwo", sizeof(info->fix.id));
 
 	info->fix.type = FB_TYPE_PACKED_PIXELS;
 	info->fix.visual = FB_VISUAL_MONO01;
@@ -306,7 +306,7 @@ static int bw2_probe(struct platform_device *op)
 	if (!par->regs)
 		goto out_release_fb;
 
-	if (!of_find_property(dp, "width", NULL)) {
+	if (!of_property_present(dp, "width")) {
 		err = bw2_do_default_mode(par, info, &linebytes);
 		if (err)
 			goto out_unmap_regs;
@@ -352,7 +352,7 @@ out_err:
 	return err;
 }
 
-static int bw2_remove(struct platform_device *op)
+static void bw2_remove(struct platform_device *op)
 {
 	struct fb_info *info = dev_get_drvdata(&op->dev);
 	struct bw2_par *par = info->par;
@@ -363,8 +363,6 @@ static int bw2_remove(struct platform_device *op)
 	of_iounmap(&op->resource[0], info->screen_base, info->fix.smem_len);
 
 	framebuffer_release(info);
-
-	return 0;
 }
 
 static const struct of_device_id bw2_match[] = {
@@ -381,7 +379,7 @@ static struct platform_driver bw2_driver = {
 		.of_match_table = bw2_match,
 	},
 	.probe		= bw2_probe,
-	.remove		= bw2_remove,
+	.remove_new	= bw2_remove,
 };
 
 static int __init bw2_init(void)

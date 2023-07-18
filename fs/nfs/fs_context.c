@@ -10,6 +10,7 @@
  * Split from fs/nfs/super.c by David Howells <dhowells@redhat.com>
  */
 
+#include <linux/compat.h>
 #include <linux/module.h>
 #include <linux/fs.h>
 #include <linux/fs_context.h>
@@ -19,6 +20,8 @@
 #include <linux/nfs4_mount.h>
 #include "nfs.h"
 #include "internal.h"
+
+#include "nfstrace.h"
 
 #define NFSDBG_FACILITY		NFSDBG_MOUNT
 
@@ -60,6 +63,7 @@ enum nfs_param {
 	Opt_mountvers,
 	Opt_namelen,
 	Opt_nconnect,
+	Opt_max_connect,
 	Opt_port,
 	Opt_posix,
 	Opt_proto,
@@ -78,10 +82,12 @@ enum nfs_param {
 	Opt_source,
 	Opt_tcp,
 	Opt_timeo,
+	Opt_trunkdiscovery,
 	Opt_udp,
 	Opt_v,
 	Opt_vers,
 	Opt_wsize,
+	Opt_write,
 };
 
 enum {
@@ -110,6 +116,19 @@ static const struct constant_table nfs_param_enums_lookupcache[] = {
 	{ "none",		Opt_lookupcache_none },
 	{ "pos",		Opt_lookupcache_positive },
 	{ "positive",		Opt_lookupcache_positive },
+	{}
+};
+
+enum {
+	Opt_write_lazy,
+	Opt_write_eager,
+	Opt_write_wait,
+};
+
+static const struct constant_table nfs_param_enums_write[] = {
+	{ "lazy",		Opt_write_lazy },
+	{ "eager",		Opt_write_eager },
+	{ "wait",		Opt_write_wait },
 	{}
 };
 
@@ -144,6 +163,7 @@ static const struct fs_parameter_spec nfs_fs_parameters[] = {
 	fsparam_u32   ("mountvers",	Opt_mountvers),
 	fsparam_u32   ("namlen",	Opt_namelen),
 	fsparam_u32   ("nconnect",	Opt_nconnect),
+	fsparam_u32   ("max_connect",	Opt_max_connect),
 	fsparam_string("nfsvers",	Opt_vers),
 	fsparam_u32   ("port",		Opt_port),
 	fsparam_flag_no("posix",	Opt_posix),
@@ -163,6 +183,7 @@ static const struct fs_parameter_spec nfs_fs_parameters[] = {
 	fsparam_string("source",	Opt_source),
 	fsparam_flag  ("tcp",		Opt_tcp),
 	fsparam_u32   ("timeo",		Opt_timeo),
+	fsparam_flag_no("trunkdiscovery", Opt_trunkdiscovery),
 	fsparam_flag  ("udp",		Opt_udp),
 	fsparam_flag  ("v2",		Opt_v),
 	fsparam_flag  ("v3",		Opt_v),
@@ -171,6 +192,7 @@ static const struct fs_parameter_spec nfs_fs_parameters[] = {
 	fsparam_flag  ("v4.1",		Opt_v),
 	fsparam_flag  ("v4.2",		Opt_v),
 	fsparam_string("vers",		Opt_vers),
+	fsparam_enum  ("write",		Opt_write, nfs_param_enums_write),
 	fsparam_u32   ("wsize",		Opt_wsize),
 	{}
 };
@@ -251,9 +273,9 @@ static const struct constant_table nfs_secflavor_tokens[] = {
  * Address family must be initialized, and address must not be
  * the ANY address for that family.
  */
-static int nfs_verify_server_address(struct sockaddr *addr)
+static int nfs_verify_server_address(struct sockaddr_storage *addr)
 {
-	switch (addr->sa_family) {
+	switch (addr->ss_family) {
 	case AF_INET: {
 		struct sockaddr_in *sa = (struct sockaddr_in *)addr;
 		return sa->sin_addr.s_addr != htonl(INADDR_ANY);
@@ -264,24 +286,43 @@ static int nfs_verify_server_address(struct sockaddr *addr)
 	}
 	}
 
-	dfprintk(MOUNT, "NFS: Invalid IP address specified\n");
 	return 0;
 }
 
+#ifdef CONFIG_NFS_DISABLE_UDP_SUPPORT
+static bool nfs_server_transport_udp_invalid(const struct nfs_fs_context *ctx)
+{
+	return true;
+}
+#else
+static bool nfs_server_transport_udp_invalid(const struct nfs_fs_context *ctx)
+{
+	if (ctx->version == 4)
+		return true;
+	return false;
+}
+#endif
+
 /*
  * Sanity check the NFS transport protocol.
- *
  */
-static void nfs_validate_transport_protocol(struct nfs_fs_context *ctx)
+static int nfs_validate_transport_protocol(struct fs_context *fc,
+					   struct nfs_fs_context *ctx)
 {
 	switch (ctx->nfs_server.protocol) {
 	case XPRT_TRANSPORT_UDP:
+		if (nfs_server_transport_udp_invalid(ctx))
+			goto out_invalid_transport_udp;
+		break;
 	case XPRT_TRANSPORT_TCP:
 	case XPRT_TRANSPORT_RDMA:
 		break;
 	default:
 		ctx->nfs_server.protocol = XPRT_TRANSPORT_TCP;
 	}
+	return 0;
+out_invalid_transport_udp:
+	return nfs_invalf(fc, "NFS: Unsupported transport protocol udp");
 }
 
 /*
@@ -290,8 +331,6 @@ static void nfs_validate_transport_protocol(struct nfs_fs_context *ctx)
  */
 static void nfs_set_mount_transport_protocol(struct nfs_fs_context *ctx)
 {
-	nfs_validate_transport_protocol(ctx);
-
 	if (ctx->mount_server.protocol == XPRT_TRANSPORT_UDP ||
 	    ctx->mount_server.protocol == XPRT_TRANSPORT_TCP)
 			return;
@@ -340,7 +379,7 @@ static int nfs_parse_security_flavors(struct fs_context *fc,
 	char *string = param->string, *p;
 	int ret;
 
-	dfprintk(MOUNT, "NFS: parsing %s=%s option\n", param->key, param->string);
+	trace_nfs_mount_assign(param->key, string);
 
 	while ((p = strsep(&string, ":")) != NULL) {
 		if (!*p)
@@ -442,11 +481,14 @@ static int nfs_fs_context_parse_param(struct fs_context *fc,
 	unsigned int len;
 	int ret, opt;
 
-	dfprintk(MOUNT, "NFS:   parsing nfs mount option '%s'\n", param->key);
+	trace_nfs_mount_option(param);
 
 	opt = fs_parse(fc, nfs_fs_parameters, param, &result);
 	if (opt < 0)
-		return ctx->sloppy ? 1 : opt;
+		return (opt == -ENOPARAM && ctx->sloppy) ? 1 : opt;
+
+	if (fc->security)
+		ctx->has_sec_mnt_opts = 1;
 
 	switch (opt) {
 	case Opt_source:
@@ -476,7 +518,7 @@ static int nfs_fs_context_parse_param(struct fs_context *fc,
 		if (result.negated)
 			ctx->flags &= ~NFS_MOUNT_SOFTREVAL;
 		else
-			ctx->flags &= NFS_MOUNT_SOFTREVAL;
+			ctx->flags |= NFS_MOUNT_SOFTREVAL;
 		break;
 	case Opt_posix:
 		if (result.negated)
@@ -489,6 +531,12 @@ static int nfs_fs_context_parse_param(struct fs_context *fc,
 			ctx->flags |= NFS_MOUNT_NOCTO;
 		else
 			ctx->flags &= ~NFS_MOUNT_NOCTO;
+		break;
+	case Opt_trunkdiscovery:
+		if (result.negated)
+			ctx->flags &= ~NFS_MOUNT_TRUNK_DISCOVERY;
+		else
+			ctx->flags |= NFS_MOUNT_TRUNK_DISCOVERY;
 		break;
 	case Opt_ac:
 		if (result.negated)
@@ -510,13 +558,12 @@ static int nfs_fs_context_parse_param(struct fs_context *fc,
 		ctx->nfs_server.protocol = XPRT_TRANSPORT_UDP;
 		break;
 	case Opt_tcp:
-		ctx->flags |= NFS_MOUNT_TCP;
-		ctx->nfs_server.protocol = XPRT_TRANSPORT_TCP;
-		break;
 	case Opt_rdma:
 		ctx->flags |= NFS_MOUNT_TCP; /* for side protocols */
-		ctx->nfs_server.protocol = XPRT_TRANSPORT_RDMA;
-		xprt_load_transport(param->key);
+		ret = xprt_find_transport_ident(param->key);
+		if (ret < 0)
+			goto out_bad_transport;
+		ctx->nfs_server.protocol = ret;
 		break;
 	case Opt_acl:
 		if (result.negated)
@@ -637,6 +684,9 @@ static int nfs_fs_context_parse_param(struct fs_context *fc,
 			return ret;
 		break;
 	case Opt_vers:
+		if (!param->string)
+			goto out_invalid_value;
+		trace_nfs_mount_assign(param->key, param->string);
 		ret = nfs_parse_version_string(fc, param->string);
 		if (ret < 0)
 			return ret;
@@ -648,6 +698,9 @@ static int nfs_fs_context_parse_param(struct fs_context *fc,
 		break;
 
 	case Opt_proto:
+		if (!param->string)
+			goto out_invalid_value;
+		trace_nfs_mount_assign(param->key, param->string);
 		protofamily = AF_INET;
 		switch (lookup_constant(nfs_xprt_protocol_tokens, param->string, -1)) {
 		case Opt_xprt_udp6:
@@ -670,17 +723,22 @@ static int nfs_fs_context_parse_param(struct fs_context *fc,
 		case Opt_xprt_rdma:
 			/* vector side protocols to TCP */
 			ctx->flags |= NFS_MOUNT_TCP;
-			ctx->nfs_server.protocol = XPRT_TRANSPORT_RDMA;
-			xprt_load_transport(param->string);
+			ret = xprt_find_transport_ident(param->string);
+			if (ret < 0)
+				goto out_bad_transport;
+			ctx->nfs_server.protocol = ret;
 			break;
 		default:
-			return nfs_invalf(fc, "NFS: Unrecognized transport protocol");
+			goto out_bad_transport;
 		}
 
 		ctx->protofamily = protofamily;
 		break;
 
 	case Opt_mountproto:
+		if (!param->string)
+			goto out_invalid_value;
+		trace_nfs_mount_assign(param->key, param->string);
 		mountfamily = AF_INET;
 		switch (lookup_constant(nfs_xprt_protocol_tokens, param->string, -1)) {
 		case Opt_xprt_udp6:
@@ -697,12 +755,13 @@ static int nfs_fs_context_parse_param(struct fs_context *fc,
 			break;
 		case Opt_xprt_rdma: /* not used for side protocols */
 		default:
-			return nfs_invalf(fc, "NFS: Unrecognized transport protocol");
+			goto out_bad_transport;
 		}
 		ctx->mountfamily = mountfamily;
 		break;
 
 	case Opt_addr:
+		trace_nfs_mount_assign(param->key, param->string);
 		len = rpc_pton(fc->net_ns, param->string, param->size,
 			       &ctx->nfs_server.address,
 			       sizeof(ctx->nfs_server._address));
@@ -711,16 +770,19 @@ static int nfs_fs_context_parse_param(struct fs_context *fc,
 		ctx->nfs_server.addrlen = len;
 		break;
 	case Opt_clientaddr:
+		trace_nfs_mount_assign(param->key, param->string);
 		kfree(ctx->client_address);
 		ctx->client_address = param->string;
 		param->string = NULL;
 		break;
 	case Opt_mounthost:
+		trace_nfs_mount_assign(param->key, param->string);
 		kfree(ctx->mount_server.hostname);
 		ctx->mount_server.hostname = param->string;
 		param->string = NULL;
 		break;
 	case Opt_mountaddr:
+		trace_nfs_mount_assign(param->key, param->string);
 		len = rpc_pton(fc->net_ns, param->string, param->size,
 			       &ctx->mount_server.address,
 			       sizeof(ctx->mount_server._address));
@@ -732,6 +794,11 @@ static int nfs_fs_context_parse_param(struct fs_context *fc,
 		if (result.uint_32 < 1 || result.uint_32 > NFS_MAX_CONNECTIONS)
 			goto out_of_bounds;
 		ctx->nfs_server.nconnect = result.uint_32;
+		break;
+	case Opt_max_connect:
+		if (result.uint_32 < 1 || result.uint_32 > NFS_MAX_TRANSPORTS)
+			goto out_of_bounds;
+		ctx->nfs_server.max_connect = result.uint_32;
 		break;
 	case Opt_lookupcache:
 		switch (result.uint_32) {
@@ -769,13 +836,30 @@ static int nfs_fs_context_parse_param(struct fs_context *fc,
 			goto out_invalid_value;
 		}
 		break;
+	case Opt_write:
+		switch (result.uint_32) {
+		case Opt_write_lazy:
+			ctx->flags &=
+				~(NFS_MOUNT_WRITE_EAGER | NFS_MOUNT_WRITE_WAIT);
+			break;
+		case Opt_write_eager:
+			ctx->flags |= NFS_MOUNT_WRITE_EAGER;
+			ctx->flags &= ~NFS_MOUNT_WRITE_WAIT;
+			break;
+		case Opt_write_wait:
+			ctx->flags |=
+				NFS_MOUNT_WRITE_EAGER | NFS_MOUNT_WRITE_WAIT;
+			break;
+		default:
+			goto out_invalid_value;
+		}
+		break;
 
 		/*
 		 * Special options
 		 */
 	case Opt_sloppy:
 		ctx->sloppy = true;
-		dfprintk(MOUNT, "NFS:   relaxing parsing rules\n");
 		break;
 	}
 
@@ -787,6 +871,8 @@ out_invalid_address:
 	return nfs_invalf(fc, "NFS: Bad IP address specified");
 out_of_bounds:
 	return nfs_invalf(fc, "NFS: Value for '%s' out of range", param->key);
+out_bad_transport:
+	return nfs_invalf(fc, "NFS: Unrecognized transport protocol");
 }
 
 /*
@@ -806,10 +892,8 @@ static int nfs_parse_source(struct fs_context *fc,
 	size_t len;
 	const char *end;
 
-	if (unlikely(!dev_name || !*dev_name)) {
-		dfprintk(MOUNT, "NFS: device name not specified\n");
+	if (unlikely(!dev_name || !*dev_name))
 		return -EINVAL;
-	}
 
 	/* Is the host name protected with square brakcets? */
 	if (*dev_name == '[') {
@@ -849,7 +933,7 @@ static int nfs_parse_source(struct fs_context *fc,
 	if (!ctx->nfs_server.export_path)
 		goto out_nomem;
 
-	dfprintk(MOUNT, "NFS: MNTPATH: '%s'\n", ctx->nfs_server.export_path);
+	trace_nfs_mount_path(ctx->nfs_server.export_path);
 	return 0;
 
 out_bad_devname:
@@ -891,8 +975,9 @@ static int nfs23_parse_monolithic(struct fs_context *fc,
 {
 	struct nfs_fs_context *ctx = nfs_fc2context(fc);
 	struct nfs_fh *mntfh = ctx->mntfh;
-	struct sockaddr *sap = (struct sockaddr *)&ctx->nfs_server.address;
+	struct sockaddr_storage *sap = &ctx->nfs_server._address;
 	int extra_flags = NFS_MOUNT_LEGACY_INTERFACE;
+	int ret;
 
 	if (data == NULL)
 		goto out_no_data;
@@ -938,6 +1023,15 @@ static int nfs23_parse_monolithic(struct fs_context *fc,
 			       sizeof(mntfh->data) - mntfh->size);
 
 		/*
+		 * for proto == XPRT_TRANSPORT_UDP, which is what uses
+		 * to_exponential, implying shift: limit the shift value
+		 * to BITS_PER_LONG (majortimeo is unsigned long)
+		 */
+		if (!(data->flags & NFS_MOUNT_TCP)) /* this will be UDP */
+			if (data->retrans >= 64) /* shift value is too large */
+				goto out_invalid_data;
+
+		/*
 		 * Translate to nfs_fs_context, which nfs_fill_super
 		 * can deal with.
 		 */
@@ -956,7 +1050,7 @@ static int nfs23_parse_monolithic(struct fs_context *fc,
 		memcpy(sap, &data->addr, sizeof(data->addr));
 		ctx->nfs_server.addrlen = sizeof(data->addr);
 		ctx->nfs_server.port = ntohs(data->addr.sin_port);
-		if (sap->sa_family != AF_INET ||
+		if (sap->ss_family != AF_INET ||
 		    !nfs_verify_server_address(sap))
 			goto out_no_address;
 
@@ -1009,6 +1103,10 @@ static int nfs23_parse_monolithic(struct fs_context *fc,
 		goto generic;
 	}
 
+	ret = nfs_validate_transport_protocol(fc, ctx);
+	if (ret)
+		return ret;
+
 	ctx->skip_reconfig_option_check = true;
 	return 0;
 
@@ -1029,7 +1127,6 @@ out_no_sec:
 	return nfs_invalf(fc, "NFS: nfs_mount_data version supports only AUTH_SYS");
 
 out_nomem:
-	dfprintk(MOUNT, "NFS: not enough memory to handle mount options");
 	return -ENOMEM;
 
 out_no_address:
@@ -1037,6 +1134,9 @@ out_no_address:
 
 out_invalid_fh:
 	return nfs_invalf(fc, "NFS: invalid root filehandle");
+
+out_invalid_data:
+	return nfs_invalf(fc, "NFS: invalid binary mount data");
 }
 
 #if IS_ENABLED(CONFIG_NFS_V4)
@@ -1106,7 +1206,8 @@ static int nfs4_parse_monolithic(struct fs_context *fc,
 				 struct nfs4_mount_data *data)
 {
 	struct nfs_fs_context *ctx = nfs_fc2context(fc);
-	struct sockaddr *sap = (struct sockaddr *)&ctx->nfs_server.address;
+	struct sockaddr_storage *sap = &ctx->nfs_server._address;
+	int ret;
 	char *c;
 
 	if (!data) {
@@ -1157,7 +1258,7 @@ static int nfs4_parse_monolithic(struct fs_context *fc,
 	if (IS_ERR(c))
 		return PTR_ERR(c);
 	ctx->nfs_server.export_path = c;
-	dfprintk(MOUNT, "NFS: MNTPATH: '%s'\n", c);
+	trace_nfs_mount_path(c);
 
 	c = strndup_user(data->client_addr.data, 16);
 	if (IS_ERR(c))
@@ -1179,9 +1280,9 @@ static int nfs4_parse_monolithic(struct fs_context *fc,
 	ctx->acdirmin	= data->acdirmin;
 	ctx->acdirmax	= data->acdirmax;
 	ctx->nfs_server.protocol = data->proto;
-	nfs_validate_transport_protocol(ctx);
-	if (ctx->nfs_server.protocol == XPRT_TRANSPORT_UDP)
-		goto out_invalid_transport_udp;
+	ret = nfs_validate_transport_protocol(fc, ctx);
+	if (ret)
+		return ret;
 done:
 	ctx->skip_reconfig_option_check = true;
 	return 0;
@@ -1192,9 +1293,6 @@ out_inval_auth:
 
 out_no_address:
 	return nfs_invalf(fc, "NFS4: mount program didn't pass remote address");
-
-out_invalid_transport_udp:
-	return nfs_invalf(fc, "NFS: Unsupported transport protocol udp");
 }
 #endif
 
@@ -1222,7 +1320,7 @@ static int nfs_fs_context_validate(struct fs_context *fc)
 {
 	struct nfs_fs_context *ctx = nfs_fc2context(fc);
 	struct nfs_subversion *nfs_mod;
-	struct sockaddr *sap = (struct sockaddr *)&ctx->nfs_server.address;
+	struct sockaddr_storage *sap = &ctx->nfs_server._address;
 	int max_namelen = PAGE_SIZE;
 	int max_pathlen = NFS_MAXPATHLEN;
 	int port = 0;
@@ -1259,6 +1357,10 @@ static int nfs_fs_context_validate(struct fs_context *fc)
 	if (!nfs_verify_server_address(sap))
 		goto out_no_address;
 
+	ret = nfs_validate_transport_protocol(fc, ctx);
+	if (ret)
+		return ret;
+
 	if (ctx->version == 4) {
 		if (IS_ENABLED(CONFIG_NFS_V4)) {
 			if (ctx->nfs_server.protocol == XPRT_TRANSPORT_RDMA)
@@ -1267,9 +1369,6 @@ static int nfs_fs_context_validate(struct fs_context *fc)
 				port = NFS_PORT;
 			max_namelen = NFS4_MAXNAMLEN;
 			max_pathlen = NFS4_MAXPATHLEN;
-			nfs_validate_transport_protocol(ctx);
-			if (ctx->nfs_server.protocol == XPRT_TRANSPORT_UDP)
-				goto out_invalid_transport_udp;
 			ctx->flags &= ~(NFS_MOUNT_NONLM | NFS_MOUNT_NOACL |
 					NFS_MOUNT_VER3 | NFS_MOUNT_LOCAL_FLOCK |
 					NFS_MOUNT_LOCAL_FCNTL);
@@ -1278,10 +1377,6 @@ static int nfs_fs_context_validate(struct fs_context *fc)
 		}
 	} else {
 		nfs_set_mount_transport_protocol(ctx);
-#ifdef CONFIG_NFS_DISABLE_UDP_SUPPORT
-	       if (ctx->nfs_server.protocol == XPRT_TRANSPORT_UDP)
-		       goto out_invalid_transport_udp;
-#endif
 		if (ctx->nfs_server.protocol == XPRT_TRANSPORT_RDMA)
 			port = NFS_RDMA_PORT;
 	}
@@ -1315,8 +1410,6 @@ out_no_device_name:
 out_v4_not_compiled:
 	nfs_errorf(fc, "NFS: NFSv4 is not compiled into kernel");
 	return -EPROTONOSUPPORT;
-out_invalid_transport_udp:
-	return nfs_invalf(fc, "NFS: Unsupported transport protocol udp");
 out_no_address:
 	return nfs_invalf(fc, "NFS: mount program didn't pass remote address");
 out_mountproto_mismatch:
@@ -1453,7 +1546,7 @@ static int nfs_init_fs_context(struct fs_context *fc)
 		ctx->version		= nfss->nfs_client->rpc_ops->version;
 		ctx->minorversion	= nfss->nfs_client->cl_minorversion;
 
-		memcpy(&ctx->nfs_server.address, &nfss->nfs_client->cl_addr,
+		memcpy(&ctx->nfs_server._address, &nfss->nfs_client->cl_addr,
 			ctx->nfs_server.addrlen);
 
 		if (fc->net_ns != net) {
@@ -1476,6 +1569,8 @@ static int nfs_init_fs_context(struct fs_context *fc)
 		ctx->selected_flavor	= RPC_AUTH_MAXFLAVOR;
 		ctx->minorversion	= 0;
 		ctx->need_mount		= true;
+
+		fc->s_iflags		|= SB_I_STABLE_WRITES;
 	}
 	fc->fs_private = ctx;
 	fc->ops = &nfs_fs_context_ops;

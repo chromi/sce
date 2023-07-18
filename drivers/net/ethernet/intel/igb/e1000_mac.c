@@ -426,7 +426,7 @@ void igb_mta_set(struct e1000_hw *hw, u32 hash_value)
 static u32 igb_hash_mc_addr(struct e1000_hw *hw, u8 *mc_addr)
 {
 	u32 hash_value, hash_mask;
-	u8 bit_shift = 0;
+	u8 bit_shift = 1;
 
 	/* Register count multiplied by bits per register */
 	hash_mask = (hw->mac.mta_reg_count * 32) - 1;
@@ -434,7 +434,7 @@ static u32 igb_hash_mc_addr(struct e1000_hw *hw, u8 *mc_addr)
 	/* For a mc_filter_type of 0, bit_shift is the number of left-shifts
 	 * where 0xFF would still fall within the hash mask.
 	 */
-	while (hash_mask >> bit_shift != 0xFF)
+	while (hash_mask >> bit_shift != 0xFF && bit_shift < 4)
 		bit_shift++;
 
 	/* The portion of the address that is used for the hash table
@@ -484,6 +484,35 @@ static u32 igb_hash_mc_addr(struct e1000_hw *hw, u8 *mc_addr)
 }
 
 /**
+ * igb_i21x_hw_doublecheck - double checks potential HW issue in i21X
+ * @hw: pointer to the HW structure
+ *
+ * Checks if multicast array is wrote correctly
+ * If not then rewrites again to register
+ **/
+static void igb_i21x_hw_doublecheck(struct e1000_hw *hw)
+{
+	int failed_cnt = 3;
+	bool is_failed;
+	int i;
+
+	do {
+		is_failed = false;
+		for (i = hw->mac.mta_reg_count - 1; i >= 0; i--) {
+			if (array_rd32(E1000_MTA, i) != hw->mac.mta_shadow[i]) {
+				is_failed = true;
+				array_wr32(E1000_MTA, i, hw->mac.mta_shadow[i]);
+				wrfl();
+			}
+		}
+		if (is_failed && --failed_cnt <= 0) {
+			hw_dbg("Failed to update MTA_REGISTER, too many retries");
+			break;
+		}
+	} while (is_failed);
+}
+
+/**
  *  igb_update_mc_addr_list - Update Multicast addresses
  *  @hw: pointer to the HW structure
  *  @mc_addr_list: array of multicast addresses to program
@@ -516,6 +545,8 @@ void igb_update_mc_addr_list(struct e1000_hw *hw,
 	for (i = hw->mac.mta_reg_count - 1; i >= 0; i--)
 		array_wr32(E1000_MTA, i, hw->mac.mta_shadow[i]);
 	wrfl();
+	if (hw->mac.type == e1000_i210 || hw->mac.type == e1000_i211)
+		igb_i21x_hw_doublecheck(hw);
 }
 
 /**
@@ -823,7 +854,7 @@ s32 igb_force_mac_fc(struct e1000_hw *hw)
 	 *      1:  Rx flow control is enabled (we can receive pause
 	 *          frames but not send pause frames).
 	 *      2:  Tx flow control is enabled (we can send pause frames
-	 *          frames but we do not receive pause frames).
+	 *          but we do not receive pause frames).
 	 *      3:  Both Rx and TX flow control (symmetric) is enabled.
 	 *  other:  No other values should be possible at this point.
 	 */

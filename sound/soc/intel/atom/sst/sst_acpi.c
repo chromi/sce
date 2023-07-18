@@ -21,6 +21,7 @@
 #include <linux/acpi.h>
 #include <asm/platform_sst_audio.h>
 #include <sound/core.h>
+#include <sound/intel-dsp-config.h>
 #include <sound/soc.h>
 #include <sound/compress_driver.h>
 #include <acpi/acbuffer.h>
@@ -246,6 +247,13 @@ static int sst_acpi_probe(struct platform_device *pdev)
 	id = acpi_match_device(dev->driver->acpi_match_table, dev);
 	if (!id)
 		return -ENODEV;
+
+	ret = snd_intel_acpi_dsp_driver_probe(dev, id->id);
+	if (ret != SND_INTEL_DSP_DRIVER_ANY && ret != SND_INTEL_DSP_DRIVER_SST) {
+		dev_dbg(dev, "SST ACPI driver not selected, aborting probe\n");
+		return -ENODEV;
+	}
+
 	dev_dbg(dev, "for %s\n", id->id);
 
 	mach = (struct snd_soc_acpi_mach *)id->driver_data;
@@ -320,21 +328,20 @@ static int sst_acpi_probe(struct platform_device *pdev)
 }
 
 /**
-* intel_sst_remove - remove function
+* sst_acpi_remove - remove function
 *
 * @pdev:	platform device structure
 *
 * This function is called by OS when a device is unloaded
 * This frees the interrupt etc
 */
-static int sst_acpi_remove(struct platform_device *pdev)
+static void sst_acpi_remove(struct platform_device *pdev)
 {
 	struct intel_sst_drv *ctx;
 
 	ctx = platform_get_drvdata(pdev);
 	sst_context_cleanup(ctx);
 	platform_set_drvdata(pdev, NULL);
-	return 0;
 }
 
 static const struct acpi_device_id sst_acpi_ids[] = {
@@ -352,7 +359,7 @@ static struct platform_driver sst_acpi_driver = {
 		.pm			= &intel_sst_pm,
 	},
 	.probe	= sst_acpi_probe,
-	.remove	= sst_acpi_remove,
+	.remove_new = sst_acpi_remove,
 };
 
 module_platform_driver(sst_acpi_driver);

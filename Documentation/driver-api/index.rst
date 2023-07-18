@@ -1,6 +1,8 @@
-========================================
-The Linux driver implementer's API guide
-========================================
+.. SPDX-License-Identifier: GPL-2.0
+
+==============================
+Driver implementer's API guide
+==============================
 
 The kernel offers a wide variety of interfaces to support the development
 of device drivers.  This document is an only somewhat organized collection
@@ -27,13 +29,16 @@ available subsections can be seen below.
    component
    message-based
    infiniband
+   aperture
    frame-buffer
    regulator
+   reset
    iio/index
    input
    usb/index
    firewire
    pci/index
+   cxl/index
    spi
    i2c
    ipmb
@@ -60,7 +65,7 @@ available subsections can be seen below.
    80211/index
    uio-howto
    firmware/index
-   pinctl
+   pin-control
    gpio/index
    md/index
    media/index
@@ -72,6 +77,7 @@ available subsections can be seen below.
    thermal/index
    fpga/index
    acpi/index
+   auxiliary_bus
    backlight/lp855x-driver.rst
    connector
    console
@@ -82,7 +88,6 @@ available subsections can be seen below.
    io-mapping
    io_ordering
    generic-counter
-   lightnvm-pblk
    memory-devices/index
    men-chameleon-bus
    ntb
@@ -91,19 +96,23 @@ available subsections can be seen below.
    pps
    ptp
    phy/index
-   pti_intel_mid
    pwm
    pldmfw/index
    rfkill
    serial/index
    sm501
+   surface_aggregator/index
    switchtec
    sync_file
+   tty/index
    vfio-mediated-device
    vfio
+   vfio-pci-device-specific-driver-acceptance
+   virtio/index
    xilinx/index
    xillybus
    zorro
+   hte/index
 
 .. only::  subproject and html
 

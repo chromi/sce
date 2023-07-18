@@ -7,7 +7,7 @@ $schema: http://devicetree.org/meta-schemas/core.yaml#
 title: ROHM BD99954 Battery charger
 
 maintainers:
-  - Matti Vaittinen <matti.vaittinen@fi.rohmeurope.com>
+  - Matti Vaittinen <mazziesaccount@gmail.com>
   - Markus Laine <markus.laine@fi.rohmeurope.com>
   - Mikko Mutanen <mikko.mutanen@fi.rohmeurope.com>
 
@@ -18,6 +18,7 @@ description: |
   provides a Dual-source Battery Charger, two port BC1.2 detection and a
   Battery Monitor.
 
+$ref: power-supply.yaml#
 
 properties:
   compatible:
@@ -110,7 +111,7 @@ properties:
 #     multipleOf: 64000
 #     a charge cycle terminates when the battery voltage is above recharge
 #     threshold, and the current is below this setting (7 in above chart)
-#   See also Documentation/devicetree/bindings/power/supply/battery.txt
+#   See also Documentation/devicetree/bindings/power/supply/battery.yaml
 
   reg:
     maxItems: 1

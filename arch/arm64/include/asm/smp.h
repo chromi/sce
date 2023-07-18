@@ -46,9 +46,9 @@ DECLARE_PER_CPU_READ_MOSTLY(int, cpu_number);
  * Logical CPU mapping.
  */
 extern u64 __cpu_logical_map[NR_CPUS];
-extern u64 cpu_logical_map(int cpu);
+extern u64 cpu_logical_map(unsigned int cpu);
 
-static inline void set_cpu_logical_map(int cpu, u64 hwid)
+static inline void set_cpu_logical_map(unsigned int cpu, u64 hwid)
 {
 	__cpu_logical_map[cpu] = hwid;
 }
@@ -73,12 +73,10 @@ asmlinkage void secondary_start_kernel(void);
 
 /*
  * Initial data for bringing up a secondary CPU.
- * @stack  - sp for the secondary CPU
  * @status - Result passed back from the secondary CPU to
  *           indicate failure.
  */
 struct secondary_data {
-	void *stack;
 	struct task_struct *task;
 	long status;
 };
@@ -102,10 +100,10 @@ static inline void arch_send_wakeup_ipi_mask(const struct cpumask *mask)
 extern int __cpu_disable(void);
 
 extern void __cpu_die(unsigned int cpu);
-extern void cpu_die(void);
-extern void cpu_die_early(void);
+extern void __noreturn cpu_die(void);
+extern void __noreturn cpu_die_early(void);
 
-static inline void cpu_park_loop(void)
+static inline void __noreturn cpu_park_loop(void)
 {
 	for (;;) {
 		wfe();
@@ -125,7 +123,7 @@ static inline void update_cpu_boot_status(int val)
  * which calls for a kernel panic. Update the boot status and park the calling
  * CPU.
  */
-static inline void cpu_panic_kernel(void)
+static inline void __noreturn cpu_panic_kernel(void)
 {
 	update_cpu_boot_status(CPU_PANIC_KERNEL);
 	cpu_park_loop();

@@ -8,9 +8,14 @@
 #ifndef _CRYPTO_SKCIPHER_H
 #define _CRYPTO_SKCIPHER_H
 
+#include <linux/atomic.h>
+#include <linux/container_of.h>
 #include <linux/crypto.h>
-#include <linux/kernel.h>
 #include <linux/slab.h>
+#include <linux/string.h>
+#include <linux/types.h>
+
+struct scatterlist;
 
 /**
  *	struct skcipher_request - Symmetric key cipher request
@@ -42,6 +47,22 @@ struct crypto_skcipher {
 
 struct crypto_sync_skcipher {
 	struct crypto_skcipher base;
+};
+
+/*
+ * struct crypto_istat_cipher - statistics for cipher algorithm
+ * @encrypt_cnt:	number of encrypt requests
+ * @encrypt_tlen:	total data size handled by encrypt requests
+ * @decrypt_cnt:	number of decrypt requests
+ * @decrypt_tlen:	total data size handled by decrypt requests
+ * @err_cnt:		number of error for cipher requests
+ */
+struct crypto_istat_cipher {
+	atomic64_t encrypt_cnt;
+	atomic64_t encrypt_tlen;
+	atomic64_t decrypt_cnt;
+	atomic64_t decrypt_tlen;
+	atomic64_t err_cnt;
 };
 
 /**
@@ -97,6 +118,7 @@ struct crypto_sync_skcipher {
  * @walksize: Equal to the chunk size except in cases where the algorithm is
  * 	      considerably more efficient if it can operate on multiple chunks
  * 	      in parallel. Should be a multiple of chunksize.
+ * @stat: Statistics for cipher algorithm
  * @base: Definition of a generic crypto algorithm.
  *
  * All fields except @ivsize are mandatory and must be filled.
@@ -114,6 +136,10 @@ struct skcipher_alg {
 	unsigned int ivsize;
 	unsigned int chunksize;
 	unsigned int walksize;
+
+#ifdef CONFIG_CRYPTO_STATS
+	struct crypto_istat_cipher stat;
+#endif
 
 	struct crypto_alg base;
 };
@@ -196,6 +222,8 @@ static inline struct crypto_tfm *crypto_skcipher_tfm(
 /**
  * crypto_free_skcipher() - zeroize and free cipher handle
  * @tfm: cipher handle to be freed
+ *
+ * If @tfm is a NULL or error pointer, this function does nothing.
  */
 static inline void crypto_free_skcipher(struct crypto_skcipher *tfm)
 {

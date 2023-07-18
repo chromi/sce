@@ -491,12 +491,12 @@ static bool single_major = true;
 module_param(single_major, bool, 0444);
 MODULE_PARM_DESC(single_major, "Use a single major number for all rbd devices (default: true)");
 
-static ssize_t add_store(struct bus_type *bus, const char *buf, size_t count);
-static ssize_t remove_store(struct bus_type *bus, const char *buf,
+static ssize_t add_store(const struct bus_type *bus, const char *buf, size_t count);
+static ssize_t remove_store(const struct bus_type *bus, const char *buf,
 			    size_t count);
-static ssize_t add_single_major_store(struct bus_type *bus, const char *buf,
+static ssize_t add_single_major_store(const struct bus_type *bus, const char *buf,
 				      size_t count);
-static ssize_t remove_single_major_store(struct bus_type *bus, const char *buf,
+static ssize_t remove_single_major_store(const struct bus_type *bus, const char *buf,
 					 size_t count);
 static int rbd_dev_image_probe(struct rbd_device *rbd_dev, int depth);
 
@@ -538,7 +538,7 @@ static bool rbd_is_lock_owner(struct rbd_device *rbd_dev)
 	return is_lock_owner;
 }
 
-static ssize_t supported_features_show(struct bus_type *bus, char *buf)
+static ssize_t supported_features_show(const struct bus_type *bus, char *buf)
 {
 	return sprintf(buf, "0x%llx\n", RBD_FEATURES_SUPPORTED);
 }
@@ -692,61 +692,10 @@ static void rbd_release(struct gendisk *disk, fmode_t mode)
 	put_device(&rbd_dev->dev);
 }
 
-static int rbd_ioctl_set_ro(struct rbd_device *rbd_dev, unsigned long arg)
-{
-	int ro;
-
-	if (get_user(ro, (int __user *)arg))
-		return -EFAULT;
-
-	/*
-	 * Both images mapped read-only and snapshots can't be marked
-	 * read-write.
-	 */
-	if (!ro) {
-		if (rbd_is_ro(rbd_dev))
-			return -EROFS;
-
-		rbd_assert(!rbd_is_snap(rbd_dev));
-	}
-
-	/* Let blkdev_roset() handle it */
-	return -ENOTTY;
-}
-
-static int rbd_ioctl(struct block_device *bdev, fmode_t mode,
-			unsigned int cmd, unsigned long arg)
-{
-	struct rbd_device *rbd_dev = bdev->bd_disk->private_data;
-	int ret;
-
-	switch (cmd) {
-	case BLKROSET:
-		ret = rbd_ioctl_set_ro(rbd_dev, arg);
-		break;
-	default:
-		ret = -ENOTTY;
-	}
-
-	return ret;
-}
-
-#ifdef CONFIG_COMPAT
-static int rbd_compat_ioctl(struct block_device *bdev, fmode_t mode,
-				unsigned int cmd, unsigned long arg)
-{
-	return rbd_ioctl(bdev, mode, cmd, arg);
-}
-#endif /* CONFIG_COMPAT */
-
 static const struct block_device_operations rbd_bd_ops = {
 	.owner			= THIS_MODULE,
 	.open			= rbd_open,
 	.release		= rbd_release,
-	.ioctl			= rbd_ioctl,
-#ifdef CONFIG_COMPAT
-	.compat_ioctl		= rbd_compat_ioctl,
-#endif
 };
 
 /*
@@ -807,24 +756,23 @@ static struct rbd_client *__rbd_get_client(struct rbd_client *rbdc)
  */
 static struct rbd_client *rbd_client_find(struct ceph_options *ceph_opts)
 {
-	struct rbd_client *client_node;
-	bool found = false;
+	struct rbd_client *rbdc = NULL, *iter;
 
 	if (ceph_opts->flags & CEPH_OPT_NOSHARE)
 		return NULL;
 
 	spin_lock(&rbd_client_list_lock);
-	list_for_each_entry(client_node, &rbd_client_list, node) {
-		if (!ceph_compare_options(ceph_opts, client_node->client)) {
-			__rbd_get_client(client_node);
+	list_for_each_entry(iter, &rbd_client_list, node) {
+		if (!ceph_compare_options(ceph_opts, iter->client)) {
+			__rbd_get_client(iter);
 
-			found = true;
+			rbdc = iter;
 			break;
 		}
 	}
 	spin_unlock(&rbd_client_list_lock);
 
-	return found ? client_node : NULL;
+	return rbdc;
 }
 
 /*
@@ -887,7 +835,7 @@ struct rbd_options {
 	u32 alloc_hint_flags;  /* CEPH_OSD_OP_ALLOC_HINT_FLAG_* */
 };
 
-#define RBD_QUEUE_DEPTH_DEFAULT	BLKDEV_MAX_RQ
+#define RBD_QUEUE_DEPTH_DEFAULT	BLKDEV_DEFAULT_RQ
 #define RBD_ALLOC_SIZE_DEFAULT	(64 * 1024)
 #define RBD_LOCK_TIMEOUT_DEFAULT 0  /* no timeout */
 #define RBD_READ_ONLY_DEFAULT	false
@@ -1270,24 +1218,13 @@ static void rbd_dev_mapping_clear(struct rbd_device *rbd_dev)
 	rbd_dev->mapping.size = 0;
 }
 
-static void zero_bvec(struct bio_vec *bv)
-{
-	void *buf;
-	unsigned long flags;
-
-	buf = bvec_kmap_irq(bv, &flags);
-	memset(buf, 0, bv->bv_len);
-	flush_dcache_page(bv->bv_page);
-	bvec_kunmap_irq(buf, &flags);
-}
-
 static void zero_bios(struct ceph_bio_iter *bio_pos, u32 off, u32 bytes)
 {
 	struct ceph_bio_iter it = *bio_pos;
 
 	ceph_bio_iter_advance(&it, off);
 	ceph_bio_iter_advance_step(&it, bytes, ({
-		zero_bvec(&bv);
+		memzero_bvec(&bv);
 	}));
 }
 
@@ -1297,7 +1234,7 @@ static void zero_bvecs(struct ceph_bvec_iter *bvec_pos, u32 off, u32 bytes)
 
 	ceph_bvec_iter_advance(&it, off);
 	ceph_bvec_iter_advance_step(&it, bytes, ({
-		zero_bvec(&bv);
+		memzero_bvec(&bv);
 	}));
 }
 
@@ -1360,7 +1297,7 @@ static void rbd_osd_submit(struct ceph_osd_request *osd_req)
 	dout("%s osd_req %p for obj_req %p objno %llu %llu~%llu\n",
 	     __func__, osd_req, obj_req, obj_req->ex.oe_objno,
 	     obj_req->ex.oe_off, obj_req->ex.oe_len);
-	ceph_osdc_start_request(osd_req->r_osdc, osd_req, false);
+	ceph_osdc_start_request(osd_req->r_osdc, osd_req);
 }
 
 /*
@@ -1397,14 +1334,30 @@ static bool rbd_obj_is_tail(struct rbd_obj_request *obj_req)
 /*
  * Must be called after rbd_obj_calc_img_extents().
  */
-static bool rbd_obj_copyup_enabled(struct rbd_obj_request *obj_req)
+static void rbd_obj_set_copyup_enabled(struct rbd_obj_request *obj_req)
 {
-	if (!obj_req->num_img_extents ||
-	    (rbd_obj_is_entire(obj_req) &&
-	     !obj_req->img_request->snapc->num_snaps))
-		return false;
+	rbd_assert(obj_req->img_request->snapc);
 
-	return true;
+	if (obj_req->img_request->op_type == OBJ_OP_DISCARD) {
+		dout("%s %p objno %llu discard\n", __func__, obj_req,
+		     obj_req->ex.oe_objno);
+		return;
+	}
+
+	if (!obj_req->num_img_extents) {
+		dout("%s %p objno %llu not overlapping\n", __func__, obj_req,
+		     obj_req->ex.oe_objno);
+		return;
+	}
+
+	if (rbd_obj_is_entire(obj_req) &&
+	    !obj_req->img_request->snapc->num_snaps) {
+		dout("%s %p objno %llu entire\n", __func__, obj_req,
+		     obj_req->ex.oe_objno);
+		return;
+	}
+
+	obj_req->flags |= RBD_OBJ_FLAG_COPYUP_ENABLED;
 }
 
 static u64 rbd_obj_img_extents_bytes(struct rbd_obj_request *obj_req)
@@ -1505,6 +1458,7 @@ __rbd_obj_add_osd_request(struct rbd_obj_request *obj_req,
 static struct ceph_osd_request *
 rbd_obj_add_osd_request(struct rbd_obj_request *obj_req, int num_ops)
 {
+	rbd_assert(obj_req->img_request->snapc);
 	return __rbd_obj_add_osd_request(obj_req, obj_req->img_request->snapc,
 					 num_ops);
 }
@@ -1641,15 +1595,18 @@ static void rbd_img_request_init(struct rbd_img_request *img_request,
 	mutex_init(&img_request->state_mutex);
 }
 
+/*
+ * Only snap_id is captured here, for reads.  For writes, snapshot
+ * context is captured in rbd_img_object_requests() after exclusive
+ * lock is ensured to be held.
+ */
 static void rbd_img_capture_header(struct rbd_img_request *img_req)
 {
 	struct rbd_device *rbd_dev = img_req->rbd_dev;
 
 	lockdep_assert_held(&rbd_dev->header_rwsem);
 
-	if (rbd_img_is_write(img_req))
-		img_req->snapc = ceph_get_snap_context(rbd_dev->header.snapc);
-	else
+	if (!rbd_img_is_write(img_req))
 		img_req->snap_id = rbd_dev->spec->snap_id;
 
 	if (rbd_dev_parent_get(rbd_dev))
@@ -2144,7 +2101,7 @@ static int rbd_object_map_update(struct rbd_obj_request *obj_req, u64 snap_id,
 	if (ret)
 		return ret;
 
-	ceph_osdc_start_request(osdc, req, false);
+	ceph_osdc_start_request(osdc, req);
 	return 0;
 }
 
@@ -2296,9 +2253,6 @@ static int rbd_obj_init_write(struct rbd_obj_request *obj_req)
 	if (ret)
 		return ret;
 
-	if (rbd_obj_copyup_enabled(obj_req))
-		obj_req->flags |= RBD_OBJ_FLAG_COPYUP_ENABLED;
-
 	obj_req->write_state = RBD_OBJ_WRITE_START;
 	return 0;
 }
@@ -2404,8 +2358,6 @@ static int rbd_obj_init_zeroout(struct rbd_obj_request *obj_req)
 	if (ret)
 		return ret;
 
-	if (rbd_obj_copyup_enabled(obj_req))
-		obj_req->flags |= RBD_OBJ_FLAG_COPYUP_ENABLED;
 	if (!obj_req->num_img_extents) {
 		obj_req->flags |= RBD_OBJ_FLAG_NOOP_FOR_NONEXISTENT;
 		if (rbd_obj_is_entire(obj_req))
@@ -3048,8 +3000,7 @@ static bool is_zero_bvecs(struct bio_vec *bvecs, u32 bytes)
 	};
 
 	ceph_bvec_iter_advance_step(&it, bytes, ({
-		if (memchr_inv(page_address(bv.bv_page) + bv.bv_offset, 0,
-			       bv.bv_len))
+		if (memchr_inv(bvec_virt(&bv), 0, bv.bv_len))
 			return false;
 	}));
 	return true;
@@ -3132,13 +3083,12 @@ static int setup_copyup_bvecs(struct rbd_obj_request *obj_req, u64 obj_overlap)
 
 	for (i = 0; i < obj_req->copyup_bvec_count; i++) {
 		unsigned int len = min(obj_overlap, (u64)PAGE_SIZE);
+		struct page *page = alloc_page(GFP_NOIO);
 
-		obj_req->copyup_bvecs[i].bv_page = alloc_page(GFP_NOIO);
-		if (!obj_req->copyup_bvecs[i].bv_page)
+		if (!page)
 			return -ENOMEM;
 
-		obj_req->copyup_bvecs[i].bv_offset = 0;
-		obj_req->copyup_bvecs[i].bv_len = len;
+		bvec_set_page(&obj_req->copyup_bvecs[i], page, len, 0);
 		obj_overlap -= len;
 	}
 
@@ -3351,6 +3301,7 @@ again:
 	case RBD_OBJ_WRITE_START:
 		rbd_assert(!*result);
 
+		rbd_obj_set_copyup_enabled(obj_req);
 		if (rbd_obj_write_is_noop(obj_req))
 			return true;
 
@@ -3537,9 +3488,19 @@ static int rbd_img_exclusive_lock(struct rbd_img_request *img_req)
 
 static void rbd_img_object_requests(struct rbd_img_request *img_req)
 {
+	struct rbd_device *rbd_dev = img_req->rbd_dev;
 	struct rbd_obj_request *obj_req;
 
 	rbd_assert(!img_req->pending.result && !img_req->pending.num_pending);
+	rbd_assert(!need_exclusive_lock(img_req) ||
+		   __rbd_is_lock_owner(rbd_dev));
+
+	if (rbd_img_is_write(img_req)) {
+		rbd_assert(!img_req->snapc);
+		down_read(&rbd_dev->header_rwsem);
+		img_req->snapc = ceph_get_snap_context(rbd_dev->header.snapc);
+		up_read(&rbd_dev->header_rwsem);
+	}
 
 	for_each_obj_request(img_req, obj_req) {
 		int result = 0;
@@ -3557,7 +3518,6 @@ static void rbd_img_object_requests(struct rbd_img_request *img_req)
 
 static bool rbd_img_advance(struct rbd_img_request *img_req, int *result)
 {
-	struct rbd_device *rbd_dev = img_req->rbd_dev;
 	int ret;
 
 again:
@@ -3577,9 +3537,6 @@ again:
 	case RBD_IMG_EXCLUSIVE_LOCK:
 		if (*result)
 			return true;
-
-		rbd_assert(!need_exclusive_lock(img_req) ||
-			   __rbd_is_lock_owner(rbd_dev));
 
 		rbd_img_object_requests(img_req);
 		if (!img_req->pending.num_pending) {
@@ -3957,8 +3914,12 @@ static int find_watcher(struct rbd_device *rbd_dev,
 
 	sscanf(locker->id.cookie, RBD_LOCK_COOKIE_PREFIX " %llu", &cookie);
 	for (i = 0; i < num_watchers; i++) {
-		if (!memcmp(&watchers[i].addr, &locker->info.addr,
-			    sizeof(locker->info.addr)) &&
+		/*
+		 * Ignore addr->type while comparing.  This mimics
+		 * entity_addr_t::get_legacy_str() + strcmp().
+		 */
+		if (ceph_addr_equal_no_type(&watchers[i].addr,
+					    &locker->info.addr) &&
 		    watchers[i].cookie == cookie) {
 			struct rbd_client_id cid = {
 				.gid = le64_to_cpu(watchers[i].name.num),
@@ -4037,6 +3998,10 @@ out:
 static int rbd_post_acquire_action(struct rbd_device *rbd_dev)
 {
 	int ret;
+
+	ret = rbd_dev_refresh(rbd_dev);
+	if (ret)
+		return ret;
 
 	if (rbd_dev->header.features & RBD_FEATURE_OBJECT_MAP) {
 		ret = rbd_object_map_open(rbd_dev);
@@ -4147,8 +4112,6 @@ again:
 
 static bool rbd_quiesce_lock(struct rbd_device *rbd_dev)
 {
-	bool need_wait;
-
 	dout("%s rbd_dev %p\n", __func__, rbd_dev);
 	lockdep_assert_held_write(&rbd_dev->lock_rwsem);
 
@@ -4160,11 +4123,11 @@ static bool rbd_quiesce_lock(struct rbd_device *rbd_dev)
 	 */
 	rbd_dev->lock_state = RBD_LOCK_STATE_RELEASING;
 	rbd_assert(!completion_done(&rbd_dev->releasing_wait));
-	need_wait = !list_empty(&rbd_dev->running_list);
-	downgrade_write(&rbd_dev->lock_rwsem);
-	if (need_wait)
-		wait_for_completion(&rbd_dev->releasing_wait);
-	up_read(&rbd_dev->lock_rwsem);
+	if (list_empty(&rbd_dev->running_list))
+		return true;
+
+	up_write(&rbd_dev->lock_rwsem);
+	wait_for_completion(&rbd_dev->releasing_wait);
 
 	down_write(&rbd_dev->lock_rwsem);
 	if (rbd_dev->lock_state != RBD_LOCK_STATE_RELEASING)
@@ -4250,15 +4213,11 @@ static void rbd_handle_acquired_lock(struct rbd_device *rbd_dev, u8 struct_v,
 	if (!rbd_cid_equal(&cid, &rbd_empty_cid)) {
 		down_write(&rbd_dev->lock_rwsem);
 		if (rbd_cid_equal(&cid, &rbd_dev->owner_cid)) {
-			/*
-			 * we already know that the remote client is
-			 * the owner
-			 */
-			up_write(&rbd_dev->lock_rwsem);
-			return;
+			dout("%s rbd_dev %p cid %llu-%llu == owner_cid\n",
+			     __func__, rbd_dev, cid.gid, cid.handle);
+		} else {
+			rbd_set_owner_cid(rbd_dev, &cid);
 		}
-
-		rbd_set_owner_cid(rbd_dev, &cid);
 		downgrade_write(&rbd_dev->lock_rwsem);
 	} else {
 		down_read(&rbd_dev->lock_rwsem);
@@ -4283,14 +4242,12 @@ static void rbd_handle_released_lock(struct rbd_device *rbd_dev, u8 struct_v,
 	if (!rbd_cid_equal(&cid, &rbd_empty_cid)) {
 		down_write(&rbd_dev->lock_rwsem);
 		if (!rbd_cid_equal(&cid, &rbd_dev->owner_cid)) {
-			dout("%s rbd_dev %p unexpected owner, cid %llu-%llu != owner_cid %llu-%llu\n",
+			dout("%s rbd_dev %p cid %llu-%llu != owner_cid %llu-%llu\n",
 			     __func__, rbd_dev, cid.gid, cid.handle,
 			     rbd_dev->owner_cid.gid, rbd_dev->owner_cid.handle);
-			up_write(&rbd_dev->lock_rwsem);
-			return;
+		} else {
+			rbd_set_owner_cid(rbd_dev, &rbd_empty_cid);
 		}
-
-		rbd_set_owner_cid(rbd_dev, &rbd_empty_cid);
 		downgrade_write(&rbd_dev->lock_rwsem);
 	} else {
 		down_read(&rbd_dev->lock_rwsem);
@@ -4797,9 +4754,8 @@ static blk_status_t rbd_queue_rq(struct blk_mq_hw_ctx *hctx,
 
 static void rbd_free_disk(struct rbd_device *rbd_dev)
 {
-	blk_cleanup_queue(rbd_dev->disk->queue);
-	blk_mq_free_tag_set(&rbd_dev->tag_set);
 	put_disk(rbd_dev->disk);
+	blk_mq_free_tag_set(&rbd_dev->tag_set);
 	rbd_dev->disk = NULL;
 }
 
@@ -4837,7 +4793,7 @@ static int rbd_obj_read_sync(struct rbd_device *rbd_dev,
 	if (ret)
 		goto out_req;
 
-	ceph_osdc_start_request(osdc, req, false);
+	ceph_osdc_start_request(osdc, req);
 	ret = ceph_osdc_wait_request(osdc, req);
 	if (ret >= 0)
 		ceph_copy_from_page_vector(pages, buf, 0, ret);
@@ -4920,8 +4876,7 @@ static void rbd_dev_update_size(struct rbd_device *rbd_dev)
 	    !test_bit(RBD_DEV_FLAG_REMOVING, &rbd_dev->flags)) {
 		size = (sector_t)rbd_dev->mapping.size / SECTOR_SIZE;
 		dout("setting size to %llu sectors", (unsigned long long)size);
-		set_capacity(rbd_dev->disk, size);
-		revalidate_disk_size(rbd_dev->disk, true);
+		set_capacity_and_notify(rbd_dev->disk, size);
 	}
 }
 
@@ -4970,22 +4925,6 @@ static int rbd_init_disk(struct rbd_device *rbd_dev)
 	    rbd_dev->layout.object_size * rbd_dev->layout.stripe_count;
 	int err;
 
-	/* create gendisk info */
-	disk = alloc_disk(single_major ?
-			  (1 << RBD_SINGLE_MAJOR_PART_SHIFT) :
-			  RBD_MINORS_PER_MAJOR);
-	if (!disk)
-		return -ENOMEM;
-
-	snprintf(disk->disk_name, sizeof(disk->disk_name), RBD_DRV_NAME "%d",
-		 rbd_dev->dev_id);
-	disk->major = rbd_dev->major;
-	disk->first_minor = rbd_dev->minor;
-	if (single_major)
-		disk->flags |= GENHD_FL_EXT_DEVT;
-	disk->fops = &rbd_bd_ops;
-	disk->private_data = rbd_dev;
-
 	memset(&rbd_dev->tag_set, 0, sizeof(rbd_dev->tag_set));
 	rbd_dev->tag_set.ops = &rbd_mq_ops;
 	rbd_dev->tag_set.queue_depth = rbd_dev->opts->queue_depth;
@@ -4996,13 +4935,25 @@ static int rbd_init_disk(struct rbd_device *rbd_dev)
 
 	err = blk_mq_alloc_tag_set(&rbd_dev->tag_set);
 	if (err)
-		goto out_disk;
+		return err;
 
-	q = blk_mq_init_queue(&rbd_dev->tag_set);
-	if (IS_ERR(q)) {
-		err = PTR_ERR(q);
+	disk = blk_mq_alloc_disk(&rbd_dev->tag_set, rbd_dev);
+	if (IS_ERR(disk)) {
+		err = PTR_ERR(disk);
 		goto out_tag_set;
 	}
+	q = disk->queue;
+
+	snprintf(disk->disk_name, sizeof(disk->disk_name), RBD_DRV_NAME "%d",
+		 rbd_dev->dev_id);
+	disk->major = rbd_dev->major;
+	disk->first_minor = rbd_dev->minor;
+	if (single_major)
+		disk->minors = (1 << RBD_SINGLE_MAJOR_PART_SHIFT);
+	else
+		disk->minors = RBD_MINORS_PER_MAJOR;
+	disk->fops = &rbd_bd_ops;
+	disk->private_data = rbd_dev;
 
 	blk_queue_flag_set(QUEUE_FLAG_NONROT, q);
 	/* QUEUE_FLAG_ADD_RANDOM is off by default for blk-mq */
@@ -5015,7 +4966,6 @@ static int rbd_init_disk(struct rbd_device *rbd_dev)
 	blk_queue_io_opt(q, rbd_dev->opts->alloc_size);
 
 	if (rbd_dev->opts->trim) {
-		blk_queue_flag_set(QUEUE_FLAG_DISCARD, q);
 		q->limits.discard_granularity = rbd_dev->opts->alloc_size;
 		blk_queue_max_discard_sectors(q, objset_bytes >> SECTOR_SHIFT);
 		blk_queue_max_write_zeroes_sectors(q, objset_bytes >> SECTOR_SHIFT);
@@ -5024,21 +4974,11 @@ static int rbd_init_disk(struct rbd_device *rbd_dev)
 	if (!ceph_test_opt(rbd_dev->rbd_client->client, NOCRC))
 		blk_queue_flag_set(QUEUE_FLAG_STABLE_WRITES, q);
 
-	/*
-	 * disk_release() expects a queue ref from add_disk() and will
-	 * put it.  Hold an extra ref until add_disk() is called.
-	 */
-	WARN_ON(!blk_get_queue(q));
-	disk->queue = q;
-	q->queuedata = rbd_dev;
-
 	rbd_dev->disk = disk;
 
 	return 0;
 out_tag_set:
 	blk_mq_free_tag_set(&rbd_dev->tag_set);
-out_disk:
-	put_disk(disk);
 	return err;
 }
 
@@ -5377,8 +5317,7 @@ static void rbd_dev_release(struct device *dev)
 		module_put(THIS_MODULE);
 }
 
-static struct rbd_device *__rbd_dev_create(struct rbd_client *rbdc,
-					   struct rbd_spec *spec)
+static struct rbd_device *__rbd_dev_create(struct rbd_spec *spec)
 {
 	struct rbd_device *rbd_dev;
 
@@ -5423,9 +5362,6 @@ static struct rbd_device *__rbd_dev_create(struct rbd_client *rbdc,
 	rbd_dev->dev.parent = &rbd_root_dev;
 	device_initialize(&rbd_dev->dev);
 
-	rbd_dev->rbd_client = rbdc;
-	rbd_dev->spec = spec;
-
 	return rbd_dev;
 }
 
@@ -5438,11 +5374,9 @@ static struct rbd_device *rbd_dev_create(struct rbd_client *rbdc,
 {
 	struct rbd_device *rbd_dev;
 
-	rbd_dev = __rbd_dev_create(rbdc, spec);
+	rbd_dev = __rbd_dev_create(spec);
 	if (!rbd_dev)
 		return NULL;
-
-	rbd_dev->opts = opts;
 
 	/* get an id and fill in device name */
 	rbd_dev->dev_id = ida_simple_get(&rbd_dev_id_ida, 0,
@@ -5459,6 +5393,10 @@ static struct rbd_device *rbd_dev_create(struct rbd_client *rbdc,
 
 	/* we have a ref from do_rbd_add() */
 	__module_get(THIS_MODULE);
+
+	rbd_dev->rbd_client = rbdc;
+	rbd_dev->spec = spec;
+	rbd_dev->opts = opts;
 
 	dout("%s rbd_dev %p dev_id %d\n", __func__, rbd_dev, rbd_dev->dev_id);
 	return rbd_dev;
@@ -6272,7 +6210,7 @@ static inline size_t next_token(const char **buf)
         * These are the characters that produce nonzero for
         * isspace() in the "C" and "POSIX" locales.
         */
-        const char *spaces = " \f\n\r\t\v";
+	static const char spaces[] = " \f\n\r\t\v";
 
         *buf += strspn(*buf, spaces);	/* Find start of token */
 
@@ -6578,7 +6516,8 @@ static int rbd_add_parse_args(const char *buf,
 	pctx.opts->exclusive = RBD_EXCLUSIVE_DEFAULT;
 	pctx.opts->trim = RBD_TRIM_DEFAULT;
 
-	ret = ceph_parse_mon_ips(mon_addrs, mon_addrs_size, pctx.copts, NULL);
+	ret = ceph_parse_mon_ips(mon_addrs, mon_addrs_size, pctx.copts, NULL,
+				 ',');
 	if (ret)
 		goto out_err;
 
@@ -6820,7 +6759,7 @@ static int rbd_dev_probe_parent(struct rbd_device *rbd_dev, int depth)
 		goto out_err;
 	}
 
-	parent = __rbd_dev_create(rbd_dev->rbd_client, rbd_dev->parent_spec);
+	parent = __rbd_dev_create(rbd_dev->parent_spec);
 	if (!parent) {
 		ret = -ENOMEM;
 		goto out_err;
@@ -6830,8 +6769,8 @@ static int rbd_dev_probe_parent(struct rbd_device *rbd_dev, int depth)
 	 * Images related by parent/child relationships always share
 	 * rbd_client and spec/parent_spec, so bump their refcounts.
 	 */
-	__rbd_get_client(rbd_dev->rbd_client);
-	rbd_spec_get(rbd_dev->parent_spec);
+	parent->rbd_client = __rbd_get_client(rbd_dev->rbd_client);
+	parent->spec = rbd_spec_get(rbd_dev->parent_spec);
 
 	__set_bit(RBD_DEV_FLAG_READONLY, &parent->flags);
 
@@ -7054,9 +6993,7 @@ err_out_format:
 	return ret;
 }
 
-static ssize_t do_rbd_add(struct bus_type *bus,
-			  const char *buf,
-			  size_t count)
+static ssize_t do_rbd_add(const char *buf, size_t count)
 {
 	struct rbd_device *rbd_dev = NULL;
 	struct ceph_options *ceph_opts = NULL;
@@ -7135,9 +7072,9 @@ static ssize_t do_rbd_add(struct bus_type *bus,
 	if (rc)
 		goto err_out_image_lock;
 
-	device_add_disk(&rbd_dev->dev, rbd_dev->disk, NULL);
-	/* see rbd_init_disk() */
-	blk_put_queue(rbd_dev->disk->queue);
+	rc = device_add_disk(&rbd_dev->dev, rbd_dev->disk, NULL);
+	if (rc)
+		goto err_out_cleanup_disk;
 
 	spin_lock(&rbd_dev_list_lock);
 	list_add_tail(&rbd_dev->node, &rbd_dev_list);
@@ -7151,6 +7088,8 @@ out:
 	module_put(THIS_MODULE);
 	return rc;
 
+err_out_cleanup_disk:
+	rbd_free_disk(rbd_dev);
 err_out_image_lock:
 	rbd_dev_image_unlock(rbd_dev);
 	rbd_dev_device_release(rbd_dev);
@@ -7166,18 +7105,18 @@ err_out_args:
 	goto out;
 }
 
-static ssize_t add_store(struct bus_type *bus, const char *buf, size_t count)
+static ssize_t add_store(const struct bus_type *bus, const char *buf, size_t count)
 {
 	if (single_major)
 		return -EINVAL;
 
-	return do_rbd_add(bus, buf, count);
+	return do_rbd_add(buf, count);
 }
 
-static ssize_t add_single_major_store(struct bus_type *bus, const char *buf,
+static ssize_t add_single_major_store(const struct bus_type *bus, const char *buf,
 				      size_t count)
 {
-	return do_rbd_add(bus, buf, count);
+	return do_rbd_add(buf, count);
 }
 
 static void rbd_dev_remove_parent(struct rbd_device *rbd_dev)
@@ -7207,9 +7146,7 @@ static void rbd_dev_remove_parent(struct rbd_device *rbd_dev)
 	}
 }
 
-static ssize_t do_rbd_remove(struct bus_type *bus,
-			     const char *buf,
-			     size_t count)
+static ssize_t do_rbd_remove(const char *buf, size_t count)
 {
 	struct rbd_device *rbd_dev = NULL;
 	struct list_head *tmp;
@@ -7265,7 +7202,7 @@ static ssize_t do_rbd_remove(struct bus_type *bus,
 		 * IO to complete/fail.
 		 */
 		blk_mq_freeze_queue(rbd_dev->disk->queue);
-		blk_set_queue_dying(rbd_dev->disk->queue);
+		blk_mark_disk_dead(rbd_dev->disk);
 	}
 
 	del_gendisk(rbd_dev->disk);
@@ -7281,18 +7218,18 @@ static ssize_t do_rbd_remove(struct bus_type *bus,
 	return count;
 }
 
-static ssize_t remove_store(struct bus_type *bus, const char *buf, size_t count)
+static ssize_t remove_store(const struct bus_type *bus, const char *buf, size_t count)
 {
 	if (single_major)
 		return -EINVAL;
 
-	return do_rbd_remove(bus, buf, count);
+	return do_rbd_remove(buf, count);
 }
 
-static ssize_t remove_single_major_store(struct bus_type *bus, const char *buf,
+static ssize_t remove_single_major_store(const struct bus_type *bus, const char *buf,
 					 size_t count)
 {
-	return do_rbd_remove(bus, buf, count);
+	return do_rbd_remove(buf, count);
 }
 
 /*
@@ -7304,8 +7241,10 @@ static int __init rbd_sysfs_init(void)
 	int ret;
 
 	ret = device_register(&rbd_root_dev);
-	if (ret < 0)
+	if (ret < 0) {
+		put_device(&rbd_root_dev);
 		return ret;
+	}
 
 	ret = bus_register(&rbd_bus_type);
 	if (ret < 0)

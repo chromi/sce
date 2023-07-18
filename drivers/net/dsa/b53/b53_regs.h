@@ -115,6 +115,7 @@
 #define B53_UC_FLOOD_MASK		0x32
 #define B53_MC_FLOOD_MASK		0x34
 #define B53_IPMC_FLOOD_MASK		0x36
+#define B53_DIS_LEARNING		0x3c
 
 /*
  * Override Ports 0-7 State on devices with xMII interfaces (8 bit)
@@ -137,6 +138,7 @@
 
 #define B53_RGMII_CTRL_IMP		0x60
 #define   RGMII_CTRL_ENABLE_GMII	BIT(7)
+#define   RGMII_CTRL_MII_OVERRIDE	BIT(6)
 #define   RGMII_CTRL_TIMING_SEL		BIT(2)
 #define   RGMII_CTRL_DLL_RXC		BIT(1)
 #define   RGMII_CTRL_DLL_TXC		BIT(0)

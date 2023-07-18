@@ -448,7 +448,7 @@ static void _rtl_fill_usb_tx_desc(__le32 *txdesc)
 	set_tx_desc_first_seg(txdesc, 1);
 }
 
-/**
+/*
  *	For HW recovery information
  */
 static void _rtl_tx_desc_checksum(__le32 *txdesc)
@@ -540,7 +540,7 @@ void rtl92cu_tx_fill_desc(struct ieee80211_hw *hw,
 	rcu_read_lock();
 	sta = ieee80211_find_sta(mac->vif, mac->bssid);
 	if (sta) {
-		u8 ampdu_density = sta->ht_cap.ampdu_density;
+		u8 ampdu_density = sta->deflink.ht_cap.ampdu_density;
 
 		set_tx_desc_ampdu_density(txdesc, ampdu_density);
 	}

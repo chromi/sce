@@ -81,8 +81,6 @@ struct macsec_flow {
 	/* Highest takes precedence [0..15] */
 	u8 priority;
 
-	u8 key[MACSEC_KEYID_LEN];
-
 	union {
 		struct macsec_rx_sa *rx_sa;
 		struct macsec_tx_sa *tx_sa;

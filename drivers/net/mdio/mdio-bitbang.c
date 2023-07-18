@@ -14,10 +14,10 @@
  * Vitaly Bordug <vbordug@ru.mvista.com>
  */
 
-#include <linux/module.h>
-#include <linux/mdio-bitbang.h>
-#include <linux/types.h>
 #include <linux/delay.h>
+#include <linux/mdio-bitbang.h>
+#include <linux/module.h>
+#include <linux/types.h>
 
 #define MDIO_READ 2
 #define MDIO_WRITE 1
@@ -127,14 +127,12 @@ static void mdiobb_cmd(struct mdiobb_ctrl *ctrl, int op, u8 phy, u8 reg)
 
 /* In clause 45 mode all commands are prefixed by MDIO_ADDR to specify the
    lower 16 bits of the 21 bit address. This transfer is done identically to a
-   MDIO_WRITE except for a different code. To enable clause 45 mode or
-   MII_ADDR_C45 into the address. Theoretically clause 45 and normal devices
-   can exist on the same bus. Normal devices should ignore the MDIO_ADDR
+   MDIO_WRITE except for a different code. Theoretically clause 45 and normal
+   devices can exist on the same bus. Normal devices should ignore the MDIO_ADDR
    phase. */
-static int mdiobb_cmd_addr(struct mdiobb_ctrl *ctrl, int phy, u32 addr)
+static void mdiobb_cmd_addr(struct mdiobb_ctrl *ctrl, int phy, int dev_addr,
+			    int reg)
 {
-	unsigned int dev_addr = (addr >> 16) & 0x1F;
-	unsigned int reg = addr & 0xFFFF;
 	mdiobb_cmd(ctrl, MDIO_C45_ADDR, phy, dev_addr);
 
 	/* send the turnaround (10) */
@@ -145,20 +143,12 @@ static int mdiobb_cmd_addr(struct mdiobb_ctrl *ctrl, int phy, u32 addr)
 
 	ctrl->ops->set_mdio_dir(ctrl, 0);
 	mdiobb_get_bit(ctrl);
-
-	return dev_addr;
 }
 
-static int mdiobb_read(struct mii_bus *bus, int phy, int reg)
+static int mdiobb_read_common(struct mii_bus *bus, int phy)
 {
 	struct mdiobb_ctrl *ctrl = bus->priv;
 	int ret, i;
-
-	if (reg & MII_ADDR_C45) {
-		reg = mdiobb_cmd_addr(ctrl, phy, reg);
-		mdiobb_cmd(ctrl, MDIO_C45_READ, phy, reg);
-	} else
-		mdiobb_cmd(ctrl, MDIO_READ, phy, reg);
 
 	ctrl->ops->set_mdio_dir(ctrl, 0);
 
@@ -181,15 +171,30 @@ static int mdiobb_read(struct mii_bus *bus, int phy, int reg)
 	return ret;
 }
 
-static int mdiobb_write(struct mii_bus *bus, int phy, int reg, u16 val)
+int mdiobb_read_c22(struct mii_bus *bus, int phy, int reg)
 {
 	struct mdiobb_ctrl *ctrl = bus->priv;
 
-	if (reg & MII_ADDR_C45) {
-		reg = mdiobb_cmd_addr(ctrl, phy, reg);
-		mdiobb_cmd(ctrl, MDIO_C45_WRITE, phy, reg);
-	} else
-		mdiobb_cmd(ctrl, MDIO_WRITE, phy, reg);
+	mdiobb_cmd(ctrl, ctrl->op_c22_read, phy, reg);
+
+	return mdiobb_read_common(bus, phy);
+}
+EXPORT_SYMBOL(mdiobb_read_c22);
+
+int mdiobb_read_c45(struct mii_bus *bus, int phy, int devad, int reg)
+{
+	struct mdiobb_ctrl *ctrl = bus->priv;
+
+	mdiobb_cmd_addr(ctrl, phy, devad, reg);
+	mdiobb_cmd(ctrl, MDIO_C45_READ, phy, reg);
+
+	return mdiobb_read_common(bus, phy);
+}
+EXPORT_SYMBOL(mdiobb_read_c45);
+
+static int mdiobb_write_common(struct mii_bus *bus, u16 val)
+{
+	struct mdiobb_ctrl *ctrl = bus->priv;
 
 	/* send the turnaround (10) */
 	mdiobb_send_bit(ctrl, 1);
@@ -202,6 +207,27 @@ static int mdiobb_write(struct mii_bus *bus, int phy, int reg, u16 val)
 	return 0;
 }
 
+int mdiobb_write_c22(struct mii_bus *bus, int phy, int reg, u16 val)
+{
+	struct mdiobb_ctrl *ctrl = bus->priv;
+
+	mdiobb_cmd(ctrl, ctrl->op_c22_write, phy, reg);
+
+	return mdiobb_write_common(bus, val);
+}
+EXPORT_SYMBOL(mdiobb_write_c22);
+
+int mdiobb_write_c45(struct mii_bus *bus, int phy, int devad, int reg, u16 val)
+{
+	struct mdiobb_ctrl *ctrl = bus->priv;
+
+	mdiobb_cmd_addr(ctrl, phy, devad, reg);
+	mdiobb_cmd(ctrl, MDIO_C45_WRITE, phy, reg);
+
+	return mdiobb_write_common(bus, val);
+}
+EXPORT_SYMBOL(mdiobb_write_c45);
+
 struct mii_bus *alloc_mdio_bitbang(struct mdiobb_ctrl *ctrl)
 {
 	struct mii_bus *bus;
@@ -212,9 +238,16 @@ struct mii_bus *alloc_mdio_bitbang(struct mdiobb_ctrl *ctrl)
 
 	__module_get(ctrl->ops->owner);
 
-	bus->read = mdiobb_read;
-	bus->write = mdiobb_write;
+	bus->read = mdiobb_read_c22;
+	bus->write = mdiobb_write_c22;
+	bus->read_c45 = mdiobb_read_c45;
+	bus->write_c45 = mdiobb_write_c45;
+
 	bus->priv = ctrl;
+	if (!ctrl->override_op_c22) {
+		ctrl->op_c22_read = MDIO_READ;
+		ctrl->op_c22_write = MDIO_WRITE;
+	}
 
 	return bus;
 }

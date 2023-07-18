@@ -1052,7 +1052,7 @@ static int ene_probe(struct pnp_dev *pnp_dev, const struct pnp_device_id *id)
 	rdev->device_name = "ENE eHome Infrared Remote Receiver";
 
 	if (dev->hw_learning_and_tx_capable) {
-		rdev->s_learning_mode = ene_set_learning_mode;
+		rdev->s_wideband_receiver = ene_set_learning_mode;
 		init_completion(&dev->tx_complete);
 		rdev->tx_ir = ene_transmit;
 		rdev->s_tx_mask = ene_set_tx_mask;
@@ -1106,6 +1106,8 @@ static void ene_remove(struct pnp_dev *pnp_dev)
 	struct ene_device *dev = pnp_get_drvdata(pnp_dev);
 	unsigned long flags;
 
+	rc_unregister_device(dev->rdev);
+	del_timer_sync(&dev->tx_sim_timer);
 	spin_lock_irqsave(&dev->hw_lock, flags);
 	ene_rx_disable(dev);
 	ene_rx_restore_hw_buffer(dev);
@@ -1113,7 +1115,6 @@ static void ene_remove(struct pnp_dev *pnp_dev)
 
 	free_irq(dev->irq, dev);
 	release_region(dev->hw_io, ENE_IO_SIZE);
-	rc_unregister_device(dev->rdev);
 	kfree(dev);
 }
 

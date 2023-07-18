@@ -172,7 +172,6 @@ MODULE_PARM_DESC(wd2_timeout, "Default watchdog2 timeout in 1/10secs");
 MODULE_AUTHOR("Eric Brower <ebrower@usa.net>");
 MODULE_DESCRIPTION("Hardware watchdog driver for Sun Microsystems CP1400/1500");
 MODULE_LICENSE("GPL");
-MODULE_SUPPORTED_DEVICE("watchdog");
 
 static void cpwd_writew(u16 val, void __iomem *addr)
 {
@@ -615,7 +614,7 @@ out_iounmap:
 	return err;
 }
 
-static int cpwd_remove(struct platform_device *op)
+static void cpwd_remove(struct platform_device *op)
 {
 	struct cpwd *p = platform_get_drvdata(op);
 	int i;
@@ -639,8 +638,6 @@ static int cpwd_remove(struct platform_device *op)
 	of_iounmap(&op->resource[0], p->regs, 4 * WD_TIMER_REGSZ);
 
 	cpwd_device = NULL;
-
-	return 0;
 }
 
 static const struct of_device_id cpwd_match[] = {
@@ -657,7 +654,7 @@ static struct platform_driver cpwd_driver = {
 		.of_match_table = cpwd_match,
 	},
 	.probe		= cpwd_probe,
-	.remove		= cpwd_remove,
+	.remove_new	= cpwd_remove,
 };
 
 module_platform_driver(cpwd_driver);

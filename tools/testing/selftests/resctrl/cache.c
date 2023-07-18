@@ -48,7 +48,7 @@ static int perf_event_open_llc_miss(pid_t pid, int cpu_no)
 	return 0;
 }
 
-static int initialize_llc_perf(void)
+static void initialize_llc_perf(void)
 {
 	memset(&pea_llc_miss, 0, sizeof(struct perf_event_attr));
 	memset(&rf_cqm, 0, sizeof(struct read_format));
@@ -59,8 +59,6 @@ static int initialize_llc_perf(void)
 	pea_llc_miss.config = PERF_COUNT_HW_CACHE_MISSES;
 
 	rf_cqm.nr = 1;
-
-	return 0;
 }
 
 static int reset_enable_llc_perf(pid_t pid, int cpu_no)
@@ -79,7 +77,7 @@ static int reset_enable_llc_perf(pid_t pid, int cpu_no)
 
 /*
  * get_llc_perf:	llc cache miss through perf events
- * @cpu_no:		CPU number that the benchmark PID is binded to
+ * @llc_perf_miss:	LLC miss counter that is filled on success
  *
  * Perf events like HW_CACHE_MISSES could be used to validate number of
  * cache lines allocated.
@@ -111,7 +109,7 @@ static int get_llc_perf(unsigned long *llc_perf_miss)
 
 /*
  * Get LLC Occupancy as reported by RESCTRL FS
- * For CQM,
+ * For CMT,
  * 1. If con_mon grp and mon grp given, then read from mon grp in
  * con_mon grp
  * 2. If only con_mon grp given, then read from con_mon grp
@@ -182,7 +180,7 @@ int measure_cache_vals(struct resctrl_val_param *param, int bm_pid)
 	/*
 	 * Measure cache miss from perf.
 	 */
-	if (!strcmp(param->resctrl_val, "cat")) {
+	if (!strncmp(param->resctrl_val, CAT_STR, sizeof(CAT_STR))) {
 		ret = get_llc_perf(&llc_perf_miss);
 		if (ret < 0)
 			return ret;
@@ -192,7 +190,7 @@ int measure_cache_vals(struct resctrl_val_param *param, int bm_pid)
 	/*
 	 * Measure llc occupancy from resctrl.
 	 */
-	if (!strcmp(param->resctrl_val, "cqm")) {
+	if (!strncmp(param->resctrl_val, CMT_STR, sizeof(CMT_STR))) {
 		ret = get_llc_occu_resctrl(&llc_occu_resc);
 		if (ret < 0)
 			return ret;
@@ -234,20 +232,19 @@ int cat_val(struct resctrl_val_param *param)
 	if (ret)
 		return ret;
 
-	if ((strcmp(resctrl_val, "cat") == 0)) {
-		ret = initialize_llc_perf();
-		if (ret)
-			return ret;
-	}
+	if (!strncmp(resctrl_val, CAT_STR, sizeof(CAT_STR)))
+		initialize_llc_perf();
 
 	/* Test runs until the callback setup() tells the test to stop. */
 	while (1) {
-		if (strcmp(resctrl_val, "cat") == 0) {
+		if (!strncmp(resctrl_val, CAT_STR, sizeof(CAT_STR))) {
 			ret = param->setup(1, param);
-			if (ret) {
+			if (ret == END_OF_TESTS) {
 				ret = 0;
 				break;
 			}
+			if (ret < 0)
+				break;
 			ret = reset_enable_llc_perf(bm_pid, param->cpu_no);
 			if (ret)
 				break;
@@ -267,6 +264,48 @@ int cat_val(struct resctrl_val_param *param)
 			break;
 		}
 	}
+
+	return ret;
+}
+
+/*
+ * show_cache_info:	show cache test result information
+ * @sum_llc_val:	sum of LLC cache result data
+ * @no_of_bits:		number of bits
+ * @cache_span:		cache span in bytes for CMT or in lines for CAT
+ * @max_diff:		max difference
+ * @max_diff_percent:	max difference percentage
+ * @num_of_runs:	number of runs
+ * @platform:		show test information on this platform
+ * @cmt:		CMT test or CAT test
+ *
+ * Return:		0 on success. non-zero on failure.
+ */
+int show_cache_info(unsigned long sum_llc_val, int no_of_bits,
+		    unsigned long cache_span, unsigned long max_diff,
+		    unsigned long max_diff_percent, unsigned long num_of_runs,
+		    bool platform, bool cmt)
+{
+	unsigned long avg_llc_val = 0;
+	float diff_percent;
+	long avg_diff = 0;
+	int ret;
+
+	avg_llc_val = sum_llc_val / (num_of_runs - 1);
+	avg_diff = (long)abs(cache_span - avg_llc_val);
+	diff_percent = ((float)cache_span - avg_llc_val) / cache_span * 100;
+
+	ret = platform && abs((int)diff_percent) > max_diff_percent &&
+	      (cmt ? (abs(avg_diff) > max_diff) : true);
+
+	ksft_print_msg("%s Check cache miss rate within %d%%\n",
+		       ret ? "Fail:" : "Pass:", max_diff_percent);
+
+	ksft_print_msg("Percent diff=%d\n", abs((int)diff_percent));
+	ksft_print_msg("Number of bits: %d\n", no_of_bits);
+	ksft_print_msg("Average LLC val: %lu\n", avg_llc_val);
+	ksft_print_msg("Cache span (%s): %lu\n", cmt ? "bytes" : "lines",
+		       cache_span);
 
 	return ret;
 }

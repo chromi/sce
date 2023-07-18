@@ -272,7 +272,7 @@ restart:
 
 			/* Unfortunately, the way Infiniband deals with
 			 * RDMA to a bad MR key is by moving the entire
-			 * queue pair to error state. We cold possibly
+			 * queue pair to error state. We could possibly
 			 * recover from that, but right now we drop the
 			 * connection.
 			 * Therefore, we never retransmit messages with RDMA ops.
@@ -1114,7 +1114,7 @@ int rds_sendmsg(struct socket *sock, struct msghdr *msg, size_t payload_len)
 	struct rds_conn_path *cpath;
 	struct in6_addr daddr;
 	__u32 scope_id = 0;
-	size_t total_payload_len = payload_len, rdma_payload_len = 0;
+	size_t rdma_payload_len = 0;
 	bool zcopy = ((msg->msg_flags & MSG_ZEROCOPY) &&
 		      sock_flag(rds_rs_to_sk(rs), SOCK_ZEROCOPY));
 	int num_sgs = DIV_ROUND_UP(payload_len, PAGE_SIZE);
@@ -1225,7 +1225,7 @@ int rds_sendmsg(struct socket *sock, struct msghdr *msg, size_t payload_len)
 		}
 		/* If the socket is already bound to a link local address,
 		 * it can only send to peers on the same link.  But allow
-		 * communicating beween link local and non-link local address.
+		 * communicating between link local and non-link local address.
 		 */
 		if (scope_id != rs->rs_bound_scope_id) {
 			if (!scope_id) {
@@ -1243,7 +1243,6 @@ int rds_sendmsg(struct socket *sock, struct msghdr *msg, size_t payload_len)
 	if (ret)
 		goto out;
 
-	total_payload_len += rdma_payload_len;
 	if (max_t(size_t, payload_len, rdma_payload_len) > RDS_MAX_MSG_SIZE) {
 		ret = -EMSGSIZE;
 		goto out;

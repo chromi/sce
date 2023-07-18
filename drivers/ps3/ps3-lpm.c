@@ -1066,7 +1066,7 @@ EXPORT_SYMBOL_GPL(ps3_disable_pm_interrupts);
  *  instance, specified by one of enum ps3_lpm_tb_type.
  * @tb_cache: Optional user supplied buffer to use as the trace buffer cache.
  *  If NULL, the driver will allocate and manage an internal buffer.
- *  Unused when when @tb_type is PS3_LPM_TB_TYPE_NONE.
+ *  Unused when @tb_type is PS3_LPM_TB_TYPE_NONE.
  * @tb_cache_size: The size in bytes of the user supplied @tb_cache buffer.
  *  Unused when @tb_cache is NULL or @tb_type is PS3_LPM_TB_TYPE_NONE.
  */
@@ -1196,7 +1196,7 @@ static int ps3_lpm_probe(struct ps3_system_bus_device *dev)
 	return 0;
 }
 
-static int ps3_lpm_remove(struct ps3_system_bus_device *dev)
+static void ps3_lpm_remove(struct ps3_system_bus_device *dev)
 {
 	dev_dbg(&dev->core, " -> %s:%u:\n", __func__, __LINE__);
 
@@ -1206,7 +1206,6 @@ static int ps3_lpm_remove(struct ps3_system_bus_device *dev)
 	lpm_priv = NULL;
 
 	dev_info(&dev->core, " <- %s:%u:\n", __func__, __LINE__);
-	return 0;
 }
 
 static struct ps3_system_bus_driver ps3_lpm_driver = {

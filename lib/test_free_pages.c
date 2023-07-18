@@ -5,6 +5,8 @@
  * Author: Matthew Wilcox <willy@infradead.org>
  */
 
+#define pr_fmt(fmt)	KBUILD_MODNAME ": " fmt
+
 #include <linux/gfp.h>
 #include <linux/mm.h>
 #include <linux/module.h>
@@ -15,7 +17,7 @@ static void test_free_pages(gfp_t gfp)
 
 	for (i = 0; i < 1000 * 1000; i++) {
 		unsigned long addr = __get_free_pages(gfp, 3);
-		struct page *page = virt_to_page(addr);
+		struct page *page = virt_to_page((void *)addr);
 
 		/* Simulate page cache getting a speculative reference */
 		get_page(page);
@@ -26,8 +28,11 @@ static void test_free_pages(gfp_t gfp)
 
 static int m_in(void)
 {
+	pr_info("Testing with GFP_KERNEL\n");
 	test_free_pages(GFP_KERNEL);
+	pr_info("Testing with GFP_KERNEL | __GFP_COMP\n");
 	test_free_pages(GFP_KERNEL | __GFP_COMP);
+	pr_info("Test completed\n");
 
 	return 0;
 }

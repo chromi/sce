@@ -2,6 +2,7 @@
 #include <linux/clk.h>
 #include <linux/clocksource.h>
 #include <linux/clockchips.h>
+#include <linux/cpuhotplug.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
@@ -240,8 +241,7 @@ static void __init dmtimer_systimer_assign_alwon(void)
 	bool quirk_unreliable_oscillator = false;
 
 	/* Quirk unreliable 32 KiHz oscillator with incomplete dts */
-	if (of_machine_is_compatible("ti,omap3-beagle") ||
-	    of_machine_is_compatible("timll,omap3-devkit8000")) {
+	if (of_machine_is_compatible("ti,omap3-beagle-ab4")) {
 		quirk_unreliable_oscillator = true;
 		counter_32k = -ENODEV;
 	}
@@ -251,24 +251,24 @@ static void __init dmtimer_systimer_assign_alwon(void)
 		counter_32k = -ENODEV;
 
 	for_each_matching_node(np, dmtimer_match_table) {
+		struct resource res;
 		if (!dmtimer_is_preferred(np))
 			continue;
 
-		if (of_property_read_bool(np, "ti,timer-alwon")) {
-			const __be32 *addr;
+		if (!of_property_read_bool(np, "ti,timer-alwon"))
+			continue;
 
-			addr = of_get_address(np, 0, NULL, NULL);
-			pa = of_translate_address(np, addr);
-			if (pa) {
-				/* Quirky omap3 boards must use dmtimer12 */
-				if (quirk_unreliable_oscillator &&
-				    pa == 0x48318000)
-					continue;
+		if (of_address_to_resource(np, 0, &res))
+			continue;
 
-				of_node_put(np);
-				break;
-			}
-		}
+		pa = res.start;
+
+		/* Quirky omap3 boards must use dmtimer12 */
+		if (quirk_unreliable_oscillator && pa == 0x48318000)
+			continue;
+
+		of_node_put(np);
+		break;
 	}
 
 	/* Usually no need for dmtimer clocksource if we have counter32 */
@@ -285,24 +285,22 @@ static void __init dmtimer_systimer_assign_alwon(void)
 static u32 __init dmtimer_systimer_find_first_available(void)
 {
 	struct device_node *np;
-	const __be32 *addr;
 	u32 pa = 0;
 
 	for_each_matching_node(np, dmtimer_match_table) {
+		struct resource res;
 		if (!dmtimer_is_preferred(np))
 			continue;
 
-		addr = of_get_address(np, 0, NULL, NULL);
-		pa = of_translate_address(np, addr);
-		if (pa) {
-			if (pa == clocksource || pa == clockevent) {
-				pa = 0;
-				continue;
-			}
+		if (of_address_to_resource(np, 0, &res))
+			continue;
 
-			of_node_put(np);
-			break;
-		}
+		if (res.start == clocksource || res.start == clockevent)
+			continue;
+
+		pa = res.start;
+		of_node_put(np);
+		break;
 	}
 
 	return pa;
@@ -345,8 +343,10 @@ static int __init dmtimer_systimer_init_clock(struct dmtimer_systimer *t,
 		return error;
 
 	r = clk_get_rate(clock);
-	if (!r)
+	if (!r) {
+		clk_disable_unprepare(clock);
 		return -ENODEV;
+	}
 
 	if (is_ick)
 		t->ick = clock;
@@ -449,13 +449,13 @@ static int dmtimer_set_next_event(unsigned long cycles,
 	struct dmtimer_systimer *t = &clkevt->t;
 	void __iomem *pend = t->base + t->pend;
 
-	writel_relaxed(0xffffffff - cycles, t->base + t->counter);
 	while (readl_relaxed(pend) & WP_TCRR)
 		cpu_relax();
+	writel_relaxed(0xffffffff - cycles, t->base + t->counter);
 
-	writel_relaxed(OMAP_TIMER_CTRL_ST, t->base + t->ctrl);
 	while (readl_relaxed(pend) & WP_TCLR)
 		cpu_relax();
+	writel_relaxed(OMAP_TIMER_CTRL_ST, t->base + t->ctrl);
 
 	return 0;
 }
@@ -490,18 +490,18 @@ static int dmtimer_set_periodic(struct clock_event_device *evt)
 	dmtimer_clockevent_shutdown(evt);
 
 	/* Looks like we need to first set the load value separately */
-	writel_relaxed(clkevt->period, t->base + t->load);
 	while (readl_relaxed(pend) & WP_TLDR)
 		cpu_relax();
+	writel_relaxed(clkevt->period, t->base + t->load);
 
-	writel_relaxed(clkevt->period, t->base + t->counter);
 	while (readl_relaxed(pend) & WP_TCRR)
 		cpu_relax();
+	writel_relaxed(clkevt->period, t->base + t->counter);
 
-	writel_relaxed(OMAP_TIMER_CTRL_AR | OMAP_TIMER_CTRL_ST,
-		       t->base + t->ctrl);
 	while (readl_relaxed(pend) & WP_TCLR)
 		cpu_relax();
+	writel_relaxed(OMAP_TIMER_CTRL_AR | OMAP_TIMER_CTRL_ST,
+		       t->base + t->ctrl);
 
 	return 0;
 }
@@ -530,16 +530,16 @@ static void omap_clockevent_unidle(struct clock_event_device *evt)
 	writel_relaxed(OMAP_TIMER_INT_OVERFLOW, t->base + t->wakeup);
 }
 
-static int __init dmtimer_clockevent_init(struct device_node *np)
+static int __init dmtimer_clkevt_init_common(struct dmtimer_clockevent *clkevt,
+					     struct device_node *np,
+					     unsigned int features,
+					     const struct cpumask *cpumask,
+					     const char *name,
+					     int rating)
 {
-	struct dmtimer_clockevent *clkevt;
 	struct clock_event_device *dev;
 	struct dmtimer_systimer *t;
 	int error;
-
-	clkevt = kzalloc(sizeof(*clkevt), GFP_KERNEL);
-	if (!clkevt)
-		return -ENOMEM;
 
 	t = &clkevt->t;
 	dev = &clkevt->dev;
@@ -548,24 +548,23 @@ static int __init dmtimer_clockevent_init(struct device_node *np)
 	 * We mostly use cpuidle_coupled with ARM local timers for runtime,
 	 * so there's probably no use for CLOCK_EVT_FEAT_DYNIRQ here.
 	 */
-	dev->features = CLOCK_EVT_FEAT_PERIODIC | CLOCK_EVT_FEAT_ONESHOT;
-	dev->rating = 300;
+	dev->features = features;
+	dev->rating = rating;
 	dev->set_next_event = dmtimer_set_next_event;
 	dev->set_state_shutdown = dmtimer_clockevent_shutdown;
 	dev->set_state_periodic = dmtimer_set_periodic;
 	dev->set_state_oneshot = dmtimer_clockevent_shutdown;
+	dev->set_state_oneshot_stopped = dmtimer_clockevent_shutdown;
 	dev->tick_resume = dmtimer_clockevent_shutdown;
-	dev->cpumask = cpu_possible_mask;
+	dev->cpumask = cpumask;
 
 	dev->irq = irq_of_parse_and_map(np, 0);
-	if (!dev->irq) {
-		error = -ENXIO;
-		goto err_out_free;
-	}
+	if (!dev->irq)
+		return -ENXIO;
 
 	error = dmtimer_systimer_setup(np, &clkevt->t);
 	if (error)
-		goto err_out_free;
+		return error;
 
 	clkevt->period = 0xffffffff - DIV_ROUND_CLOSEST(t->rate, HZ);
 
@@ -577,36 +576,130 @@ static int __init dmtimer_clockevent_init(struct device_node *np)
 	writel_relaxed(OMAP_TIMER_CTRL_POSTED, t->base + t->ifctrl);
 
 	error = request_irq(dev->irq, dmtimer_clockevent_interrupt,
-			    IRQF_TIMER, "clockevent", clkevt);
+			    IRQF_TIMER, name, clkevt);
 	if (error)
 		goto err_out_unmap;
 
 	writel_relaxed(OMAP_TIMER_INT_OVERFLOW, t->base + t->irq_ena);
 	writel_relaxed(OMAP_TIMER_INT_OVERFLOW, t->base + t->wakeup);
 
-	pr_info("TI gptimer clockevent: %s%lu Hz at %pOF\n",
-		of_find_property(np, "ti,timer-alwon", NULL) ?
+	pr_info("TI gptimer %s: %s%lu Hz at %pOF\n",
+		name, of_property_read_bool(np, "ti,timer-alwon") ?
 		"always-on " : "", t->rate, np->parent);
-
-	clockevents_config_and_register(dev, t->rate,
-					3, /* Timer internal resynch latency */
-					0xffffffff);
-
-	if (of_machine_is_compatible("ti,am33xx") ||
-	    of_machine_is_compatible("ti,am43")) {
-		dev->suspend = omap_clockevent_idle;
-		dev->resume = omap_clockevent_unidle;
-	}
 
 	return 0;
 
 err_out_unmap:
 	iounmap(t->base);
 
+	return error;
+}
+
+static int __init dmtimer_clockevent_init(struct device_node *np)
+{
+	struct dmtimer_clockevent *clkevt;
+	int error;
+
+	clkevt = kzalloc(sizeof(*clkevt), GFP_KERNEL);
+	if (!clkevt)
+		return -ENOMEM;
+
+	error = dmtimer_clkevt_init_common(clkevt, np,
+					   CLOCK_EVT_FEAT_PERIODIC |
+					   CLOCK_EVT_FEAT_ONESHOT,
+					   cpu_possible_mask, "clockevent",
+					   300);
+	if (error)
+		goto err_out_free;
+
+	clockevents_config_and_register(&clkevt->dev, clkevt->t.rate,
+					3, /* Timer internal resync latency */
+					0xffffffff);
+
+	if (of_machine_is_compatible("ti,am33xx") ||
+	    of_machine_is_compatible("ti,am43")) {
+		clkevt->dev.suspend = omap_clockevent_idle;
+		clkevt->dev.resume = omap_clockevent_unidle;
+	}
+
+	return 0;
+
 err_out_free:
 	kfree(clkevt);
 
 	return error;
+}
+
+/* Dmtimer as percpu timer. See dra7 ARM architected timer wrap erratum i940 */
+static DEFINE_PER_CPU(struct dmtimer_clockevent, dmtimer_percpu_timer);
+
+static int __init dmtimer_percpu_timer_init(struct device_node *np, int cpu)
+{
+	struct dmtimer_clockevent *clkevt;
+	int error;
+
+	if (!cpu_possible(cpu))
+		return -EINVAL;
+
+	if (!of_property_read_bool(np->parent, "ti,no-reset-on-init") ||
+	    !of_property_read_bool(np->parent, "ti,no-idle"))
+		pr_warn("Incomplete dtb for percpu dmtimer %pOF\n", np->parent);
+
+	clkevt = per_cpu_ptr(&dmtimer_percpu_timer, cpu);
+
+	error = dmtimer_clkevt_init_common(clkevt, np, CLOCK_EVT_FEAT_ONESHOT,
+					   cpumask_of(cpu), "percpu-dmtimer",
+					   500);
+	if (error)
+		return error;
+
+	return 0;
+}
+
+/* See TRM for timer internal resynch latency */
+static int omap_dmtimer_starting_cpu(unsigned int cpu)
+{
+	struct dmtimer_clockevent *clkevt = per_cpu_ptr(&dmtimer_percpu_timer, cpu);
+	struct clock_event_device *dev = &clkevt->dev;
+	struct dmtimer_systimer *t = &clkevt->t;
+
+	clockevents_config_and_register(dev, t->rate, 3, ULONG_MAX);
+	irq_force_affinity(dev->irq, cpumask_of(cpu));
+
+	return 0;
+}
+
+static int __init dmtimer_percpu_timer_startup(void)
+{
+	struct dmtimer_clockevent *clkevt = per_cpu_ptr(&dmtimer_percpu_timer, 0);
+	struct dmtimer_systimer *t = &clkevt->t;
+
+	if (t->sysc) {
+		cpuhp_setup_state(CPUHP_AP_TI_GP_TIMER_STARTING,
+				  "clockevents/omap/gptimer:starting",
+				  omap_dmtimer_starting_cpu, NULL);
+	}
+
+	return 0;
+}
+subsys_initcall(dmtimer_percpu_timer_startup);
+
+static int __init dmtimer_percpu_quirk_init(struct device_node *np, u32 pa)
+{
+	struct device_node *arm_timer;
+
+	arm_timer = of_find_compatible_node(NULL, NULL, "arm,armv7-timer");
+	if (of_device_is_available(arm_timer)) {
+		pr_warn_once("ARM architected timer wrap issue i940 detected\n");
+		return 0;
+	}
+
+	if (pa == 0x4882c000)           /* dra7 dmtimer15 */
+		return dmtimer_percpu_timer_init(np, 0);
+	else if (pa == 0x4882e000)      /* dra7 dmtimer16 */
+		return dmtimer_percpu_timer_init(np, 1);
+
+	return 0;
 }
 
 /* Clocksource */
@@ -692,7 +785,7 @@ static int __init dmtimer_clocksource_init(struct device_node *np)
 		       t->base + t->ctrl);
 
 	pr_info("TI gptimer clocksource: %s%pOF\n",
-		of_find_property(np, "ti,timer-alwon", NULL) ?
+		of_property_read_bool(np, "ti,timer-alwon") ?
 		"always-on " : "", np->parent);
 
 	if (!dmtimer_sched_clock_counter) {
@@ -717,7 +810,7 @@ err_out_free:
  */
 static int __init dmtimer_systimer_init(struct device_node *np)
 {
-	const __be32 *addr;
+	struct resource res;
 	u32 pa;
 
 	/* One time init for the preferred timer configuration */
@@ -731,8 +824,9 @@ static int __init dmtimer_systimer_init(struct device_node *np)
 		return -EINVAL;
 	}
 
-	addr = of_get_address(np, 0, NULL, NULL);
-	pa = of_translate_address(np, addr);
+
+	of_address_to_resource(np, 0, &res);
+	pa = (u32)res.start;
 	if (!pa)
 		return -EINVAL;
 
@@ -741,6 +835,9 @@ static int __init dmtimer_systimer_init(struct device_node *np)
 
 	if (clockevent == pa)
 		return dmtimer_clockevent_init(np);
+
+	if (of_machine_is_compatible("ti,dra7"))
+		return dmtimer_percpu_quirk_init(np, pa);
 
 	return 0;
 }

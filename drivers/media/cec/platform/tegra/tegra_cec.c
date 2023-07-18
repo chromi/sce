@@ -366,7 +366,11 @@ static int tegra_cec_probe(struct platform_device *pdev)
 		return -ENOENT;
 	}
 
-	clk_prepare_enable(cec->clk);
+	ret = clk_prepare_enable(cec->clk);
+	if (ret) {
+		dev_err(&pdev->dev, "Unable to prepare clock for CEC\n");
+		return ret;
+	}
 
 	/* set context info. */
 	cec->dev = &pdev->dev;
@@ -417,7 +421,7 @@ err_clk:
 	return ret;
 }
 
-static int tegra_cec_remove(struct platform_device *pdev)
+static void tegra_cec_remove(struct platform_device *pdev)
 {
 	struct tegra_cec *cec = platform_get_drvdata(pdev);
 
@@ -425,8 +429,6 @@ static int tegra_cec_remove(struct platform_device *pdev)
 
 	cec_notifier_cec_adap_unregister(cec->notifier, cec->adap);
 	cec_unregister_adapter(cec->adap);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM
@@ -446,9 +448,7 @@ static int tegra_cec_resume(struct platform_device *pdev)
 
 	dev_notice(&pdev->dev, "Resuming\n");
 
-	clk_prepare_enable(cec->clk);
-
-	return 0;
+	return clk_prepare_enable(cec->clk);
 }
 #endif
 
@@ -465,7 +465,7 @@ static struct platform_driver tegra_cec_driver = {
 		.of_match_table = of_match_ptr(tegra_cec_of_match),
 	},
 	.probe = tegra_cec_probe,
-	.remove = tegra_cec_remove,
+	.remove_new = tegra_cec_remove,
 
 #ifdef CONFIG_PM
 	.suspend = tegra_cec_suspend,

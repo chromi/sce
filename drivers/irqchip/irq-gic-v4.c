@@ -87,9 +87,32 @@ static struct irq_domain *gic_domain;
 static const struct irq_domain_ops *vpe_domain_ops;
 static const struct irq_domain_ops *sgi_domain_ops;
 
+#ifdef CONFIG_ARM64
+#include <asm/cpufeature.h>
+
+bool gic_cpuif_has_vsgi(void)
+{
+	unsigned long fld, reg = read_sanitised_ftr_reg(SYS_ID_AA64PFR0_EL1);
+
+	fld = cpuid_feature_extract_unsigned_field(reg, ID_AA64PFR0_EL1_GIC_SHIFT);
+
+	return fld >= 0x3;
+}
+#else
+bool gic_cpuif_has_vsgi(void)
+{
+	return false;
+}
+#endif
+
 static bool has_v4_1(void)
 {
 	return !!sgi_domain_ops;
+}
+
+static bool has_v4_1_sgi(void)
+{
+	return has_v4_1() && gic_cpuif_has_vsgi();
 }
 
 static int its_alloc_vcpu_sgis(struct its_vpe *vpe, int idx)
@@ -97,7 +120,7 @@ static int its_alloc_vcpu_sgis(struct its_vpe *vpe, int idx)
 	char *name;
 	int sgi_base;
 
-	if (!has_v4_1())
+	if (!has_v4_1_sgi())
 		return 0;
 
 	name = kasprintf(GFP_KERNEL, "GICv4-sgi-%d", task_pid_nr(current));
@@ -116,9 +139,7 @@ static int its_alloc_vcpu_sgis(struct its_vpe *vpe, int idx)
 	if (!vpe->sgi_domain)
 		goto err;
 
-	sgi_base = __irq_domain_alloc_irqs(vpe->sgi_domain, -1, 16,
-					       NUMA_NO_NODE, vpe,
-					       false, NULL);
+	sgi_base = irq_domain_alloc_irqs(vpe->sgi_domain, 16, NUMA_NO_NODE, vpe);
 	if (sgi_base <= 0)
 		goto err;
 
@@ -153,9 +174,8 @@ int its_alloc_vcpu_irqs(struct its_vm *vm)
 		vm->vpes[i]->idai = true;
 	}
 
-	vpe_base_irq = __irq_domain_alloc_irqs(vm->domain, -1, vm->nr_vpes,
-					       NUMA_NO_NODE, vm,
-					       false, NULL);
+	vpe_base_irq = irq_domain_alloc_irqs(vm->domain, vm->nr_vpes,
+					     NUMA_NO_NODE, vm);
 	if (vpe_base_irq <= 0)
 		goto err;
 
@@ -182,7 +202,7 @@ static void its_free_sgi_irqs(struct its_vm *vm)
 {
 	int i;
 
-	if (!has_v4_1())
+	if (!has_v4_1_sgi())
 		return;
 
 	for (i = 0; i < vm->nr_vpes; i++) {
@@ -232,6 +252,8 @@ int its_make_vpe_non_resident(struct its_vpe *vpe, bool db)
 	if (!ret)
 		vpe->resident = false;
 
+	vpe->ready = false;
+
 	return ret;
 }
 
@@ -257,6 +279,23 @@ int its_make_vpe_resident(struct its_vpe *vpe, bool g0en, bool g1en)
 
 	return ret;
 }
+
+int its_commit_vpe(struct its_vpe *vpe)
+{
+	struct its_cmd_info info = {
+		.cmd_type = COMMIT_VPE,
+	};
+	int ret;
+
+	WARN_ON(preemptible());
+
+	ret = its_send_vpe_cmd(vpe, &info);
+	if (!ret)
+		vpe->ready = true;
+
+	return ret;
+}
+
 
 int its_invall_vpe(struct its_vpe *vpe)
 {

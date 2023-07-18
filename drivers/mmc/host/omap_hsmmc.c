@@ -177,7 +177,7 @@ struct omap_hsmmc_host {
 	struct	regulator	*pbias;
 	bool			pbias_enabled;
 	void	__iomem		*base;
-	int			vqmmc_enabled;
+	bool			vqmmc_enabled;
 	resource_size_t		mapbase;
 	spinlock_t		irq_lock; /* Prevent races with irq handler */
 	unsigned int		dma_len;
@@ -232,7 +232,7 @@ static int omap_hsmmc_enable_supply(struct mmc_host *mmc)
 			dev_err(mmc_dev(mmc), "vmmc_aux reg enable failed\n");
 			goto err_vqmmc;
 		}
-		host->vqmmc_enabled = 1;
+		host->vqmmc_enabled = true;
 	}
 
 	return 0;
@@ -256,7 +256,7 @@ static int omap_hsmmc_disable_supply(struct mmc_host *mmc)
 			dev_err(mmc_dev(mmc), "vmmc_aux reg disable failed\n");
 			return ret;
 		}
-		host->vqmmc_enabled = 0;
+		host->vqmmc_enabled = false;
 	}
 
 	if (!IS_ERR(mmc->supply.vmmc)) {
@@ -285,22 +285,22 @@ static int omap_hsmmc_set_pbias(struct omap_hsmmc_host *host, bool power_on)
 		return 0;
 
 	if (power_on) {
-		if (host->pbias_enabled == 0) {
+		if (!host->pbias_enabled) {
 			ret = regulator_enable(host->pbias);
 			if (ret) {
 				dev_err(host->dev, "pbias reg enable fail\n");
 				return ret;
 			}
-			host->pbias_enabled = 1;
+			host->pbias_enabled = true;
 		}
 	} else {
-		if (host->pbias_enabled == 1) {
+		if (host->pbias_enabled) {
 			ret = regulator_disable(host->pbias);
 			if (ret) {
 				dev_err(host->dev, "pbias reg disable fail\n");
 				return ret;
 			}
-			host->pbias_enabled = 0;
+			host->pbias_enabled = false;
 		}
 	}
 
@@ -701,11 +701,6 @@ static void omap_hsmmc_context_save(struct omap_hsmmc_host *host)
 }
 
 #else
-
-static int omap_hsmmc_context_restore(struct omap_hsmmc_host *host)
-{
-	return 0;
-}
 
 static void omap_hsmmc_context_save(struct omap_hsmmc_host *host)
 {
@@ -1504,41 +1499,6 @@ static void omap_hsmmc_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 	omap_hsmmc_set_bus_mode(host);
 }
 
-static void omap_hsmmc_init_card(struct mmc_host *mmc, struct mmc_card *card)
-{
-	struct omap_hsmmc_host *host = mmc_priv(mmc);
-
-	if (card->type == MMC_TYPE_SDIO || card->type == MMC_TYPE_SD_COMBO) {
-		struct device_node *np = mmc_dev(mmc)->of_node;
-
-		/*
-		 * REVISIT: should be moved to sdio core and made more
-		 * general e.g. by expanding the DT bindings of child nodes
-		 * to provide a mechanism to provide this information:
-		 * Documentation/devicetree/bindings/mmc/mmc-card.txt
-		 */
-
-		np = of_get_compatible_child(np, "ti,wl1251");
-		if (np) {
-			/*
-			 * We have TI wl1251 attached to MMC3. Pass this
-			 * information to the SDIO core because it can't be
-			 * probed by normal methods.
-			 */
-
-			dev_info(host->dev, "found wl1251\n");
-			card->quirks |= MMC_QUIRK_NONSTD_SDIO;
-			card->cccr.wide_bus = 1;
-			card->cis.vendor = 0x104c;
-			card->cis.device = 0x9066;
-			card->cis.blksize = 512;
-			card->cis.max_dtr = 24000000;
-			card->ocr = 0x80;
-			of_node_put(np);
-		}
-	}
-}
-
 static void omap_hsmmc_enable_sdio_irq(struct mmc_host *mmc, int enable)
 {
 	struct omap_hsmmc_host *host = mmc_priv(mmc);
@@ -1665,7 +1625,6 @@ static struct mmc_host_ops omap_hsmmc_ops = {
 	.set_ios = omap_hsmmc_set_ios,
 	.get_cd = mmc_gpio_get_cd,
 	.get_ro = mmc_gpio_get_ro,
-	.init_card = omap_hsmmc_init_card,
 	.enable_sdio_irq = omap_hsmmc_enable_sdio_irq,
 };
 
@@ -1777,18 +1736,18 @@ static struct omap_hsmmc_platform_data *of_get_hsmmc_pdata(struct device *dev)
 	if (legacy && legacy->name)
 		pdata->name = legacy->name;
 
-	if (of_find_property(np, "ti,dual-volt", NULL))
+	if (of_property_read_bool(np, "ti,dual-volt"))
 		pdata->controller_flags |= OMAP_HSMMC_SUPPORTS_DUAL_VOLT;
 
-	if (of_find_property(np, "ti,non-removable", NULL)) {
+	if (of_property_read_bool(np, "ti,non-removable")) {
 		pdata->nonremovable = true;
 		pdata->no_regulator_off_init = true;
 	}
 
-	if (of_find_property(np, "ti,needs-special-reset", NULL))
+	if (of_property_read_bool(np, "ti,needs-special-reset"))
 		pdata->features |= HSMMC_HAS_UPDATED_RESET;
 
-	if (of_find_property(np, "ti,needs-special-hs-handling", NULL))
+	if (of_property_read_bool(np, "ti,needs-special-hs-handling"))
 		pdata->features |= HSMMC_HAS_HSPE_SUPPORT;
 
 	return pdata;
@@ -1832,9 +1791,11 @@ static int omap_hsmmc_probe(struct platform_device *pdev)
 	}
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	irq = platform_get_irq(pdev, 0);
-	if (res == NULL || irq < 0)
+	if (!res)
 		return -ENXIO;
+	irq = platform_get_irq(pdev, 0);
+	if (irq < 0)
+		return irq;
 
 	base = devm_ioremap_resource(&pdev->dev, res);
 	if (IS_ERR(base))
@@ -1861,8 +1822,8 @@ static int omap_hsmmc_probe(struct platform_device *pdev)
 	host->base	= base + pdata->reg_offset;
 	host->power_mode = MMC_POWER_OFF;
 	host->next_data.cookie = 1;
-	host->pbias_enabled = 0;
-	host->vqmmc_enabled = 0;
+	host->pbias_enabled = false;
+	host->vqmmc_enabled = false;
 
 	platform_set_drvdata(pdev, host);
 
@@ -1987,7 +1948,9 @@ static int omap_hsmmc_probe(struct platform_device *pdev)
 	if (!ret)
 		mmc->caps |= MMC_CAP_SDIO_IRQ;
 
-	mmc_add_host(mmc);
+	ret = mmc_add_host(mmc);
+	if (ret)
+		goto err_irq;
 
 	if (mmc_pdata(host)->name != NULL) {
 		ret = device_create_file(&mmc->class_dev, &dev_attr_slot_name);
@@ -2086,6 +2049,7 @@ static int omap_hsmmc_resume(struct device *dev)
 }
 #endif
 
+#ifdef CONFIG_PM
 static int omap_hsmmc_runtime_suspend(struct device *dev)
 {
 	struct omap_hsmmc_host *host;
@@ -2153,11 +2117,11 @@ static int omap_hsmmc_runtime_resume(struct device *dev)
 	spin_unlock_irqrestore(&host->irq_lock, flags);
 	return 0;
 }
+#endif
 
 static const struct dev_pm_ops omap_hsmmc_dev_pm_ops = {
 	SET_SYSTEM_SLEEP_PM_OPS(omap_hsmmc_suspend, omap_hsmmc_resume)
-	.runtime_suspend = omap_hsmmc_runtime_suspend,
-	.runtime_resume = omap_hsmmc_runtime_resume,
+	SET_RUNTIME_PM_OPS(omap_hsmmc_runtime_suspend, omap_hsmmc_runtime_resume, NULL)
 };
 
 static struct platform_driver omap_hsmmc_driver = {

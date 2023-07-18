@@ -11,17 +11,12 @@
 
 #include "amd_iommu_types.h"
 
-extern int amd_iommu_get_num_iommus(void);
-extern int amd_iommu_init_dma_ops(void);
-extern int amd_iommu_init_passthrough(void);
 extern irqreturn_t amd_iommu_int_thread(int irq, void *data);
 extern irqreturn_t amd_iommu_int_handler(int irq, void *data);
-extern void amd_iommu_apply_erratum_63(u16 devid);
-extern void amd_iommu_reset_cmd_buffer(struct amd_iommu *iommu);
-extern int amd_iommu_init_devices(void);
-extern void amd_iommu_uninit_devices(void);
-extern void amd_iommu_init_notifier(void);
-extern int amd_iommu_init_api(void);
+extern void amd_iommu_apply_erratum_63(struct amd_iommu *iommu, u16 devid);
+extern void amd_iommu_restart_event_logging(struct amd_iommu *iommu);
+extern void amd_iommu_restart_ga_log(struct amd_iommu *iommu);
+extern void amd_iommu_set_rlookup_table(struct amd_iommu *iommu, u16 devid);
 
 #ifdef CONFIG_AMD_IOMMU_DEBUGFS
 void amd_iommu_debugfs_setup(struct amd_iommu *iommu);
@@ -36,6 +31,8 @@ extern void amd_iommu_disable(void);
 extern int amd_iommu_reenable(int);
 extern int amd_iommu_enable_faulting(void);
 extern int amd_iommu_guest_ir;
+extern enum io_pgtable_fmt amd_iommu_pgtable;
+extern int amd_iommu_gpt_level;
 
 /* IOMMUv2 specific functions */
 struct iommu_domain;
@@ -56,11 +53,14 @@ extern void amd_iommu_domain_direct_map(struct iommu_domain *dom);
 extern int amd_iommu_domain_enable_v2(struct iommu_domain *dom, int pasids);
 extern int amd_iommu_flush_page(struct iommu_domain *dom, u32 pasid,
 				u64 address);
+extern void amd_iommu_update_and_flush_device_table(struct protection_domain *domain);
+extern void amd_iommu_domain_update(struct protection_domain *domain);
+extern void amd_iommu_domain_flush_complete(struct protection_domain *domain);
+extern void amd_iommu_domain_flush_tlb_pde(struct protection_domain *domain);
 extern int amd_iommu_flush_tlb(struct iommu_domain *dom, u32 pasid);
 extern int amd_iommu_domain_set_gcr3(struct iommu_domain *dom, u32 pasid,
 				     unsigned long cr3);
 extern int amd_iommu_domain_clear_gcr3(struct iommu_domain *dom, u32 pasid);
-extern struct iommu_domain *amd_iommu_get_v2_domain(struct pci_dev *pdev);
 
 #ifdef CONFIG_IRQ_REMAP
 extern int amd_iommu_create_irq_domain(struct amd_iommu *iommu);
@@ -84,12 +84,9 @@ static inline bool is_rd890_iommu(struct pci_dev *pdev)
 	       (pdev->device == PCI_DEVICE_ID_RD890_IOMMU);
 }
 
-static inline bool iommu_feature(struct amd_iommu *iommu, u64 f)
+static inline bool iommu_feature(struct amd_iommu *iommu, u64 mask)
 {
-	if (!(iommu->cap & (1 << IOMMU_CAP_EFR)))
-		return false;
-
-	return !!(iommu->features & f);
+	return !!(iommu->features & mask);
 }
 
 static inline u64 iommu_virt_to_phys(void *vaddr)
@@ -102,10 +99,39 @@ static inline void *iommu_phys_to_virt(unsigned long paddr)
 	return phys_to_virt(__sme_clr(paddr));
 }
 
+static inline
+void amd_iommu_domain_set_pt_root(struct protection_domain *domain, u64 root)
+{
+	atomic64_set(&domain->iop.pt_root, root);
+	domain->iop.root = (u64 *)(root & PAGE_MASK);
+	domain->iop.mode = root & 7; /* lowest 3 bits encode pgtable mode */
+}
+
+static inline
+void amd_iommu_domain_clr_pt_root(struct protection_domain *domain)
+{
+	amd_iommu_domain_set_pt_root(domain, 0);
+}
+
+static inline int get_pci_sbdf_id(struct pci_dev *pdev)
+{
+	int seg = pci_domain_nr(pdev->bus);
+	u16 devid = pci_dev_id(pdev);
+
+	return PCI_SEG_DEVID_TO_SBDF(seg, devid);
+}
+
+static inline void *alloc_pgtable_page(int nid, gfp_t gfp)
+{
+	struct page *page;
+
+	page = alloc_pages_node(nid, gfp | __GFP_ZERO, 0);
+	return page ? page_address(page) : NULL;
+}
+
 extern bool translation_pre_enabled(struct amd_iommu *iommu);
-extern bool amd_iommu_is_attach_deferred(struct iommu_domain *domain,
-					 struct device *dev);
-extern int __init add_special_device(u8 type, u8 id, u16 *devid,
+extern bool amd_iommu_is_attach_deferred(struct device *dev);
+extern int __init add_special_device(u8 type, u8 id, u32 *devid,
 				     bool cmd_line);
 
 #ifdef CONFIG_DMI
@@ -114,4 +140,12 @@ void amd_iommu_apply_ivrs_quirks(void);
 static inline void amd_iommu_apply_ivrs_quirks(void) { }
 #endif
 
+extern void amd_iommu_domain_set_pgtable(struct protection_domain *domain,
+					 u64 *root, int mode);
+extern struct dev_table_entry *get_dev_table(struct amd_iommu *iommu);
+
+extern u64 amd_iommu_efr;
+extern u64 amd_iommu_efr2;
+
+extern bool amd_iommu_snp_en;
 #endif

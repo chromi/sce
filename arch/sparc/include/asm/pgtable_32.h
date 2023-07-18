@@ -48,7 +48,6 @@ unsigned long __init bootmem_init(unsigned long *pages_avail);
 #define PTRS_PER_PMD    	64
 #define PTRS_PER_PGD    	256
 #define USER_PTRS_PER_PGD	PAGE_OFFSET / PGDIR_SIZE
-#define FIRST_USER_ADDRESS	0UL
 #define PTE_SIZE		(PTRS_PER_PTE*4)
 
 #define PAGE_NONE	SRMMU_PAGE_NONE
@@ -64,25 +63,6 @@ unsigned long __init bootmem_init(unsigned long *pages_avail);
 void paging_init(void);
 
 extern unsigned long ptr_in_current_pgd;
-
-/*         xwr */
-#define __P000  PAGE_NONE
-#define __P001  PAGE_READONLY
-#define __P010  PAGE_COPY
-#define __P011  PAGE_COPY
-#define __P100  PAGE_READONLY
-#define __P101  PAGE_READONLY
-#define __P110  PAGE_COPY
-#define __P111  PAGE_COPY
-
-#define __S000	PAGE_NONE
-#define __S001	PAGE_READONLY
-#define __S010	PAGE_SHARED
-#define __S011	PAGE_SHARED
-#define __S100	PAGE_READONLY
-#define __S101	PAGE_READONLY
-#define __S110	PAGE_SHARED
-#define __S111	PAGE_SHARED
 
 /* First physical page can be anywhere, the following is needed so that
  * va-->pa and vice versa conversions work properly without performance
@@ -128,11 +108,16 @@ static inline int srmmu_device_memory(unsigned long x)
 	return ((x & 0xF0000000) != 0);
 }
 
+static inline unsigned long pmd_pfn(pmd_t pmd)
+{
+	return (pmd_val(pmd) & SRMMU_PTD_PMASK) >> (PAGE_SHIFT-4);
+}
+
 static inline struct page *pmd_page(pmd_t pmd)
 {
 	if (srmmu_device_memory(pmd_val(pmd)))
 		BUG();
-	return pfn_to_page((pmd_val(pmd) & SRMMU_PTD_PMASK) >> (PAGE_SHIFT-4));
+	return pfn_to_page(pmd_pfn(pmd));
 }
 
 static inline unsigned long __pmd_page(pmd_t pmd)
@@ -152,13 +137,13 @@ static inline unsigned long pmd_page_vaddr(pmd_t pmd)
 	return (unsigned long)__nocache_va(v << 4);
 }
 
-static inline unsigned long pud_page_vaddr(pud_t pud)
+static inline pmd_t *pud_pgtable(pud_t pud)
 {
 	if (srmmu_device_memory(pud_val(pud))) {
-		return ~0;
+		return (pmd_t *)~0;
 	} else {
 		unsigned long v = pud_val(pud) & SRMMU_PTD_PMASK;
-		return (unsigned long)__nocache_va(v << 4);
+		return (pmd_t *)__nocache_va(v << 4);
 	}
 }
 
@@ -321,6 +306,9 @@ static inline pte_t pte_modify(pte_t pte, pgprot_t newprot)
 		pgprot_val(newprot));
 }
 
+/* only used by the huge vmap code, should never be called */
+#define pud_page(pud)			NULL
+
 struct seq_file;
 void mmu_info(struct seq_file *m);
 
@@ -335,7 +323,16 @@ void srmmu_mapiorange(unsigned int bus, unsigned long xpa,
                       unsigned long xva, unsigned int len);
 void srmmu_unmapiorange(unsigned long virt_addr, unsigned int len);
 
-/* Encode and de-code a swap entry */
+/*
+ * Encode/decode swap entries and swap PTEs. Swap PTEs are all PTEs that
+ * are !pte_none() && !pte_present().
+ *
+ * Format of swap PTEs:
+ *
+ *   3 3 2 2 2 2 2 2 2 2 2 2 1 1 1 1 1 1 1 1 1 1
+ *   1 0 9 8 7 6 5 4 3 2 1 0 9 8 7 6 5 4 3 2 1 0 9 8 7 6 5 4 3 2 1 0
+ *   <-------------- offset ---------------> < type -> E 0 0 0 0 0 0
+ */
 static inline unsigned long __swp_type(swp_entry_t entry)
 {
 	return (entry.val >> SRMMU_SWP_TYPE_SHIFT) & SRMMU_SWP_TYPE_MASK;
@@ -355,6 +352,21 @@ static inline swp_entry_t __swp_entry(unsigned long type, unsigned long offset)
 
 #define __pte_to_swp_entry(pte)		((swp_entry_t) { pte_val(pte) })
 #define __swp_entry_to_pte(x)		((pte_t) { (x).val })
+
+static inline int pte_swp_exclusive(pte_t pte)
+{
+	return pte_val(pte) & SRMMU_SWP_EXCLUSIVE;
+}
+
+static inline pte_t pte_swp_mkexclusive(pte_t pte)
+{
+	return __pte(pte_val(pte) | SRMMU_SWP_EXCLUSIVE);
+}
+
+static inline pte_t pte_swp_clear_exclusive(pte_t pte)
+{
+	return __pte(pte_val(pte) & ~SRMMU_SWP_EXCLUSIVE);
+}
 
 static inline unsigned long
 __get_phys (unsigned long addr)
@@ -379,12 +391,6 @@ __get_iospace (unsigned long addr)
 		return -1;
 	}
 }
-
-extern unsigned long *sparc_valid_addr_bitmap;
-
-/* Needs to be defined here and not in linux/mm.h, as it is arch dependent */
-#define kern_addr_valid(addr) \
-	(test_bit(__pa((unsigned long)(addr))>>20, sparc_valid_addr_bitmap))
 
 /*
  * For sparc32&64, the pfn in io_remap_pfn_range() carries <iospace> in
@@ -429,5 +435,7 @@ static inline int io_remap_pfn_range(struct vm_area_struct *vma,
 
 /* We provide our own get_unmapped_area to cope with VA holes for userland */
 #define HAVE_ARCH_UNMAPPED_AREA
+
+#define pmd_pgtable(pmd)	((pgtable_t)__pmd_page(pmd))
 
 #endif /* !(_SPARC_PGTABLE_H) */

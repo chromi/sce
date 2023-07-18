@@ -221,7 +221,7 @@ All md devices contain:
 
   layout
      The ``layout`` for the array for the particular level.  This is
-     simply a number that is interpretted differently by different
+     simply a number that is interpreted differently by different
      levels.  It can be written while assembling an array.
 
   array_size
@@ -317,7 +317,7 @@ All md devices contain:
      suspended (not supported yet)
          All IO requests will block. The array can be reconfigured.
 
-         Writing this, if accepted, will block until array is quiessent
+         Writing this, if accepted, will block until array is quiescent
 
      readonly
          no resync can happen.  no superblocks get written.

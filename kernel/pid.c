@@ -73,7 +73,7 @@ int pid_max_max = PID_MAX_LIMIT;
  * the scheme scales to up to 4 million PIDs, runtime.
  */
 struct pid_namespace init_pid_ns = {
-	.kref = KREF_INIT(2),
+	.ns.count = REFCOUNT_INIT(2),
 	.idr = IDR_INIT(init_pid_ns.idr),
 	.pid_allocated = PIDNS_ADDING,
 	.level = 0,
@@ -519,6 +519,7 @@ struct pid *find_ge_pid(int nr, struct pid_namespace *ns)
 {
 	return idr_get_next(&ns->idr, &nr);
 }
+EXPORT_SYMBOL_GPL(find_ge_pid);
 
 struct pid *pidfd_get_pid(unsigned int fd, unsigned int *flags)
 {
@@ -540,6 +541,42 @@ struct pid *pidfd_get_pid(unsigned int fd, unsigned int *flags)
 }
 
 /**
+ * pidfd_get_task() - Get the task associated with a pidfd
+ *
+ * @pidfd: pidfd for which to get the task
+ * @flags: flags associated with this pidfd
+ *
+ * Return the task associated with @pidfd. The function takes a reference on
+ * the returned task. The caller is responsible for releasing that reference.
+ *
+ * Currently, the process identified by @pidfd is always a thread-group leader.
+ * This restriction currently exists for all aspects of pidfds including pidfd
+ * creation (CLONE_PIDFD cannot be used with CLONE_THREAD) and pidfd polling
+ * (only supports thread group leaders).
+ *
+ * Return: On success, the task_struct associated with the pidfd.
+ *	   On error, a negative errno number will be returned.
+ */
+struct task_struct *pidfd_get_task(int pidfd, unsigned int *flags)
+{
+	unsigned int f_flags;
+	struct pid *pid;
+	struct task_struct *task;
+
+	pid = pidfd_get_pid(pidfd, &f_flags);
+	if (IS_ERR(pid))
+		return ERR_CAST(pid);
+
+	task = get_pid_task(pid, PIDTYPE_TGID);
+	put_pid(pid);
+	if (!task)
+		return ERR_PTR(-ESRCH);
+
+	*flags = f_flags;
+	return task;
+}
+
+/**
  * pidfd_create() - Create a new pid file descriptor.
  *
  * @pid:   struct pid that the pidfd will reference
@@ -550,19 +587,22 @@ struct pid *pidfd_get_pid(unsigned int fd, unsigned int *flags)
  * Note, that this function can only be called after the fd table has
  * been unshared to avoid leaking the pidfd to the new process.
  *
+ * This symbol should not be explicitly exported to loadable modules.
+ *
  * Return: On success, a cloexec pidfd is returned.
  *         On error, a negative errno number will be returned.
  */
-static int pidfd_create(struct pid *pid, unsigned int flags)
+int pidfd_create(struct pid *pid, unsigned int flags)
 {
-	int fd;
+	int pidfd;
+	struct file *pidfd_file;
 
-	fd = anon_inode_getfd("[pidfd]", &pidfd_fops, get_pid(pid),
-			      flags | O_RDWR | O_CLOEXEC);
-	if (fd < 0)
-		put_pid(pid);
+	pidfd = pidfd_prepare(pid, flags, &pidfd_file);
+	if (pidfd < 0)
+		return pidfd;
 
-	return fd;
+	fd_install(pidfd, pidfd_file);
+	return pidfd;
 }
 
 /**
@@ -596,10 +636,7 @@ SYSCALL_DEFINE2(pidfd_open, pid_t, pid, unsigned int, flags)
 	if (!p)
 		return -ESRCH;
 
-	if (pid_has_task(p, PIDTYPE_TGID))
-		fd = pidfd_create(p, flags);
-	else
-		fd = -EINVAL;
+	fd = pidfd_create(p, flags);
 
 	put_pid(p);
 	return fd;
@@ -628,7 +665,7 @@ static struct file *__pidfd_fget(struct task_struct *task, int fd)
 	struct file *file;
 	int ret;
 
-	ret = mutex_lock_killable(&task->signal->exec_update_mutex);
+	ret = down_read_killable(&task->signal->exec_update_lock);
 	if (ret)
 		return ERR_PTR(ret);
 
@@ -637,7 +674,7 @@ static struct file *__pidfd_fget(struct task_struct *task, int fd)
 	else
 		file = ERR_PTR(-EPERM);
 
-	mutex_unlock(&task->signal->exec_update_mutex);
+	up_read(&task->signal->exec_update_lock);
 
 	return file ?: ERR_PTR(-EBADF);
 }

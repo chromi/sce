@@ -31,12 +31,14 @@
 #include <linux/cma.h>
 #include <linux/gfp.h>
 #include <linux/dma-direct.h>
+#include <linux/percpu.h>
 #include <asm/processor.h>
 #include <linux/uaccess.h>
 #include <asm/pgalloc.h>
+#include <asm/kfence.h>
 #include <asm/ptdump.h>
 #include <asm/dma.h>
-#include <asm/lowcore.h>
+#include <asm/abs_lowcore.h>
 #include <asm/tlb.h>
 #include <asm/tlbflush.h>
 #include <asm/sections.h>
@@ -46,15 +48,17 @@
 #include <asm/kasan.h>
 #include <asm/dma-mapping.h>
 #include <asm/uv.h>
+#include <linux/virtio_anchor.h>
 #include <linux/virtio_config.h>
 
 pgd_t swapper_pg_dir[PTRS_PER_PGD] __section(".bss..swapper_pg_dir");
+pgd_t invalid_pg_dir[PTRS_PER_PGD] __section(".bss..invalid_pg_dir");
+
+unsigned long __bootdata_preserved(s390_invalid_asce);
 
 unsigned long empty_zero_page, zero_page_mask;
 EXPORT_SYMBOL(empty_zero_page);
 EXPORT_SYMBOL(zero_page_mask);
-
-bool initmem_freed;
 
 static void __init setup_zero_pages(void)
 {
@@ -89,34 +93,8 @@ static void __init setup_zero_pages(void)
 void __init paging_init(void)
 {
 	unsigned long max_zone_pfns[MAX_NR_ZONES];
-	unsigned long pgd_type, asce_bits;
-	psw_t psw;
 
-	init_mm.pgd = swapper_pg_dir;
-	if (VMALLOC_END > _REGION2_SIZE) {
-		asce_bits = _ASCE_TYPE_REGION2 | _ASCE_TABLE_LENGTH;
-		pgd_type = _REGION2_ENTRY_EMPTY;
-	} else {
-		asce_bits = _ASCE_TYPE_REGION3 | _ASCE_TABLE_LENGTH;
-		pgd_type = _REGION3_ENTRY_EMPTY;
-	}
-	init_mm.context.asce = (__pa(init_mm.pgd) & PAGE_MASK) | asce_bits;
-	S390_lowcore.kernel_asce = init_mm.context.asce;
-	S390_lowcore.user_asce = S390_lowcore.kernel_asce;
-	crst_table_init((unsigned long *) init_mm.pgd, pgd_type);
 	vmem_map_init();
-	kasan_copy_shadow(init_mm.pgd);
-
-	/* enable virtual mapping in kernel mode */
-	__ctl_load(S390_lowcore.kernel_asce, 1, 1);
-	__ctl_load(S390_lowcore.kernel_asce, 7, 7);
-	__ctl_load(S390_lowcore.kernel_asce, 13, 13);
-	psw.mask = __extract_psw();
-	psw_bits(psw).dat = 1;
-	psw_bits(psw).as = PSW_BITS_AS_HOME;
-	__load_psw_mask(psw.mask);
-	kasan_free_early_identity();
-
 	sparse_init();
 	zone_dma_bits = 31;
 	memset(max_zone_pfns, 0, sizeof(max_zone_pfns));
@@ -134,25 +112,25 @@ void mark_rodata_ro(void)
 	debug_checkwx();
 }
 
-int set_memory_encrypted(unsigned long addr, int numpages)
+int set_memory_encrypted(unsigned long vaddr, int numpages)
 {
 	int i;
 
 	/* make specified pages unshared, (swiotlb, dma_free) */
 	for (i = 0; i < numpages; ++i) {
-		uv_remove_shared(addr);
-		addr += PAGE_SIZE;
+		uv_remove_shared(virt_to_phys((void *)vaddr));
+		vaddr += PAGE_SIZE;
 	}
 	return 0;
 }
 
-int set_memory_decrypted(unsigned long addr, int numpages)
+int set_memory_decrypted(unsigned long vaddr, int numpages)
 {
 	int i;
 	/* make specified pages shared (swiotlb, dma_alloca) */
 	for (i = 0; i < numpages; ++i) {
-		uv_set_shared(addr);
-		addr += PAGE_SIZE;
+		uv_set_shared(virt_to_phys((void *)vaddr));
+		vaddr += PAGE_SIZE;
 	}
 	return 0;
 }
@@ -163,26 +141,17 @@ bool force_dma_unencrypted(struct device *dev)
 	return is_prot_virt_guest();
 }
 
-#ifdef CONFIG_ARCH_HAS_RESTRICTED_VIRTIO_MEMORY_ACCESS
-
-int arch_has_restricted_virtio_memory_access(void)
-{
-	return is_prot_virt_guest();
-}
-EXPORT_SYMBOL(arch_has_restricted_virtio_memory_access);
-
-#endif
-
 /* protected virtualization */
 static void pv_init(void)
 {
 	if (!is_prot_virt_guest())
 		return;
 
+	virtio_set_mem_acc_cb(virtio_require_restricted_mem_acc);
+
 	/* make sure bounce buffers are shared */
-	swiotlb_init(1);
+	swiotlb_init(true, SWIOTLB_FORCE | SWIOTLB_VERBOSE);
 	swiotlb_update_mem_attributes();
-	swiotlb_force = SWIOTLB_FORCE;
 }
 
 void __init mem_init(void)
@@ -194,7 +163,7 @@ void __init mem_init(void)
         high_memory = (void *) __va(max_low_pfn * PAGE_SIZE);
 
 	pv_init();
-
+	kfence_split_mapping();
 	/* Setup guest page hinting */
 	cmma_init();
 
@@ -203,16 +172,12 @@ void __init mem_init(void)
 	setup_zero_pages();	/* Setup zeroed pages. */
 
 	cmma_init_nodat();
-
-	mem_init_print_info(NULL);
 }
 
 void free_initmem(void)
 {
-	initmem_freed = true;
-	__set_memory((unsigned long)_sinittext,
-		     (unsigned long)(_einittext - _sinittext) >> PAGE_SHIFT,
-		     SET_MEMORY_RW | SET_MEMORY_NX);
+	set_memory_rwnx((unsigned long)_sinittext,
+			(unsigned long)(_einittext - _sinittext) >> PAGE_SHIFT);
 	free_initmem_default(POISON_FREE_INITMEM);
 }
 
@@ -223,6 +188,41 @@ unsigned long memory_block_size_bytes(void)
 	 * or equal than the memory increment size.
 	 */
 	return max_t(unsigned long, MIN_MEMORY_BLOCK_SIZE, sclp.rzm);
+}
+
+unsigned long __per_cpu_offset[NR_CPUS] __read_mostly;
+EXPORT_SYMBOL(__per_cpu_offset);
+
+static int __init pcpu_cpu_distance(unsigned int from, unsigned int to)
+{
+	return LOCAL_DISTANCE;
+}
+
+static int __init pcpu_cpu_to_node(int cpu)
+{
+	return 0;
+}
+
+void __init setup_per_cpu_areas(void)
+{
+	unsigned long delta;
+	unsigned int cpu;
+	int rc;
+
+	/*
+	 * Always reserve area for module percpu variables.  That's
+	 * what the legacy allocator did.
+	 */
+	rc = pcpu_embed_first_chunk(PERCPU_MODULE_RESERVE,
+				    PERCPU_DYNAMIC_RESERVE, PAGE_SIZE,
+				    pcpu_cpu_distance,
+				    pcpu_cpu_to_node);
+	if (rc < 0)
+		panic("Failed to initialize percpu areas.");
+
+	delta = (unsigned long)pcpu_base_addr - (unsigned long)__per_cpu_start;
+	for_each_possible_cpu(cpu)
+		__per_cpu_offset[cpu] = delta + pcpu_unit_offsets[cpu];
 }
 
 #ifdef CONFIG_MEMORY_HOTPLUG
@@ -291,6 +291,7 @@ int arch_add_memory(int nid, u64 start, u64 size,
 	if (WARN_ON_ONCE(params->pgprot.pgprot != PAGE_KERNEL.pgprot))
 		return -EINVAL;
 
+	VM_BUG_ON(!mhp_range_allowed(start, size, true));
 	rc = vmem_add_mapping(start, size);
 	if (rc)
 		return rc;
@@ -301,8 +302,7 @@ int arch_add_memory(int nid, u64 start, u64 size,
 	return rc;
 }
 
-void arch_remove_memory(int nid, u64 start, u64 size,
-			struct vmem_altmap *altmap)
+void arch_remove_memory(u64 start, u64 size, struct vmem_altmap *altmap)
 {
 	unsigned long start_pfn = start >> PAGE_SHIFT;
 	unsigned long nr_pages = size >> PAGE_SHIFT;

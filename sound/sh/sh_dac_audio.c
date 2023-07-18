@@ -25,7 +25,6 @@
 MODULE_AUTHOR("Rafael Ignacio Zurita <rizurita@yahoo.com>");
 MODULE_DESCRIPTION("SuperH DAC audio driver");
 MODULE_LICENSE("GPL");
-MODULE_SUPPORTED_DEVICE("{{SuperH DAC audio support}}");
 
 /* Module Parameters */
 static int index = SNDRV_DEFAULT_IDX1;
@@ -258,10 +257,9 @@ static int snd_sh_dac_pcm(struct snd_sh_dac *chip, int device)
 
 
 /* driver .remove  --  destructor */
-static int snd_sh_dac_remove(struct platform_device *devptr)
+static void snd_sh_dac_remove(struct platform_device *devptr)
 {
 	snd_card_free(platform_get_drvdata(devptr));
-	return 0;
 }
 
 /* free -- it has been defined by create */
@@ -404,7 +402,7 @@ probe_error:
  */
 static struct platform_driver sh_dac_driver = {
 	.probe	= snd_sh_dac_probe,
-	.remove = snd_sh_dac_remove,
+	.remove_new = snd_sh_dac_remove,
 	.driver = {
 		.name = "dac_audio",
 	},

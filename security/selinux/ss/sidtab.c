@@ -18,6 +18,7 @@
 #include "flask.h"
 #include "security.h"
 #include "sidtab.h"
+#include "services.h"
 
 struct sidtab_str_cache {
 	struct rcu_head rcu_member;
@@ -27,8 +28,8 @@ struct sidtab_str_cache {
 	char str[];
 };
 
-#define index_to_sid(index) (index + SECINITSID_NUM + 1)
-#define sid_to_index(sid) (sid - (SECINITSID_NUM + 1))
+#define index_to_sid(index) ((index) + SECINITSID_NUM + 1)
+#define sid_to_index(sid) ((sid) - (SECINITSID_NUM + 1))
 
 int sidtab_init(struct sidtab *s)
 {
@@ -39,6 +40,7 @@ int sidtab_init(struct sidtab *s)
 	for (i = 0; i < SECINITSID_NUM; i++)
 		s->isids[i].set = 0;
 
+	s->frozen = false;
 	s->count = 0;
 	s->convert = NULL;
 	hash_init(s->context_to_sid);
@@ -281,8 +283,16 @@ int sidtab_context_to_sid(struct sidtab *s, struct context *context,
 	if (*sid)
 		goto out_unlock;
 
+	if (unlikely(s->frozen)) {
+		/*
+		 * This sidtab is now frozen - tell the caller to abort and
+		 * get the new one.
+		 */
+		rc = -ESTALE;
+		goto out_unlock;
+	}
+
 	count = s->count;
-	convert = s->convert;
 
 	/* bail out if we already reached max entries */
 	rc = -EOVERFLOW;
@@ -306,25 +316,29 @@ int sidtab_context_to_sid(struct sidtab *s, struct context *context,
 	 * if we are building a new sidtab, we need to convert the context
 	 * and insert it there as well
 	 */
+	convert = s->convert;
 	if (convert) {
+		struct sidtab *target = convert->target;
+
 		rc = -ENOMEM;
-		dst_convert = sidtab_do_lookup(convert->target, count, 1);
+		dst_convert = sidtab_do_lookup(target, count, 1);
 		if (!dst_convert) {
 			context_destroy(&dst->context);
 			goto out_unlock;
 		}
 
-		rc = convert->func(context, &dst_convert->context,
-				   convert->args);
+		rc = services_convert_context(convert->args,
+					      context, &dst_convert->context,
+					      GFP_ATOMIC);
 		if (rc) {
 			context_destroy(&dst->context);
 			goto out_unlock;
 		}
 		dst_convert->sid = index_to_sid(count);
 		dst_convert->hash = context_compute_hash(&dst_convert->context);
-		convert->target->count = count + 1;
+		target->count = count + 1;
 
-		hash_add_rcu(convert->target->context_to_sid,
+		hash_add_rcu(target->context_to_sid,
 			     &dst_convert->list, dst_convert->hash);
 	}
 
@@ -392,9 +406,10 @@ static int sidtab_convert_tree(union sidtab_entry_inner *edst,
 		}
 		i = 0;
 		while (i < SIDTAB_LEAF_ENTRIES && *pos < count) {
-			rc = convert->func(&esrc->ptr_leaf->entries[i].context,
-					   &edst->ptr_leaf->entries[i].context,
-					   convert->args);
+			rc = services_convert_context(convert->args,
+					&esrc->ptr_leaf->entries[i].context,
+					&edst->ptr_leaf->entries[i].context,
+					GFP_KERNEL);
 			if (rc)
 				return rc;
 			(*pos)++;
@@ -474,6 +489,17 @@ void sidtab_cancel_convert(struct sidtab *s)
 	spin_unlock_irqrestore(&s->lock, flags);
 }
 
+void sidtab_freeze_begin(struct sidtab *s, unsigned long *flags) __acquires(&s->lock)
+{
+	spin_lock_irqsave(&s->lock, *flags);
+	s->frozen = true;
+	s->convert = NULL;
+}
+void sidtab_freeze_end(struct sidtab *s, unsigned long *flags) __releases(&s->lock)
+{
+	spin_unlock_irqrestore(&s->lock, *flags);
+}
+
 static void sidtab_destroy_entry(struct sidtab_entry *entry)
 {
 	context_destroy(&entry->context);
@@ -549,7 +575,7 @@ void sidtab_sid2str_put(struct sidtab *s, struct sidtab_entry *entry,
 		goto out_unlock;
 	}
 
-	cache = kmalloc(sizeof(struct sidtab_str_cache) + str_len, GFP_ATOMIC);
+	cache = kmalloc(struct_size(cache, str, str_len), GFP_ATOMIC);
 	if (!cache)
 		goto out_unlock;
 

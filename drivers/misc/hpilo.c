@@ -392,12 +392,6 @@ static inline int is_db_reset(int db_out)
 	return db_out & (1 << DB_RESET);
 }
 
-static inline int is_device_reset(struct ilo_hwinfo *hw)
-{
-	/* check for global reset condition */
-	return is_db_reset(get_device_outbound(hw));
-}
-
 static inline void clear_pending_db(struct ilo_hwinfo *hw, int clr)
 {
 	iowrite32(clr, &hw->mmio_vaddr[DB_OUT]);
@@ -693,6 +687,8 @@ static int ilo_map_device(struct pci_dev *pdev, struct ilo_hwinfo *hw)
 {
 	int bar;
 	unsigned long off;
+	u8 pci_rev_id;
+	int rc;
 
 	/* map the memory mapped i/o registers */
 	hw->mmio_vaddr = pci_iomap(pdev, 1, 0);
@@ -702,7 +698,13 @@ static int ilo_map_device(struct pci_dev *pdev, struct ilo_hwinfo *hw)
 	}
 
 	/* map the adapter shared memory region */
-	if (pdev->subsystem_device == 0x00E4) {
+	rc = pci_read_config_byte(pdev, PCI_REVISION_ID, &pci_rev_id);
+	if (rc != 0) {
+		dev_err(&pdev->dev, "Error reading PCI rev id: %d\n", rc);
+		goto out;
+	}
+
+	if (pci_rev_id >= PCI_REV_ID_NECHES) {
 		bar = 5;
 		/* Last 8k is reserved for CCBs */
 		off = pci_resource_len(pdev, bar) - 0x2000;
@@ -880,7 +882,7 @@ static int __init ilo_init(void)
 	int error;
 	dev_t dev;
 
-	ilo_class = class_create(THIS_MODULE, "iLO");
+	ilo_class = class_create("iLO");
 	if (IS_ERR(ilo_class)) {
 		error = PTR_ERR(ilo_class);
 		goto out;

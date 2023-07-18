@@ -11,8 +11,10 @@
 
 #include <linux/sched.h>
 #include <linux/ptrace.h>
+#include <linux/audit_arch.h>
 #include <uapi/linux/audit.h>
 #include <uapi/linux/netfilter/nf_tables.h>
+#include <uapi/linux/fanotify.h>
 
 #define AUDIT_INO_UNSET ((unsigned long)-1)
 #define AUDIT_DEV_UNSET ((dev_t)-1)
@@ -117,8 +119,6 @@ enum audit_nfcfgop {
 	AUDIT_NFT_OP_FLOWTABLE_UNREGISTER,
 	AUDIT_NFT_OP_INVALID,
 };
-
-extern int is_audit_feature_set(int which);
 
 extern int __init audit_register_class(int class, unsigned *list);
 extern int audit_classify_syscall(int abi, unsigned syscall);
@@ -287,12 +287,13 @@ static inline int audit_signal_info(int sig, struct task_struct *t)
 				/* Public API */
 extern int  audit_alloc(struct task_struct *task);
 extern void __audit_free(struct task_struct *task);
+extern void __audit_uring_entry(u8 op);
+extern void __audit_uring_exit(int success, long code);
 extern void __audit_syscall_entry(int major, unsigned long a0, unsigned long a1,
 				  unsigned long a2, unsigned long a3);
 extern void __audit_syscall_exit(int ret_success, long ret_value);
 extern struct filename *__audit_reusename(const __user char *uptr);
 extern void __audit_getname(struct filename *name);
-extern void __audit_getcwd(void);
 extern void __audit_inode(struct filename *name, const struct dentry *dentry,
 				unsigned int flags);
 extern void __audit_file(const struct file *);
@@ -324,6 +325,21 @@ static inline void audit_free(struct task_struct *task)
 	if (unlikely(task->audit_context))
 		__audit_free(task);
 }
+static inline void audit_uring_entry(u8 op)
+{
+	/*
+	 * We intentionally check audit_context() before audit_enabled as most
+	 * Linux systems (as of ~2021) rely on systemd which forces audit to
+	 * be enabled regardless of the user's audit configuration.
+	 */
+	if (unlikely(audit_context() && audit_enabled))
+		__audit_uring_entry(op);
+}
+static inline void audit_uring_exit(int success, long code)
+{
+	if (unlikely(audit_context()))
+		__audit_uring_exit(success, code);
+}
 static inline void audit_syscall_entry(int major, unsigned long a0,
 				       unsigned long a1, unsigned long a2,
 				       unsigned long a3)
@@ -350,11 +366,6 @@ static inline void audit_getname(struct filename *name)
 {
 	if (unlikely(!audit_dummy_context()))
 		__audit_getname(name);
-}
-static inline void audit_getcwd(void)
-{
-	if (unlikely(audit_context()))
-		__audit_getcwd();
 }
 static inline void audit_inode(struct filename *name,
 				const struct dentry *dentry,
@@ -404,8 +415,9 @@ extern int __audit_log_bprm_fcaps(struct linux_binprm *bprm,
 				  const struct cred *old);
 extern void __audit_log_capset(const struct cred *new, const struct cred *old);
 extern void __audit_mmap_fd(int fd, int flags);
+extern void __audit_openat2_how(struct open_how *how);
 extern void __audit_log_kern_module(char *name);
-extern void __audit_fanotify(unsigned int response);
+extern void __audit_fanotify(u32 response, struct fanotify_response_info_audit_rule *friar);
 extern void __audit_tk_injoffset(struct timespec64 offset);
 extern void __audit_ntp_log(const struct audit_ntp_data *ad);
 extern void __audit_log_nfcfg(const char *name, u8 af, unsigned int nentries,
@@ -500,16 +512,22 @@ static inline void audit_mmap_fd(int fd, int flags)
 		__audit_mmap_fd(fd, flags);
 }
 
+static inline void audit_openat2_how(struct open_how *how)
+{
+	if (unlikely(!audit_dummy_context()))
+		__audit_openat2_how(how);
+}
+
 static inline void audit_log_kern_module(char *name)
 {
 	if (!audit_dummy_context())
 		__audit_log_kern_module(name);
 }
 
-static inline void audit_fanotify(unsigned int response)
+static inline void audit_fanotify(u32 response, struct fanotify_response_info_audit_rule *friar)
 {
 	if (!audit_dummy_context())
-		__audit_fanotify(response);
+		__audit_fanotify(response, friar);
 }
 
 static inline void audit_tk_injoffset(struct timespec64 offset)
@@ -562,6 +580,10 @@ static inline int audit_alloc(struct task_struct *task)
 }
 static inline void audit_free(struct task_struct *task)
 { }
+static inline void audit_uring_entry(u8 op)
+{ }
+static inline void audit_uring_exit(int success, long code)
+{ }
 static inline void audit_syscall_entry(int major, unsigned long a0,
 				       unsigned long a1, unsigned long a2,
 				       unsigned long a3)
@@ -583,8 +605,6 @@ static inline struct filename *audit_reusename(const __user char *name)
 	return NULL;
 }
 static inline void audit_getname(struct filename *name)
-{ }
-static inline void audit_getcwd(void)
 { }
 static inline void audit_inode(struct filename *name,
 				const struct dentry *dentry,
@@ -653,11 +673,14 @@ static inline void audit_log_capset(const struct cred *new,
 static inline void audit_mmap_fd(int fd, int flags)
 { }
 
+static inline void audit_openat2_how(struct open_how *how)
+{ }
+
 static inline void audit_log_kern_module(char *name)
 {
 }
 
-static inline void audit_fanotify(unsigned int response)
+static inline void audit_fanotify(u32 response, struct fanotify_response_info_audit_rule *friar)
 { }
 
 static inline void audit_tk_injoffset(struct timespec64 offset)

@@ -23,8 +23,6 @@
  *
  */
 
-#include <linux/delay.h>
-
 #include "dm_services.h"
 #include "dcn10_hubp.h"
 #include "dcn10_hubbub.h"
@@ -57,7 +55,7 @@ void hubbub1_wm_read_state(struct hubbub *hubbub,
 		s->sr_enter = REG_READ(DCHUBBUB_ARB_ALLOW_SR_ENTER_WATERMARK_A);
 		s->sr_exit = REG_READ(DCHUBBUB_ARB_ALLOW_SR_EXIT_WATERMARK_A);
 	}
-	s->dram_clk_chanage = REG_READ(DCHUBBUB_ARB_ALLOW_DRAM_CLK_CHANGE_WATERMARK_A);
+	s->dram_clk_change = REG_READ(DCHUBBUB_ARB_ALLOW_DRAM_CLK_CHANGE_WATERMARK_A);
 
 	s = &wm->sets[1];
 	s->wm_set = 1;
@@ -67,7 +65,7 @@ void hubbub1_wm_read_state(struct hubbub *hubbub,
 		s->sr_enter = REG_READ(DCHUBBUB_ARB_ALLOW_SR_ENTER_WATERMARK_B);
 		s->sr_exit = REG_READ(DCHUBBUB_ARB_ALLOW_SR_EXIT_WATERMARK_B);
 	}
-	s->dram_clk_chanage = REG_READ(DCHUBBUB_ARB_ALLOW_DRAM_CLK_CHANGE_WATERMARK_B);
+	s->dram_clk_change = REG_READ(DCHUBBUB_ARB_ALLOW_DRAM_CLK_CHANGE_WATERMARK_B);
 
 	s = &wm->sets[2];
 	s->wm_set = 2;
@@ -77,7 +75,7 @@ void hubbub1_wm_read_state(struct hubbub *hubbub,
 		s->sr_enter = REG_READ(DCHUBBUB_ARB_ALLOW_SR_ENTER_WATERMARK_C);
 		s->sr_exit = REG_READ(DCHUBBUB_ARB_ALLOW_SR_EXIT_WATERMARK_C);
 	}
-	s->dram_clk_chanage = REG_READ(DCHUBBUB_ARB_ALLOW_DRAM_CLK_CHANGE_WATERMARK_C);
+	s->dram_clk_change = REG_READ(DCHUBBUB_ARB_ALLOW_DRAM_CLK_CHANGE_WATERMARK_C);
 
 	s = &wm->sets[3];
 	s->wm_set = 3;
@@ -87,7 +85,7 @@ void hubbub1_wm_read_state(struct hubbub *hubbub,
 		s->sr_enter = REG_READ(DCHUBBUB_ARB_ALLOW_SR_ENTER_WATERMARK_D);
 		s->sr_exit = REG_READ(DCHUBBUB_ARB_ALLOW_SR_EXIT_WATERMARK_D);
 	}
-	s->dram_clk_chanage = REG_READ(DCHUBBUB_ARB_ALLOW_DRAM_CLK_CHANGE_WATERMARK_D);
+	s->dram_clk_change = REG_READ(DCHUBBUB_ARB_ALLOW_DRAM_CLK_CHANGE_WATERMARK_D);
 }
 
 void hubbub1_allow_self_refresh_control(struct hubbub *hubbub, bool allow)
@@ -124,11 +122,11 @@ bool hubbub1_verify_allow_pstate_change_high(
 	 * still not asserted, we are probably stuck and going to hang
 	 *
 	 * TODO: Figure out why it takes ~100us on linux
-	 * pstate takes around ~100us on linux. Unknown currently as to
-	 * why it takes that long on linux
+	 * pstate takes around ~100us (up to 200us) on linux. Unknown currently
+	 * as to why it takes that long on linux
 	 */
 	const unsigned int pstate_wait_timeout_us = 200;
-	const unsigned int pstate_wait_expected_timeout_us = 40;
+	const unsigned int pstate_wait_expected_timeout_us = 180;
 	static unsigned int max_sampled_pstate_wait_us; /* data collection */
 	static bool forced_pstate_allow; /* help with revert wa */
 
@@ -785,6 +783,7 @@ static bool hubbub1_dcc_support_pixel_format(
 		*bytes_per_element = 4;
 		return true;
 	case SURFACE_PIXEL_FORMAT_GRPH_ARGB16161616:
+	case SURFACE_PIXEL_FORMAT_GRPH_ABGR16161616:
 	case SURFACE_PIXEL_FORMAT_GRPH_ARGB16161616F:
 	case SURFACE_PIXEL_FORMAT_GRPH_ABGR16161616F:
 		*bytes_per_element = 8;
@@ -939,6 +938,7 @@ static const struct hubbub_funcs hubbub1_funcs = {
 	.program_watermarks = hubbub1_program_watermarks,
 	.is_allow_self_refresh_enabled = hubbub1_is_allow_self_refresh_enabled,
 	.allow_self_refresh_control = hubbub1_allow_self_refresh_control,
+	.verify_allow_pstate_change_high = hubbub1_verify_allow_pstate_change_high,
 };
 
 void hubbub1_construct(struct hubbub *hubbub,

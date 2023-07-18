@@ -8,21 +8,21 @@ http://github.com/freedreno/envytools/
 git clone https://github.com/freedreno/envytools.git
 
 The rules-ng-ng source files this header was generated from are:
-- /home/robclark/src/envytools/rnndb/adreno.xml                     (    594 bytes, from 2020-07-23 21:58:14)
-- /home/robclark/src/envytools/rnndb/freedreno_copyright.xml        (   1572 bytes, from 2020-07-23 21:58:14)
-- /home/robclark/src/envytools/rnndb/adreno/a2xx.xml                (  90159 bytes, from 2020-07-23 21:58:14)
-- /home/robclark/src/envytools/rnndb/adreno/adreno_common.xml       (  14386 bytes, from 2020-07-23 21:58:14)
-- /home/robclark/src/envytools/rnndb/adreno/adreno_pm4.xml          (  65048 bytes, from 2020-07-23 21:58:14)
-- /home/robclark/src/envytools/rnndb/adreno/a3xx.xml                (  84226 bytes, from 2020-07-23 21:58:14)
-- /home/robclark/src/envytools/rnndb/adreno/a4xx.xml                ( 112556 bytes, from 2020-07-23 21:58:14)
-- /home/robclark/src/envytools/rnndb/adreno/a5xx.xml                ( 149461 bytes, from 2020-07-23 21:58:14)
-- /home/robclark/src/envytools/rnndb/adreno/a6xx.xml                ( 184695 bytes, from 2020-07-23 21:58:14)
-- /home/robclark/src/envytools/rnndb/adreno/a6xx_gmu.xml            (  11218 bytes, from 2020-07-23 21:58:14)
-- /home/robclark/src/envytools/rnndb/adreno/ocmem.xml               (   1773 bytes, from 2020-07-23 21:58:14)
-- /home/robclark/src/envytools/rnndb/adreno/adreno_control_regs.xml (   4559 bytes, from 2020-07-23 21:58:14)
-- /home/robclark/src/envytools/rnndb/adreno/adreno_pipe_regs.xml    (   2872 bytes, from 2020-07-23 21:58:14)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/adreno.xml                     (    594 bytes, from 2023-03-10 18:32:52)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/freedreno_copyright.xml        (   1572 bytes, from 2022-07-23 20:21:46)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/adreno/a2xx.xml                (  91929 bytes, from 2023-02-28 23:52:27)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/adreno/adreno_common.xml       (  15434 bytes, from 2023-03-10 18:32:53)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/adreno/adreno_pm4.xml          (  74995 bytes, from 2023-03-20 18:06:23)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/adreno/a3xx.xml                (  84231 bytes, from 2022-08-02 16:38:43)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/adreno/a4xx.xml                ( 113474 bytes, from 2022-08-02 16:38:43)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/adreno/a5xx.xml                ( 149590 bytes, from 2023-02-14 19:37:12)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/adreno/a6xx.xml                ( 198949 bytes, from 2023-03-20 18:06:23)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/adreno/a6xx_gmu.xml            (  11404 bytes, from 2023-03-10 18:32:53)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/adreno/ocmem.xml               (   1773 bytes, from 2022-08-02 16:38:43)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/adreno/adreno_control_regs.xml (   9055 bytes, from 2023-03-10 18:32:52)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/adreno/adreno_pipe_regs.xml    (   2976 bytes, from 2023-03-10 18:32:52)
 
-Copyright (C) 2013-2020 by the following authors:
+Copyright (C) 2013-2023 by the following authors:
 - Rob Clark <robdclark@gmail.com> (robclark)
 - Ilia Mirkin <imirkin@alum.mit.edu> (imirkin)
 
@@ -76,6 +76,10 @@ enum vgt_event_type {
 	VS_FETCH_DONE = 27,
 	FACENESS_FLUSH = 28,
 	WT_DONE_TS = 8,
+	START_FRAGMENT_CTRS = 13,
+	STOP_FRAGMENT_CTRS = 14,
+	START_COMPUTE_CTRS = 15,
+	STOP_COMPUTE_CTRS = 16,
 	FLUSH_SO_0 = 17,
 	FLUSH_SO_1 = 18,
 	FLUSH_SO_2 = 19,
@@ -86,7 +90,7 @@ enum vgt_event_type {
 	PC_CCU_FLUSH_DEPTH_TS = 28,
 	PC_CCU_FLUSH_COLOR_TS = 29,
 	BLIT = 30,
-	UNK_25 = 37,
+	LRZ_CLEAR = 37,
 	LRZ_FLUSH = 38,
 	BLIT_OP_FILL_2D = 39,
 	BLIT_OP_COPY_2D = 40,
@@ -95,6 +99,20 @@ enum vgt_event_type {
 	UNK_2C = 44,
 	UNK_2D = 45,
 	CACHE_INVALIDATE = 49,
+	LABEL = 63,
+	CCU_INVALIDATE_DEPTH = 24,
+	CCU_INVALIDATE_COLOR = 25,
+	CCU_RESOLVE_CLEAN = 26,
+	CCU_FLUSH_DEPTH = 28,
+	CCU_FLUSH_COLOR = 29,
+	CCU_RESOLVE = 30,
+	CCU_END_RESOLVE_GROUP = 31,
+	CCU_CLEAN_DEPTH = 32,
+	CCU_CLEAN_COLOR = 33,
+	CACHE_RESET = 48,
+	CACHE_CLEAN = 49,
+	CACHE_FLUSH7 = 50,
+	CACHE_INVALIDATE7 = 51,
 };
 
 enum pc_di_primtype {
@@ -247,9 +265,9 @@ enum adreno_pm4_type3_packets {
 	CP_DRAW_INDX_INDIRECT = 41,
 	CP_DRAW_INDIRECT_MULTI = 42,
 	CP_DRAW_AUTO = 36,
-	CP_UNKNOWN_19 = 25,
-	CP_UNKNOWN_1A = 26,
-	CP_UNKNOWN_4E = 78,
+	CP_DRAW_PRED_ENABLE_GLOBAL = 25,
+	CP_DRAW_PRED_ENABLE_LOCAL = 26,
+	CP_DRAW_PRED_SET = 78,
 	CP_WIDE_REG_WRITE = 116,
 	CP_SCRATCH_TO_REG = 77,
 	CP_REG_TO_SCRATCH = 74,
@@ -267,6 +285,7 @@ enum adreno_pm4_type3_packets {
 	CP_SKIP_IB2_ENABLE_GLOBAL = 29,
 	CP_SKIP_IB2_ENABLE_LOCAL = 35,
 	CP_SET_SUBDRAW_SIZE = 53,
+	CP_WHERE_AM_I = 98,
 	CP_SET_VISIBILITY_OVERRIDE = 100,
 	CP_PREEMPT_ENABLE_GLOBAL = 105,
 	CP_PREEMPT_ENABLE_LOCAL = 106,
@@ -289,6 +308,9 @@ enum adreno_pm4_type3_packets {
 	IN_INCR_UPDT_CONST = 86,
 	IN_INCR_UPDT_INSTR = 87,
 	PKT4 = 4,
+	IN_IB_END = 10,
+	IN_GMU_INTERRUPT = 11,
+	IN_PREEMPT = 15,
 	CP_SCRATCH_WRITE = 76,
 	CP_REG_TO_MEM_OFFSET_MEM = 116,
 	CP_REG_TO_MEM_OFFSET_REG = 114,
@@ -296,9 +318,20 @@ enum adreno_pm4_type3_packets {
 	CP_WAIT_TWO_REGS = 112,
 	CP_MEMCPY = 117,
 	CP_SET_BIN_DATA5_OFFSET = 46,
+	CP_CONTEXT_SWITCH = 84,
 	CP_SET_CTXSWITCH_IB = 85,
 	CP_REG_WRITE = 109,
-	CP_WHERE_AM_I = 98,
+	CP_START_BIN = 80,
+	CP_END_BIN = 81,
+	CP_PREEMPT_DISABLE = 108,
+	CP_WAIT_TIMESTAMP = 20,
+	CP_THREAD_CONTROL = 23,
+	CP_CONTEXT_REG_BUNCH2 = 93,
+	CP_UNK15 = 21,
+	CP_UNK16 = 22,
+	CP_UNK18 = 24,
+	CP_UNK1B = 27,
+	CP_UNK49 = 73,
 };
 
 enum adreno_state_block {
@@ -400,6 +433,17 @@ enum a6xx_patch_type {
 enum a6xx_draw_indirect_opcode {
 	INDIRECT_OP_NORMAL = 2,
 	INDIRECT_OP_INDEXED = 4,
+	INDIRECT_OP_INDIRECT_COUNT = 6,
+	INDIRECT_OP_INDIRECT_COUNT_INDEXED = 7,
+};
+
+enum cp_draw_pred_src {
+	PRED_SRC_MEM = 5,
+};
+
+enum cp_draw_pred_test {
+	NE_0_PASS = 0,
+	EQ_0_PASS = 1,
 };
 
 enum cp_cond_function {
@@ -427,7 +471,7 @@ enum cp_blit_cmd {
 	BLIT_OP_SCALE = 3,
 };
 
-enum a6xx_render_mode {
+enum a6xx_marker {
 	RM6_BYPASS = 1,
 	RM6_BINNING = 2,
 	RM6_GMEM = 4,
@@ -467,6 +511,13 @@ enum reg_tracker {
 	TRACK_CNTL_REG = 1,
 	TRACK_RENDER_CNTL = 2,
 	UNK_EVENT_WRITE = 4,
+	TRACK_LRZ = 8,
+};
+
+enum cp_thread {
+	CP_SET_THREAD_BR = 1,
+	CP_SET_THREAD_BV = 2,
+	CP_SET_THREAD_BOTH = 3,
 };
 
 #define REG_CP_LOAD_STATE_0					0x00000000
@@ -1040,33 +1091,61 @@ static inline uint32_t A6XX_CP_DRAW_INDIRECT_MULTI_1_DST_OFF(uint32_t val)
 	return ((val) << A6XX_CP_DRAW_INDIRECT_MULTI_1_DST_OFF__SHIFT) & A6XX_CP_DRAW_INDIRECT_MULTI_1_DST_OFF__MASK;
 }
 
-#define REG_A6XX_CP_DRAW_INDIRECT_MULTI_2			0x00000002
-#define A6XX_CP_DRAW_INDIRECT_MULTI_2_DRAW_COUNT__MASK		0xffffffff
-#define A6XX_CP_DRAW_INDIRECT_MULTI_2_DRAW_COUNT__SHIFT		0
-static inline uint32_t A6XX_CP_DRAW_INDIRECT_MULTI_2_DRAW_COUNT(uint32_t val)
+#define REG_A6XX_CP_DRAW_INDIRECT_MULTI_DRAW_COUNT		0x00000002
+
+
+#define REG_A6XX_CP_DRAW_INDIRECT_MULTI_INDIRECT		0x00000003
+
+#define REG_A6XX_CP_DRAW_INDIRECT_MULTI_STRIDE			0x00000005
+
+
+#define REG_CP_DRAW_INDIRECT_MULTI_INDEX_INDEXED		0x00000003
+
+#define REG_CP_DRAW_INDIRECT_MULTI_MAX_INDICES_INDEXED		0x00000005
+
+#define REG_CP_DRAW_INDIRECT_MULTI_INDIRECT_INDEXED		0x00000006
+
+#define REG_CP_DRAW_INDIRECT_MULTI_STRIDE_INDEXED		0x00000008
+
+
+#define REG_CP_DRAW_INDIRECT_MULTI_INDIRECT_INDIRECT		0x00000003
+
+#define REG_CP_DRAW_INDIRECT_MULTI_INDIRECT_COUNT_INDIRECT	0x00000005
+
+#define REG_CP_DRAW_INDIRECT_MULTI_STRIDE_INDIRECT		0x00000007
+
+
+#define REG_CP_DRAW_INDIRECT_MULTI_INDEX_INDIRECT_INDEXED	0x00000003
+
+#define REG_CP_DRAW_INDIRECT_MULTI_MAX_INDICES_INDIRECT_INDEXED	0x00000005
+
+#define REG_CP_DRAW_INDIRECT_MULTI_INDIRECT_INDIRECT_INDEXED	0x00000006
+
+#define REG_CP_DRAW_INDIRECT_MULTI_INDIRECT_COUNT_INDIRECT_INDEXED	0x00000008
+
+#define REG_CP_DRAW_INDIRECT_MULTI_STRIDE_INDIRECT_INDEXED	0x0000000a
+
+#define REG_CP_DRAW_PRED_ENABLE_GLOBAL_0			0x00000000
+#define CP_DRAW_PRED_ENABLE_GLOBAL_0_ENABLE			0x00000001
+
+#define REG_CP_DRAW_PRED_ENABLE_LOCAL_0				0x00000000
+#define CP_DRAW_PRED_ENABLE_LOCAL_0_ENABLE			0x00000001
+
+#define REG_CP_DRAW_PRED_SET_0					0x00000000
+#define CP_DRAW_PRED_SET_0_SRC__MASK				0x000000f0
+#define CP_DRAW_PRED_SET_0_SRC__SHIFT				4
+static inline uint32_t CP_DRAW_PRED_SET_0_SRC(enum cp_draw_pred_src val)
 {
-	return ((val) << A6XX_CP_DRAW_INDIRECT_MULTI_2_DRAW_COUNT__SHIFT) & A6XX_CP_DRAW_INDIRECT_MULTI_2_DRAW_COUNT__MASK;
+	return ((val) << CP_DRAW_PRED_SET_0_SRC__SHIFT) & CP_DRAW_PRED_SET_0_SRC__MASK;
+}
+#define CP_DRAW_PRED_SET_0_TEST__MASK				0x00000100
+#define CP_DRAW_PRED_SET_0_TEST__SHIFT				8
+static inline uint32_t CP_DRAW_PRED_SET_0_TEST(enum cp_draw_pred_test val)
+{
+	return ((val) << CP_DRAW_PRED_SET_0_TEST__SHIFT) & CP_DRAW_PRED_SET_0_TEST__MASK;
 }
 
-#define REG_A6XX_CP_DRAW_INDIRECT_MULTI_ADDRESS_0		0x00000003
-
-#define REG_A6XX_CP_DRAW_INDIRECT_MULTI_5			0x00000005
-#define A6XX_CP_DRAW_INDIRECT_MULTI_5_PARAM_0__MASK		0xffffffff
-#define A6XX_CP_DRAW_INDIRECT_MULTI_5_PARAM_0__SHIFT		0
-static inline uint32_t A6XX_CP_DRAW_INDIRECT_MULTI_5_PARAM_0(uint32_t val)
-{
-	return ((val) << A6XX_CP_DRAW_INDIRECT_MULTI_5_PARAM_0__SHIFT) & A6XX_CP_DRAW_INDIRECT_MULTI_5_PARAM_0__MASK;
-}
-
-#define REG_A6XX_CP_DRAW_INDIRECT_MULTI_INDIRECT		0x00000006
-
-#define REG_A6XX_CP_DRAW_INDIRECT_MULTI_8			0x00000008
-#define A6XX_CP_DRAW_INDIRECT_MULTI_8_STRIDE__MASK		0xffffffff
-#define A6XX_CP_DRAW_INDIRECT_MULTI_8_STRIDE__SHIFT		0
-static inline uint32_t A6XX_CP_DRAW_INDIRECT_MULTI_8_STRIDE(uint32_t val)
-{
-	return ((val) << A6XX_CP_DRAW_INDIRECT_MULTI_8_STRIDE__SHIFT) & A6XX_CP_DRAW_INDIRECT_MULTI_8_STRIDE__MASK;
-}
+#define REG_CP_DRAW_PRED_SET_MEM_ADDR				0x00000001
 
 static inline uint32_t REG_CP_SET_DRAW_STATE_(uint32_t i0) { return 0x00000000 + 0x3*i0; }
 
@@ -1214,6 +1293,10 @@ static inline uint32_t CP_SET_BIN_DATA5_6_BIN_PRIM_STRM_HI(uint32_t val)
 {
 	return ((val) << CP_SET_BIN_DATA5_6_BIN_PRIM_STRM_HI__SHIFT) & CP_SET_BIN_DATA5_6_BIN_PRIM_STRM_HI__MASK;
 }
+
+#define REG_CP_SET_BIN_DATA5_7					0x00000007
+
+#define REG_CP_SET_BIN_DATA5_9					0x00000009
 
 #define REG_CP_SET_BIN_DATA5_OFFSET_0				0x00000000
 #define CP_SET_BIN_DATA5_OFFSET_0_VSC_SIZE__MASK		0x003f0000
@@ -2111,13 +2194,13 @@ static inline uint32_t A5XX_CP_EXEC_CS_INDIRECT_3_LOCALSIZEZ(uint32_t val)
 #define REG_A6XX_CP_SET_MARKER_0				0x00000000
 #define A6XX_CP_SET_MARKER_0_MODE__MASK				0x000001ff
 #define A6XX_CP_SET_MARKER_0_MODE__SHIFT			0
-static inline uint32_t A6XX_CP_SET_MARKER_0_MODE(enum a6xx_render_mode val)
+static inline uint32_t A6XX_CP_SET_MARKER_0_MODE(enum a6xx_marker val)
 {
 	return ((val) << A6XX_CP_SET_MARKER_0_MODE__SHIFT) & A6XX_CP_SET_MARKER_0_MODE__MASK;
 }
 #define A6XX_CP_SET_MARKER_0_MARKER__MASK			0x0000000f
 #define A6XX_CP_SET_MARKER_0_MARKER__SHIFT			0
-static inline uint32_t A6XX_CP_SET_MARKER_0_MARKER(enum a6xx_render_mode val)
+static inline uint32_t A6XX_CP_SET_MARKER_0_MARKER(enum a6xx_marker val)
 {
 	return ((val) << A6XX_CP_SET_MARKER_0_MARKER__SHIFT) & A6XX_CP_SET_MARKER_0_MARKER__MASK;
 }
@@ -2161,7 +2244,18 @@ static inline uint32_t A6XX_CP_REG_TEST_0_BIT(uint32_t val)
 {
 	return ((val) << A6XX_CP_REG_TEST_0_BIT__SHIFT) & A6XX_CP_REG_TEST_0_BIT__MASK;
 }
-#define A6XX_CP_REG_TEST_0_WAIT_FOR_ME				0x02000000
+#define A6XX_CP_REG_TEST_0_SKIP_WAIT_FOR_ME			0x02000000
+#define A6XX_CP_REG_TEST_0_PRED_BIT__MASK			0x7c000000
+#define A6XX_CP_REG_TEST_0_PRED_BIT__SHIFT			26
+static inline uint32_t A6XX_CP_REG_TEST_0_PRED_BIT(uint32_t val)
+{
+	return ((val) << A6XX_CP_REG_TEST_0_PRED_BIT__SHIFT) & A6XX_CP_REG_TEST_0_PRED_BIT__MASK;
+}
+#define A6XX_CP_REG_TEST_0_PRED_UPDATE				0x80000000
+
+#define REG_A6XX_CP_REG_TEST_PRED_MASK				0x00000001
+
+#define REG_A6XX_CP_REG_TEST_PRED_VAL				0x00000002
 
 #define REG_CP_COND_REG_EXEC_0					0x00000000
 #define CP_COND_REG_EXEC_0_REG0__MASK				0x0003ffff
@@ -2169,6 +2263,12 @@ static inline uint32_t A6XX_CP_REG_TEST_0_BIT(uint32_t val)
 static inline uint32_t CP_COND_REG_EXEC_0_REG0(uint32_t val)
 {
 	return ((val) << CP_COND_REG_EXEC_0_REG0__SHIFT) & CP_COND_REG_EXEC_0_REG0__MASK;
+}
+#define CP_COND_REG_EXEC_0_PRED_BIT__MASK			0x007c0000
+#define CP_COND_REG_EXEC_0_PRED_BIT__SHIFT			18
+static inline uint32_t CP_COND_REG_EXEC_0_PRED_BIT(uint32_t val)
+{
+	return ((val) << CP_COND_REG_EXEC_0_PRED_BIT__SHIFT) & CP_COND_REG_EXEC_0_PRED_BIT__MASK;
 }
 #define CP_COND_REG_EXEC_0_BINNING				0x02000000
 #define CP_COND_REG_EXEC_0_GMEM					0x04000000
@@ -2267,12 +2367,16 @@ static inline uint32_t CP_SET_CTXSWITCH_IB_2_TYPE(enum ctxswitch_ib val)
 }
 
 #define REG_CP_REG_WRITE_0					0x00000000
-#define CP_REG_WRITE_0_TRACKER__MASK				0x00000007
+#define CP_REG_WRITE_0_TRACKER__MASK				0x0000000f
 #define CP_REG_WRITE_0_TRACKER__SHIFT				0
 static inline uint32_t CP_REG_WRITE_0_TRACKER(enum reg_tracker val)
 {
 	return ((val) << CP_REG_WRITE_0_TRACKER__SHIFT) & CP_REG_WRITE_0_TRACKER__MASK;
 }
+
+#define REG_CP_REG_WRITE_1					0x00000001
+
+#define REG_CP_REG_WRITE_2					0x00000002
 
 #define REG_CP_SMMU_TABLE_UPDATE_0				0x00000000
 #define CP_SMMU_TABLE_UPDATE_0_TTBR0_LO__MASK			0xffffffff
@@ -2311,6 +2415,30 @@ static inline uint32_t CP_SMMU_TABLE_UPDATE_3_CONTEXTBANK(uint32_t val)
 {
 	return ((val) << CP_SMMU_TABLE_UPDATE_3_CONTEXTBANK__SHIFT) & CP_SMMU_TABLE_UPDATE_3_CONTEXTBANK__MASK;
 }
+
+#define REG_CP_START_BIN_BIN_COUNT				0x00000000
+
+#define REG_CP_START_BIN_PREFIX_ADDR				0x00000001
+
+#define REG_CP_START_BIN_PREFIX_DWORDS				0x00000003
+
+#define REG_CP_START_BIN_BODY_DWORDS				0x00000004
+
+#define REG_CP_WAIT_TIMESTAMP_0					0x00000000
+
+#define REG_CP_WAIT_TIMESTAMP_ADDR				0x00000001
+
+#define REG_CP_WAIT_TIMESTAMP_TIMESTAMP				0x00000003
+
+#define REG_CP_THREAD_CONTROL_0					0x00000000
+#define CP_THREAD_CONTROL_0_THREAD__MASK			0x00000003
+#define CP_THREAD_CONTROL_0_THREAD__SHIFT			0
+static inline uint32_t CP_THREAD_CONTROL_0_THREAD(enum cp_thread val)
+{
+	return ((val) << CP_THREAD_CONTROL_0_THREAD__SHIFT) & CP_THREAD_CONTROL_0_THREAD__MASK;
+}
+#define CP_THREAD_CONTROL_0_CONCURRENT_BIN_DISABLE		0x08000000
+#define CP_THREAD_CONTROL_0_SYNC_THREADS			0x80000000
 
 
 #endif /* ADRENO_PM4_XML */

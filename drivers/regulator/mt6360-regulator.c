@@ -380,10 +380,8 @@ static int mt6360_regulator_irq_register(struct platform_device *pdev,
 		const struct mt6360_irq_mapping *irq_desc = tbls + i;
 
 		irq = platform_get_irq_byname(pdev, irq_desc->name);
-		if (irq < 0) {
-			dev_err(&pdev->dev, "Fail to get %s irq\n", irq_desc->name);
+		if (irq < 0)
 			return irq;
-		}
 
 		ret = devm_request_threaded_irq(&pdev->dev, irq, NULL, irq_desc->handler, 0,
 						irq_desc->name, rdev);
@@ -448,6 +446,7 @@ MODULE_DEVICE_TABLE(platform, mt6360_regulator_id_table);
 static struct platform_driver mt6360_regulator_driver = {
 	.driver = {
 		.name = "mt6360-regulator",
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	},
 	.probe = mt6360_regulator_probe,
 	.id_table = mt6360_regulator_id_table,

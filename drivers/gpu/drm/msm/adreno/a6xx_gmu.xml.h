@@ -8,21 +8,21 @@ http://github.com/freedreno/envytools/
 git clone https://github.com/freedreno/envytools.git
 
 The rules-ng-ng source files this header was generated from are:
-- /home/robclark/src/envytools/rnndb/adreno.xml                     (    594 bytes, from 2020-07-23 21:58:14)
-- /home/robclark/src/envytools/rnndb/freedreno_copyright.xml        (   1572 bytes, from 2020-07-23 21:58:14)
-- /home/robclark/src/envytools/rnndb/adreno/a2xx.xml                (  90159 bytes, from 2020-07-23 21:58:14)
-- /home/robclark/src/envytools/rnndb/adreno/adreno_common.xml       (  14386 bytes, from 2020-07-23 21:58:14)
-- /home/robclark/src/envytools/rnndb/adreno/adreno_pm4.xml          (  65048 bytes, from 2020-07-23 21:58:14)
-- /home/robclark/src/envytools/rnndb/adreno/a3xx.xml                (  84226 bytes, from 2020-07-23 21:58:14)
-- /home/robclark/src/envytools/rnndb/adreno/a4xx.xml                ( 112556 bytes, from 2020-07-23 21:58:14)
-- /home/robclark/src/envytools/rnndb/adreno/a5xx.xml                ( 149461 bytes, from 2020-07-23 21:58:14)
-- /home/robclark/src/envytools/rnndb/adreno/a6xx.xml                ( 184695 bytes, from 2020-07-23 21:58:14)
-- /home/robclark/src/envytools/rnndb/adreno/a6xx_gmu.xml            (  11218 bytes, from 2020-07-23 21:58:14)
-- /home/robclark/src/envytools/rnndb/adreno/ocmem.xml               (   1773 bytes, from 2020-07-23 21:58:14)
-- /home/robclark/src/envytools/rnndb/adreno/adreno_control_regs.xml (   4559 bytes, from 2020-07-23 21:58:14)
-- /home/robclark/src/envytools/rnndb/adreno/adreno_pipe_regs.xml    (   2872 bytes, from 2020-07-23 21:58:14)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/adreno.xml                     (    594 bytes, from 2023-03-10 18:32:52)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/freedreno_copyright.xml        (   1572 bytes, from 2022-07-23 20:21:46)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/adreno/a2xx.xml                (  91929 bytes, from 2023-02-28 23:52:27)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/adreno/adreno_common.xml       (  15434 bytes, from 2023-03-10 18:32:53)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/adreno/adreno_pm4.xml          (  74995 bytes, from 2023-03-20 18:06:23)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/adreno/a3xx.xml                (  84231 bytes, from 2022-08-02 16:38:43)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/adreno/a4xx.xml                ( 113474 bytes, from 2022-08-02 16:38:43)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/adreno/a5xx.xml                ( 149590 bytes, from 2023-02-14 19:37:12)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/adreno/a6xx.xml                ( 198949 bytes, from 2023-03-20 18:06:23)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/adreno/a6xx_gmu.xml            (  11404 bytes, from 2023-03-10 18:32:53)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/adreno/ocmem.xml               (   1773 bytes, from 2022-08-02 16:38:43)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/adreno/adreno_control_regs.xml (   9055 bytes, from 2023-03-10 18:32:52)
+- /home/robclark/src/mesa/mesa/src/freedreno/registers/adreno/adreno_pipe_regs.xml    (   2976 bytes, from 2023-03-10 18:32:52)
 
-Copyright (C) 2013-2020 by the following authors:
+Copyright (C) 2013-2023 by the following authors:
 - Rob Clark <robdclark@gmail.com> (robclark)
 - Ilia Mirkin <imirkin@alum.mit.edu> (imirkin)
 
@@ -292,6 +292,8 @@ static inline uint32_t A6XX_GMU_GPU_NAP_CTRL_SID(uint32_t val)
 
 #define REG_A6XX_GPU_GMU_CX_GMU_CX_FAL_INTF			0x000050f0
 
+#define REG_A6XX_GPU_GMU_CX_GMU_CX_FALNEXT_INTF			0x000050f1
+
 #define REG_A6XX_GPU_GMU_CX_GMU_PWR_COL_CP_MSG			0x00005100
 
 #define REG_A6XX_GPU_GMU_CX_GMU_PWR_COL_CP_RESP			0x00005101
@@ -438,6 +440,8 @@ static inline uint32_t A6XX_GMU_GPU_NAP_CTRL_SID(uint32_t val)
 #define REG_A6XX_GPU_CC_GX_GDSCR				0x00009c03
 
 #define REG_A6XX_GPU_CC_GX_DOMAIN_MISC				0x00009d42
+
+#define REG_A6XX_GPU_CPR_FSM_CTL				0x0000c001
 
 #define REG_A6XX_GPU_RSCC_RSC_STATUS0_DRV0			0x00000004
 

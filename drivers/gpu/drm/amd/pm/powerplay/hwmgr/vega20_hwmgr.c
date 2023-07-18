@@ -22,7 +22,6 @@
  */
 
 #include <linux/delay.h>
-#include <linux/fb.h>
 #include <linux/module.h>
 #include <linux/slab.h>
 
@@ -57,8 +56,8 @@
 
 #define LINK_WIDTH_MAX				6
 #define LINK_SPEED_MAX				3
-static int link_width[] = {0, 1, 2, 4, 8, 12, 16};
-static int link_speed[] = {25, 50, 80, 160};
+static const int link_width[] = {0, 1, 2, 4, 8, 12, 16};
+static const int link_speed[] = {25, 50, 80, 160};
 
 static void vega20_set_default_registry_data(struct pp_hwmgr *hwmgr)
 {
@@ -171,6 +170,7 @@ static void vega20_set_default_registry_data(struct pp_hwmgr *hwmgr)
 	data->registry_data.gfxoff_controlled_by_driver = 1;
 	data->gfxoff_allowed = false;
 	data->counter_gfxoff = 0;
+	data->registry_data.pcie_dpm_key_disabled = !(hwmgr->feature_mask & PP_PCIE_DPM_MASK);
 }
 
 static int vega20_set_features_platform_caps(struct pp_hwmgr *hwmgr)
@@ -771,12 +771,11 @@ static int vega20_setup_default_dpm_tables(struct pp_hwmgr *hwmgr)
 }
 
 /**
-* Initializes the SMC table and uploads it
-*
-* @param    hwmgr  the address of the powerplay hardware manager.
-* @param    pInput  the pointer to input data (PowerState)
-* @return   always 0
-*/
+ * vega20_init_smc_table - Initializes the SMC table and uploads it
+ *
+ * @hwmgr:  the address of the powerplay hardware manager.
+ * return:  always 0
+ */
 static int vega20_init_smc_table(struct pp_hwmgr *hwmgr)
 {
 	int result;
@@ -832,7 +831,9 @@ static int vega20_override_pcie_parameters(struct pp_hwmgr *hwmgr)
 	struct amdgpu_device *adev = (struct amdgpu_device *)(hwmgr->adev);
 	struct vega20_hwmgr *data =
 			(struct vega20_hwmgr *)(hwmgr->backend);
-	uint32_t pcie_gen = 0, pcie_width = 0, smu_pcie_arg;
+	uint32_t pcie_gen = 0, pcie_width = 0, smu_pcie_arg, pcie_gen_arg, pcie_width_arg;
+	PPTable_t *pp_table = &(data->smc_state_table.pp_table);
+	int i;
 	int ret;
 
 	if (adev->pm.pcie_gen_mask & CAIL_PCIE_LINK_SPEED_SUPPORT_GEN4)
@@ -861,17 +862,51 @@ static int vega20_override_pcie_parameters(struct pp_hwmgr *hwmgr)
 	 * Bit 15:8:  PCIE GEN, 0 to 3 corresponds to GEN1 to GEN4
 	 * Bit 7:0:   PCIE lane width, 1 to 7 corresponds is x1 to x32
 	 */
-	smu_pcie_arg = (1 << 16) | (pcie_gen << 8) | pcie_width;
-	ret = smum_send_msg_to_smc_with_parameter(hwmgr,
-			PPSMC_MSG_OverridePcieParameters, smu_pcie_arg,
-			NULL);
-	PP_ASSERT_WITH_CODE(!ret,
-		"[OverridePcieParameters] Attempt to override pcie params failed!",
-		return ret);
+	for (i = 0; i < NUM_LINK_LEVELS; i++) {
+		pcie_gen_arg = (pp_table->PcieGenSpeed[i] > pcie_gen) ? pcie_gen :
+			pp_table->PcieGenSpeed[i];
+		pcie_width_arg = (pp_table->PcieLaneCount[i] > pcie_width) ? pcie_width :
+			pp_table->PcieLaneCount[i];
 
-	data->pcie_parameters_override = true;
-	data->pcie_gen_level1 = pcie_gen;
-	data->pcie_width_level1 = pcie_width;
+		if (pcie_gen_arg != pp_table->PcieGenSpeed[i] || pcie_width_arg !=
+		    pp_table->PcieLaneCount[i]) {
+			smu_pcie_arg = (i << 16) | (pcie_gen_arg << 8) | pcie_width_arg;
+			ret = smum_send_msg_to_smc_with_parameter(hwmgr,
+				PPSMC_MSG_OverridePcieParameters, smu_pcie_arg,
+				NULL);
+			PP_ASSERT_WITH_CODE(!ret,
+				"[OverridePcieParameters] Attempt to override pcie params failed!",
+				return ret);
+		}
+
+		/* update the pptable */
+		pp_table->PcieGenSpeed[i] = pcie_gen_arg;
+		pp_table->PcieLaneCount[i] = pcie_width_arg;
+	}
+
+	/* override to the highest if it's disabled from ppfeaturmask */
+	if (data->registry_data.pcie_dpm_key_disabled) {
+		for (i = 0; i < NUM_LINK_LEVELS; i++) {
+			smu_pcie_arg = (i << 16) | (pcie_gen << 8) | pcie_width;
+			ret = smum_send_msg_to_smc_with_parameter(hwmgr,
+				PPSMC_MSG_OverridePcieParameters, smu_pcie_arg,
+				NULL);
+			PP_ASSERT_WITH_CODE(!ret,
+				"[OverridePcieParameters] Attempt to override pcie params failed!",
+				return ret);
+
+			pp_table->PcieGenSpeed[i] = pcie_gen;
+			pp_table->PcieLaneCount[i] = pcie_width;
+		}
+		ret = vega20_enable_smc_features(hwmgr,
+				false,
+				data->smu_features[GNLD_DPM_LINK].smu_feature_bitmap);
+		PP_ASSERT_WITH_CODE(!ret,
+				"Attempt to Disable DPM LINK Failed!",
+				return ret);
+		data->smu_features[GNLD_DPM_LINK].enabled = false;
+		data->smu_features[GNLD_DPM_LINK].supported = false;
+	}
 
 	return 0;
 }
@@ -1519,26 +1554,23 @@ static int vega20_set_mclk_od(
 	return 0;
 }
 
-static int vega20_populate_umdpstate_clocks(
-		struct pp_hwmgr *hwmgr)
+static void vega20_populate_umdpstate_clocks(struct pp_hwmgr *hwmgr)
 {
 	struct vega20_hwmgr *data = (struct vega20_hwmgr *)(hwmgr->backend);
 	struct vega20_single_dpm_table *gfx_table = &(data->dpm_table.gfx_table);
 	struct vega20_single_dpm_table *mem_table = &(data->dpm_table.mem_table);
 
-	hwmgr->pstate_sclk = gfx_table->dpm_levels[0].value;
-	hwmgr->pstate_mclk = mem_table->dpm_levels[0].value;
-
 	if (gfx_table->count > VEGA20_UMD_PSTATE_GFXCLK_LEVEL &&
 	    mem_table->count > VEGA20_UMD_PSTATE_MCLK_LEVEL) {
 		hwmgr->pstate_sclk = gfx_table->dpm_levels[VEGA20_UMD_PSTATE_GFXCLK_LEVEL].value;
 		hwmgr->pstate_mclk = mem_table->dpm_levels[VEGA20_UMD_PSTATE_MCLK_LEVEL].value;
+	} else {
+		hwmgr->pstate_sclk = gfx_table->dpm_levels[0].value;
+		hwmgr->pstate_mclk = mem_table->dpm_levels[0].value;
 	}
 
-	hwmgr->pstate_sclk = hwmgr->pstate_sclk * 100;
-	hwmgr->pstate_mclk = hwmgr->pstate_mclk * 100;
-
-	return 0;
+	hwmgr->pstate_sclk_peak = gfx_table->dpm_levels[gfx_table->count - 1].value;
+	hwmgr->pstate_mclk_peak = mem_table->dpm_levels[mem_table->count - 1].value;
 }
 
 static int vega20_get_max_sustainable_clock(struct pp_hwmgr *hwmgr,
@@ -1717,10 +1749,7 @@ static int vega20_enable_dpm_tasks(struct pp_hwmgr *hwmgr)
 			"[EnableDPMTasks] Failed to initialize odn settings!",
 			return result);
 
-	result = vega20_populate_umdpstate_clocks(hwmgr);
-	PP_ASSERT_WITH_CODE(!result,
-			"[EnableDPMTasks] Failed to populate umdpstate clocks!",
-			return result);
+	vega20_populate_umdpstate_clocks(hwmgr);
 
 	result = smum_send_msg_to_smc_with_parameter(hwmgr, PPSMC_MSG_GetPptLimit,
 			POWER_SOURCE_AC << 16, &hwmgr->default_power_limit);
@@ -2241,7 +2270,7 @@ static int vega20_read_sensor(struct pp_hwmgr *hwmgr, int idx,
 			*size = 8;
 		break;
 	default:
-		ret = -EINVAL;
+		ret = -EOPNOTSUPP;
 		break;
 	}
 	return ret;
@@ -2733,7 +2762,7 @@ static void vega20_set_fan_control_mode(struct pp_hwmgr *hwmgr, uint32_t mode)
 {
 	switch (mode) {
 	case AMD_FAN_CTRL_NONE:
-		vega20_fan_ctrl_set_fan_speed_percent(hwmgr, 100);
+		vega20_fan_ctrl_set_fan_speed_pwm(hwmgr, 255);
 		break;
 	case AMD_FAN_CTRL_MANUAL:
 		if (PP_CAP(PHM_PlatformCaps_MicrocodeFanControl))
@@ -2925,7 +2954,8 @@ static int vega20_odn_edit_dpm_table(struct pp_hwmgr *hwmgr,
 			data->od8_settings.od8_settings_array;
 	OverDriveTable_t *od_table =
 			&(data->smc_state_table.overdrive_table);
-	int32_t input_index, input_clk, input_vol, i;
+	int32_t input_clk, input_vol, i;
+	uint32_t input_index;
 	int od8_id;
 	int ret;
 
@@ -3202,18 +3232,20 @@ static int vega20_get_ppfeature_status(struct pp_hwmgr *hwmgr, char *buf)
 	int ret = 0;
 	int size = 0;
 
+	phm_get_sysfs_buf(&buf, &size);
+
 	ret = vega20_get_enabled_smc_features(hwmgr, &features_enabled);
 	PP_ASSERT_WITH_CODE(!ret,
 			"[EnableAllSmuFeatures] Failed to get enabled smc features!",
 			return ret);
 
-	size += sprintf(buf + size, "Current ppfeatures: 0x%016llx\n", features_enabled);
-	size += sprintf(buf + size, "%-19s %-22s %s\n",
+	size += sysfs_emit_at(buf, size, "Current ppfeatures: 0x%016llx\n", features_enabled);
+	size += sysfs_emit_at(buf, size, "%-19s %-22s %s\n",
 				output_title[0],
 				output_title[1],
 				output_title[2]);
 	for (i = 0; i < GNLD_FEATURES_MAX; i++) {
-		size += sprintf(buf + size, "%-19s 0x%016llx %6s\n",
+		size += sysfs_emit_at(buf, size, "%-19s 0x%016llx %6s\n",
 					ppfeature_name[i],
 					1ULL << i,
 					(features_enabled & (1ULL << i)) ? "Y" : "N");
@@ -3320,9 +3352,7 @@ static int vega20_print_clock_levels(struct pp_hwmgr *hwmgr,
 			data->od8_settings.od8_settings_array;
 	OverDriveTable_t *od_table =
 			&(data->smc_state_table.overdrive_table);
-	struct phm_ppt_v3_information *pptable_information =
-		(struct phm_ppt_v3_information *)hwmgr->pptable;
-	PPTable_t *pptable = (PPTable_t *)pptable_information->smc_pptable;
+	PPTable_t *pptable = &(data->smc_state_table.pp_table);
 	struct pp_clock_levels_with_latency clocks;
 	struct vega20_single_dpm_table *fclk_dpm_table =
 			&(data->dpm_table.fclk_table);
@@ -3421,13 +3451,9 @@ static int vega20_print_clock_levels(struct pp_hwmgr *hwmgr,
 		current_lane_width =
 			vega20_get_current_pcie_link_width_level(hwmgr);
 		for (i = 0; i < NUM_LINK_LEVELS; i++) {
-			if (i == 1 && data->pcie_parameters_override) {
-				gen_speed = data->pcie_gen_level1;
-				lane_width = data->pcie_width_level1;
-			} else {
-				gen_speed = pptable->PcieGenSpeed[i];
-				lane_width = pptable->PcieLaneCount[i];
-			}
+			gen_speed = pptable->PcieGenSpeed[i];
+			lane_width = pptable->PcieLaneCount[i];
+
 			size += sprintf(buf + size, "%d: %s %s %dMhz %s\n", i,
 					(gen_speed == 0) ? "2.5GT/s," :
 					(gen_speed == 1) ? "5.0GT/s," :
@@ -3449,7 +3475,7 @@ static int vega20_print_clock_levels(struct pp_hwmgr *hwmgr,
 	case OD_SCLK:
 		if (od8_settings[OD8_SETTING_GFXCLK_FMIN].feature_id &&
 		    od8_settings[OD8_SETTING_GFXCLK_FMAX].feature_id) {
-			size = sprintf(buf, "%s:\n", "OD_SCLK");
+			size += sprintf(buf + size, "%s:\n", "OD_SCLK");
 			size += sprintf(buf + size, "0: %10uMhz\n",
 				od_table->GfxclkFmin);
 			size += sprintf(buf + size, "1: %10uMhz\n",
@@ -3459,7 +3485,7 @@ static int vega20_print_clock_levels(struct pp_hwmgr *hwmgr,
 
 	case OD_MCLK:
 		if (od8_settings[OD8_SETTING_UCLK_FMAX].feature_id) {
-			size = sprintf(buf, "%s:\n", "OD_MCLK");
+			size += sprintf(buf + size, "%s:\n", "OD_MCLK");
 			size += sprintf(buf + size, "1: %10uMhz\n",
 				od_table->UclkFmax);
 		}
@@ -3473,7 +3499,7 @@ static int vega20_print_clock_levels(struct pp_hwmgr *hwmgr,
 		    od8_settings[OD8_SETTING_GFXCLK_VOLTAGE1].feature_id &&
 		    od8_settings[OD8_SETTING_GFXCLK_VOLTAGE2].feature_id &&
 		    od8_settings[OD8_SETTING_GFXCLK_VOLTAGE3].feature_id) {
-			size = sprintf(buf, "%s:\n", "OD_VDDC_CURVE");
+			size += sprintf(buf + size, "%s:\n", "OD_VDDC_CURVE");
 			size += sprintf(buf + size, "0: %10uMhz %10dmV\n",
 				od_table->GfxclkFreq1,
 				od_table->GfxclkVolt1 / VOLTAGE_SCALE);
@@ -3488,7 +3514,7 @@ static int vega20_print_clock_levels(struct pp_hwmgr *hwmgr,
 		break;
 
 	case OD_RANGE:
-		size = sprintf(buf, "%s:\n", "OD_RANGE");
+		size += sprintf(buf + size, "%s:\n", "OD_RANGE");
 
 		if (od8_settings[OD8_SETTING_GFXCLK_FMIN].feature_id &&
 		    od8_settings[OD8_SETTING_GFXCLK_FMAX].feature_id) {
@@ -3948,14 +3974,6 @@ static int vega20_get_power_profile_mode(struct pp_hwmgr *hwmgr, char *buf)
 	DpmActivityMonitorCoeffInt_t activity_monitor;
 	uint32_t i, size = 0;
 	uint16_t workload_type = 0;
-	static const char *profile_name[] = {
-					"BOOTUP_DEFAULT",
-					"3D_FULL_SCREEN",
-					"POWER_SAVING",
-					"VIDEO",
-					"VR",
-					"COMPUTE",
-					"CUSTOM"};
 	static const char *title[] = {
 			"PROFILE_INDEX(NAME)",
 			"CLOCK_TYPE(NAME)",
@@ -3973,7 +3991,9 @@ static int vega20_get_power_profile_mode(struct pp_hwmgr *hwmgr, char *buf)
 	if (!buf)
 		return -EINVAL;
 
-	size += sprintf(buf + size, "%16s %s %s %s %s %s %s %s %s %s %s\n",
+	phm_get_sysfs_buf(&buf, &size);
+
+	size += sysfs_emit_at(buf, size, "%16s %s %s %s %s %s %s %s %s %s %s\n",
 			title[0], title[1], title[2], title[3], title[4], title[5],
 			title[6], title[7], title[8], title[9], title[10]);
 
@@ -3986,10 +4006,10 @@ static int vega20_get_power_profile_mode(struct pp_hwmgr *hwmgr, char *buf)
 				"[GetPowerProfile] Failed to get activity monitor!",
 				return result);
 
-		size += sprintf(buf + size, "%2d %14s%s:\n",
-			i, profile_name[i], (i == hwmgr->power_profile_mode) ? "*" : " ");
+		size += sysfs_emit_at(buf, size, "%2d %14s%s:\n",
+			i, amdgpu_pp_profile_name[i], (i == hwmgr->power_profile_mode) ? "*" : " ");
 
-		size += sprintf(buf + size, "%19s %d(%13s) %7d %7d %7d %7d %7d %7d %7d %7d %7d\n",
+		size += sysfs_emit_at(buf, size, "%19s %d(%13s) %7d %7d %7d %7d %7d %7d %7d %7d %7d\n",
 			" ",
 			0,
 			"GFXCLK",
@@ -4003,7 +4023,7 @@ static int vega20_get_power_profile_mode(struct pp_hwmgr *hwmgr, char *buf)
 			activity_monitor.Gfx_PD_Data_error_coeff,
 			activity_monitor.Gfx_PD_Data_error_rate_coeff);
 
-		size += sprintf(buf + size, "%19s %d(%13s) %7d %7d %7d %7d %7d %7d %7d %7d %7d\n",
+		size += sysfs_emit_at(buf, size, "%19s %d(%13s) %7d %7d %7d %7d %7d %7d %7d %7d %7d\n",
 			" ",
 			1,
 			"SOCCLK",
@@ -4017,7 +4037,7 @@ static int vega20_get_power_profile_mode(struct pp_hwmgr *hwmgr, char *buf)
 			activity_monitor.Soc_PD_Data_error_coeff,
 			activity_monitor.Soc_PD_Data_error_rate_coeff);
 
-		size += sprintf(buf + size, "%19s %d(%13s) %7d %7d %7d %7d %7d %7d %7d %7d %7d\n",
+		size += sysfs_emit_at(buf, size, "%19s %d(%13s) %7d %7d %7d %7d %7d %7d %7d %7d %7d\n",
 			" ",
 			2,
 			"UCLK",
@@ -4031,7 +4051,7 @@ static int vega20_get_power_profile_mode(struct pp_hwmgr *hwmgr, char *buf)
 			activity_monitor.Mem_PD_Data_error_coeff,
 			activity_monitor.Mem_PD_Data_error_rate_coeff);
 
-		size += sprintf(buf + size, "%19s %d(%13s) %7d %7d %7d %7d %7d %7d %7d %7d %7d\n",
+		size += sysfs_emit_at(buf, size, "%19s %d(%13s) %7d %7d %7d %7d %7d %7d %7d %7d %7d\n",
 			" ",
 			3,
 			"FCLK",
@@ -4379,8 +4399,8 @@ static const struct pp_hwmgr_func vega20_hwmgr_funcs = {
 	.register_irq_handlers = smu9_register_irq_handlers,
 	.disable_smc_firmware_ctf = vega20_thermal_disable_alert,
 	/* fan control related */
-	.get_fan_speed_percent = vega20_fan_ctrl_get_fan_speed_percent,
-	.set_fan_speed_percent = vega20_fan_ctrl_set_fan_speed_percent,
+	.get_fan_speed_pwm = vega20_fan_ctrl_get_fan_speed_pwm,
+	.set_fan_speed_pwm = vega20_fan_ctrl_set_fan_speed_pwm,
 	.get_fan_speed_info = vega20_fan_ctrl_get_fan_speed_info,
 	.get_fan_speed_rpm = vega20_fan_ctrl_get_fan_speed_rpm,
 	.set_fan_speed_rpm = vega20_fan_ctrl_set_fan_speed_rpm,

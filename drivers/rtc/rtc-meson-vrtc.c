@@ -23,7 +23,7 @@ static int meson_vrtc_read_time(struct device *dev, struct rtc_time *tm)
 	struct timespec64 time;
 
 	dev_dbg(dev, "%s\n", __func__);
-	ktime_get_raw_ts64(&time);
+	ktime_get_real_ts64(&time);
 	rtc_time64_to_tm(time.tv_sec, tm);
 
 	return 0;
@@ -83,7 +83,7 @@ static int meson_vrtc_probe(struct platform_device *pdev)
 		return PTR_ERR(vrtc->rtc);
 
 	vrtc->rtc->ops = &meson_vrtc_ops;
-	return rtc_register_device(vrtc->rtc);
+	return devm_rtc_register_device(vrtc->rtc);
 }
 
 static int __maybe_unused meson_vrtc_suspend(struct device *dev)
@@ -96,7 +96,7 @@ static int __maybe_unused meson_vrtc_suspend(struct device *dev)
 		long alarm_secs;
 		struct timespec64 time;
 
-		ktime_get_raw_ts64(&time);
+		ktime_get_real_ts64(&time);
 		local_time = time.tv_sec;
 
 		dev_dbg(dev, "alarm_time = %lus, local_time=%lus\n",

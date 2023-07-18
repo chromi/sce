@@ -392,7 +392,7 @@ When mounting an ext4 filesystem, the following option are accepted:
 
   dax
         Use direct access (no page cache).  See
-        Documentation/filesystems/dax.txt.  Note that this option is
+        Documentation/filesystems/dax.rst.  Note that this option is
         incompatible with data=journal.
 
   inlinecrypt
@@ -488,9 +488,6 @@ Files in /sys/fs/ext4/<devname>:
         The multiblock allocator will round up allocation requests to a
         multiple of this tuning parameter if the stripe size is not set in the
         ext4 superblock
-
-  mb_max_inode_prealloc
-        The maximum length of per-inode ext4_prealloc_space list.
 
   mb_max_to_scan
         The maximum number of extents the multiblock allocator will search to

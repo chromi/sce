@@ -37,7 +37,7 @@
 
 /* Exposure controls from sensor */
 #define OV2740_REG_EXPOSURE		0x3500
-#define OV2740_EXPOSURE_MIN		8
+#define OV2740_EXPOSURE_MIN		4
 #define OV2740_EXPOSURE_MAX_MARGIN	8
 #define OV2740_EXPOSURE_STEP		1
 
@@ -51,7 +51,7 @@
 #define OV2740_REG_MWB_R_GAIN		0x500a
 #define OV2740_REG_MWB_G_GAIN		0x500c
 #define OV2740_REG_MWB_B_GAIN		0x500e
-#define OV2740_DGTL_GAIN_MIN		0
+#define OV2740_DGTL_GAIN_MIN		1024
 #define OV2740_DGTL_GAIN_MAX		4095
 #define OV2740_DGTL_GAIN_STEP		1
 #define OV2740_DGTL_GAIN_DEFAULT	1024
@@ -60,6 +60,12 @@
 #define OV2740_REG_TEST_PATTERN		0x5040
 #define OV2740_TEST_PATTERN_ENABLE	BIT(7)
 #define OV2740_TEST_PATTERN_BAR_SHIFT	2
+
+/* Group Access */
+#define OV2740_REG_GROUP_ACCESS		0x3208
+#define OV2740_GROUP_HOLD_START		0x0
+#define OV2740_GROUP_HOLD_END		0x10
+#define OV2740_GROUP_HOLD_LAUNCH	0xa0
 
 /* ISP CTRL00 */
 #define OV2740_REG_ISP_CTRL00		0x5000
@@ -71,9 +77,9 @@
 #define OV2740_REG_OTP_CUSTOMER		0x7010
 
 struct nvm_data {
-	char *nvm_buffer;
 	struct nvmem_device *nvmem;
 	struct regmap *regmap;
+	char *nvm_buffer;
 };
 
 enum {
@@ -335,6 +341,12 @@ struct ov2740 {
 
 	/* Streaming on/off */
 	bool streaming;
+
+	/* NVM data inforamtion */
+	struct nvm_data *nvm;
+
+	/* True if the device has been identified */
+	bool identified;
 };
 
 static inline struct ov2740 *to_ov2740(struct v4l2_subdev *subdev)
@@ -366,7 +378,7 @@ static int ov2740_read_reg(struct ov2740 *ov2740, u16 reg, u16 len, u32 *val)
 	struct i2c_msg msgs[2];
 	u8 addr_buf[2];
 	u8 data_buf[4] = {0};
-	int ret = 0;
+	int ret;
 
 	if (len > sizeof(data_buf))
 		return -EINVAL;
@@ -394,7 +406,7 @@ static int ov2740_write_reg(struct ov2740 *ov2740, u16 reg, u16 len, u32 val)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(&ov2740->sd);
 	u8 buf[6];
-	int ret = 0;
+	int ret;
 
 	if (len > 4)
 		return -EINVAL;
@@ -414,14 +426,14 @@ static int ov2740_write_reg_list(struct ov2740 *ov2740,
 {
 	struct i2c_client *client = v4l2_get_subdevdata(&ov2740->sd);
 	unsigned int i;
-	int ret = 0;
+	int ret;
 
 	for (i = 0; i < r_list->num_of_regs; i++) {
 		ret = ov2740_write_reg(ov2740, r_list->regs[i].address, 1,
 				       r_list->regs[i].val);
 		if (ret) {
 			dev_err_ratelimited(&client->dev,
-					    "write reg 0x%4.4x return err = %d",
+					    "write reg 0x%4.4x return err = %d\n",
 					    r_list->regs[i].address, ret);
 			return ret;
 		}
@@ -430,9 +442,38 @@ static int ov2740_write_reg_list(struct ov2740 *ov2740,
 	return 0;
 }
 
+static int ov2740_identify_module(struct ov2740 *ov2740)
+{
+	struct i2c_client *client = v4l2_get_subdevdata(&ov2740->sd);
+	int ret;
+	u32 val;
+
+	if (ov2740->identified)
+		return 0;
+
+	ret = ov2740_read_reg(ov2740, OV2740_REG_CHIP_ID, 3, &val);
+	if (ret)
+		return ret;
+
+	if (val != OV2740_CHIP_ID) {
+		dev_err(&client->dev, "chip id mismatch: %x != %x\n",
+			OV2740_CHIP_ID, val);
+		return -ENXIO;
+	}
+
+	ov2740->identified = true;
+
+	return 0;
+}
+
 static int ov2740_update_digital_gain(struct ov2740 *ov2740, u32 d_gain)
 {
-	int ret = 0;
+	int ret;
+
+	ret = ov2740_write_reg(ov2740, OV2740_REG_GROUP_ACCESS, 1,
+			       OV2740_GROUP_HOLD_START);
+	if (ret)
+		return ret;
 
 	ret = ov2740_write_reg(ov2740, OV2740_REG_MWB_R_GAIN, 2, d_gain);
 	if (ret)
@@ -442,7 +483,18 @@ static int ov2740_update_digital_gain(struct ov2740 *ov2740, u32 d_gain)
 	if (ret)
 		return ret;
 
-	return ov2740_write_reg(ov2740, OV2740_REG_MWB_B_GAIN, 2, d_gain);
+	ret = ov2740_write_reg(ov2740, OV2740_REG_MWB_B_GAIN, 2, d_gain);
+	if (ret)
+		return ret;
+
+	ret = ov2740_write_reg(ov2740, OV2740_REG_GROUP_ACCESS, 1,
+			       OV2740_GROUP_HOLD_END);
+	if (ret)
+		return ret;
+
+	ret = ov2740_write_reg(ov2740, OV2740_REG_GROUP_ACCESS, 1,
+			       OV2740_GROUP_HOLD_LAUNCH);
+	return ret;
 }
 
 static int ov2740_test_pattern(struct ov2740 *ov2740, u32 pattern)
@@ -460,7 +512,7 @@ static int ov2740_set_ctrl(struct v4l2_ctrl *ctrl)
 					     struct ov2740, ctrl_handler);
 	struct i2c_client *client = v4l2_get_subdevdata(&ov2740->sd);
 	s64 exposure_max;
-	int ret = 0;
+	int ret;
 
 	/* Propagate change of current control to all related controls */
 	if (ctrl->id == V4L2_CID_VBLANK) {
@@ -523,7 +575,7 @@ static int ov2740_init_controls(struct ov2740 *ov2740)
 	s64 exposure_max, h_blank, pixel_rate;
 	u32 vblank_min, vblank_max, vblank_default;
 	int size;
-	int ret = 0;
+	int ret;
 
 	ctrl_hdlr = &ov2740->ctrl_handler;
 	ret = v4l2_ctrl_handler_init(ctrl_hdlr, 8);
@@ -577,8 +629,10 @@ static int ov2740_init_controls(struct ov2740 *ov2740)
 				     V4L2_CID_TEST_PATTERN,
 				     ARRAY_SIZE(ov2740_test_pattern_menu) - 1,
 				     0, 0, ov2740_test_pattern_menu);
-	if (ctrl_hdlr->error)
+	if (ctrl_hdlr->error) {
+		v4l2_ctrl_handler_free(ctrl_hdlr);
 		return ctrl_hdlr->error;
+	}
 
 	ov2740->sd.ctrl_handler = ctrl_hdlr;
 
@@ -594,25 +648,122 @@ static void ov2740_update_pad_format(const struct ov2740_mode *mode,
 	fmt->field = V4L2_FIELD_NONE;
 }
 
+static int ov2740_load_otp_data(struct nvm_data *nvm)
+{
+	struct device *dev = regmap_get_device(nvm->regmap);
+	struct ov2740 *ov2740 = to_ov2740(dev_get_drvdata(dev));
+	u32 isp_ctrl00 = 0;
+	u32 isp_ctrl01 = 0;
+	int ret;
+
+	if (nvm->nvm_buffer)
+		return 0;
+
+	nvm->nvm_buffer = kzalloc(CUSTOMER_USE_OTP_SIZE, GFP_KERNEL);
+	if (!nvm->nvm_buffer)
+		return -ENOMEM;
+
+	ret = ov2740_read_reg(ov2740, OV2740_REG_ISP_CTRL00, 1, &isp_ctrl00);
+	if (ret) {
+		dev_err(dev, "failed to read ISP CTRL00\n");
+		goto err;
+	}
+
+	ret = ov2740_read_reg(ov2740, OV2740_REG_ISP_CTRL01, 1, &isp_ctrl01);
+	if (ret) {
+		dev_err(dev, "failed to read ISP CTRL01\n");
+		goto err;
+	}
+
+	/* Clear bit 5 of ISP CTRL00 */
+	ret = ov2740_write_reg(ov2740, OV2740_REG_ISP_CTRL00, 1,
+			       isp_ctrl00 & ~BIT(5));
+	if (ret) {
+		dev_err(dev, "failed to set ISP CTRL00\n");
+		goto err;
+	}
+
+	/* Clear bit 7 of ISP CTRL01 */
+	ret = ov2740_write_reg(ov2740, OV2740_REG_ISP_CTRL01, 1,
+			       isp_ctrl01 & ~BIT(7));
+	if (ret) {
+		dev_err(dev, "failed to set ISP CTRL01\n");
+		goto err;
+	}
+
+	ret = ov2740_write_reg(ov2740, OV2740_REG_MODE_SELECT, 1,
+			       OV2740_MODE_STREAMING);
+	if (ret) {
+		dev_err(dev, "failed to set streaming mode\n");
+		goto err;
+	}
+
+	/*
+	 * Users are not allowed to access OTP-related registers and memory
+	 * during the 20 ms period after streaming starts (0x100 = 0x01).
+	 */
+	msleep(20);
+
+	ret = regmap_bulk_read(nvm->regmap, OV2740_REG_OTP_CUSTOMER,
+			       nvm->nvm_buffer, CUSTOMER_USE_OTP_SIZE);
+	if (ret) {
+		dev_err(dev, "failed to read OTP data, ret %d\n", ret);
+		goto err;
+	}
+
+	ret = ov2740_write_reg(ov2740, OV2740_REG_MODE_SELECT, 1,
+			       OV2740_MODE_STANDBY);
+	if (ret) {
+		dev_err(dev, "failed to set streaming mode\n");
+		goto err;
+	}
+
+	ret = ov2740_write_reg(ov2740, OV2740_REG_ISP_CTRL01, 1, isp_ctrl01);
+	if (ret) {
+		dev_err(dev, "failed to set ISP CTRL01\n");
+		goto err;
+	}
+
+	ret = ov2740_write_reg(ov2740, OV2740_REG_ISP_CTRL00, 1, isp_ctrl00);
+	if (ret) {
+		dev_err(dev, "failed to set ISP CTRL00\n");
+		goto err;
+	}
+
+	return 0;
+err:
+	kfree(nvm->nvm_buffer);
+	nvm->nvm_buffer = NULL;
+
+	return ret;
+}
+
 static int ov2740_start_streaming(struct ov2740 *ov2740)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(&ov2740->sd);
 	const struct ov2740_reg_list *reg_list;
 	int link_freq_index;
-	int ret = 0;
+	int ret;
+
+	ret = ov2740_identify_module(ov2740);
+	if (ret)
+		return ret;
+
+	if (ov2740->nvm)
+		ov2740_load_otp_data(ov2740->nvm);
 
 	link_freq_index = ov2740->cur_mode->link_freq_index;
 	reg_list = &link_freq_configs[link_freq_index].reg_list;
 	ret = ov2740_write_reg_list(ov2740, reg_list);
 	if (ret) {
-		dev_err(&client->dev, "failed to set plls");
+		dev_err(&client->dev, "failed to set plls\n");
 		return ret;
 	}
 
 	reg_list = &ov2740->cur_mode->reg_list;
 	ret = ov2740_write_reg_list(ov2740, reg_list);
 	if (ret) {
-		dev_err(&client->dev, "failed to set mode");
+		dev_err(&client->dev, "failed to set mode\n");
 		return ret;
 	}
 
@@ -623,7 +774,7 @@ static int ov2740_start_streaming(struct ov2740 *ov2740)
 	ret = ov2740_write_reg(ov2740, OV2740_REG_MODE_SELECT, 1,
 			       OV2740_MODE_STREAMING);
 	if (ret)
-		dev_err(&client->dev, "failed to start streaming");
+		dev_err(&client->dev, "failed to start streaming\n");
 
 	return ret;
 }
@@ -634,7 +785,7 @@ static void ov2740_stop_streaming(struct ov2740 *ov2740)
 
 	if (ov2740_write_reg(ov2740, OV2740_REG_MODE_SELECT, 1,
 			     OV2740_MODE_STANDBY))
-		dev_err(&client->dev, "failed to stop streaming");
+		dev_err(&client->dev, "failed to stop streaming\n");
 }
 
 static int ov2740_set_stream(struct v4l2_subdev *sd, int enable)
@@ -648,9 +799,8 @@ static int ov2740_set_stream(struct v4l2_subdev *sd, int enable)
 
 	mutex_lock(&ov2740->mutex);
 	if (enable) {
-		ret = pm_runtime_get_sync(&client->dev);
+		ret = pm_runtime_resume_and_get(&client->dev);
 		if (ret < 0) {
-			pm_runtime_put_noidle(&client->dev);
 			mutex_unlock(&ov2740->mutex);
 			return ret;
 		}
@@ -672,10 +822,9 @@ static int ov2740_set_stream(struct v4l2_subdev *sd, int enable)
 	return ret;
 }
 
-static int __maybe_unused ov2740_suspend(struct device *dev)
+static int ov2740_suspend(struct device *dev)
 {
-	struct i2c_client *client = to_i2c_client(dev);
-	struct v4l2_subdev *sd = i2c_get_clientdata(client);
+	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct ov2740 *ov2740 = to_ov2740(sd);
 
 	mutex_lock(&ov2740->mutex);
@@ -687,10 +836,9 @@ static int __maybe_unused ov2740_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused ov2740_resume(struct device *dev)
+static int ov2740_resume(struct device *dev)
 {
-	struct i2c_client *client = to_i2c_client(dev);
-	struct v4l2_subdev *sd = i2c_get_clientdata(client);
+	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct ov2740 *ov2740 = to_ov2740(sd);
 	int ret = 0;
 
@@ -710,7 +858,7 @@ exit:
 }
 
 static int ov2740_set_format(struct v4l2_subdev *sd,
-			     struct v4l2_subdev_pad_config *cfg,
+			     struct v4l2_subdev_state *sd_state,
 			     struct v4l2_subdev_format *fmt)
 {
 	struct ov2740 *ov2740 = to_ov2740(sd);
@@ -725,7 +873,7 @@ static int ov2740_set_format(struct v4l2_subdev *sd,
 	mutex_lock(&ov2740->mutex);
 	ov2740_update_pad_format(mode, &fmt->format);
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
-		*v4l2_subdev_get_try_format(sd, cfg, fmt->pad) = fmt->format;
+		*v4l2_subdev_get_try_format(sd, sd_state, fmt->pad) = fmt->format;
 	} else {
 		ov2740->cur_mode = mode;
 		__v4l2_ctrl_s_ctrl(ov2740->link_freq, mode->link_freq_index);
@@ -750,14 +898,15 @@ static int ov2740_set_format(struct v4l2_subdev *sd,
 }
 
 static int ov2740_get_format(struct v4l2_subdev *sd,
-			     struct v4l2_subdev_pad_config *cfg,
+			     struct v4l2_subdev_state *sd_state,
 			     struct v4l2_subdev_format *fmt)
 {
 	struct ov2740 *ov2740 = to_ov2740(sd);
 
 	mutex_lock(&ov2740->mutex);
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY)
-		fmt->format = *v4l2_subdev_get_try_format(&ov2740->sd, cfg,
+		fmt->format = *v4l2_subdev_get_try_format(&ov2740->sd,
+							  sd_state,
 							  fmt->pad);
 	else
 		ov2740_update_pad_format(ov2740->cur_mode, &fmt->format);
@@ -768,7 +917,7 @@ static int ov2740_get_format(struct v4l2_subdev *sd,
 }
 
 static int ov2740_enum_mbus_code(struct v4l2_subdev *sd,
-				 struct v4l2_subdev_pad_config *cfg,
+				 struct v4l2_subdev_state *sd_state,
 				 struct v4l2_subdev_mbus_code_enum *code)
 {
 	if (code->index > 0)
@@ -780,7 +929,7 @@ static int ov2740_enum_mbus_code(struct v4l2_subdev *sd,
 }
 
 static int ov2740_enum_frame_size(struct v4l2_subdev *sd,
-				  struct v4l2_subdev_pad_config *cfg,
+				  struct v4l2_subdev_state *sd_state,
 				  struct v4l2_subdev_frame_size_enum *fse)
 {
 	if (fse->index >= ARRAY_SIZE(supported_modes))
@@ -803,7 +952,7 @@ static int ov2740_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 
 	mutex_lock(&ov2740->mutex);
 	ov2740_update_pad_format(&supported_modes[0],
-				 v4l2_subdev_get_try_format(sd, fh->pad, 0));
+				 v4l2_subdev_get_try_format(sd, fh->state, 0));
 	mutex_unlock(&ov2740->mutex);
 
 	return 0;
@@ -833,25 +982,6 @@ static const struct v4l2_subdev_internal_ops ov2740_internal_ops = {
 	.open = ov2740_open,
 };
 
-static int ov2740_identify_module(struct ov2740 *ov2740)
-{
-	struct i2c_client *client = v4l2_get_subdevdata(&ov2740->sd);
-	int ret;
-	u32 val;
-
-	ret = ov2740_read_reg(ov2740, OV2740_REG_CHIP_ID, 3, &val);
-	if (ret)
-		return ret;
-
-	if (val != OV2740_CHIP_ID) {
-		dev_err(&client->dev, "chip id mismatch: %x!=%x",
-			OV2740_CHIP_ID, val);
-		return -ENXIO;
-	}
-
-	return 0;
-}
-
 static int ov2740_check_hwcfg(struct device *dev)
 {
 	struct fwnode_handle *ep;
@@ -863,17 +993,14 @@ static int ov2740_check_hwcfg(struct device *dev)
 	int ret;
 	unsigned int i, j;
 
-	if (!fwnode)
-		return -ENXIO;
-
 	ret = fwnode_property_read_u32(fwnode, "clock-frequency", &mclk);
 	if (ret)
 		return ret;
 
-	if (mclk != OV2740_MCLK) {
-		dev_err(dev, "external clock %d is not supported", mclk);
-		return -EINVAL;
-	}
+	if (mclk != OV2740_MCLK)
+		return dev_err_probe(dev, -EINVAL,
+				     "external clock %d is not supported\n",
+				     mclk);
 
 	ep = fwnode_graph_get_next_endpoint(fwnode, NULL);
 	if (!ep)
@@ -885,15 +1012,14 @@ static int ov2740_check_hwcfg(struct device *dev)
 		return ret;
 
 	if (bus_cfg.bus.mipi_csi2.num_data_lanes != OV2740_DATA_LANES) {
-		dev_err(dev, "number of CSI2 data lanes %d is not supported",
-			bus_cfg.bus.mipi_csi2.num_data_lanes);
-		ret = -EINVAL;
+		ret = dev_err_probe(dev, -EINVAL,
+				    "number of CSI2 data lanes %d is not supported\n",
+				    bus_cfg.bus.mipi_csi2.num_data_lanes);
 		goto check_hwcfg_error;
 	}
 
 	if (!bus_cfg.nr_of_link_frequencies) {
-		dev_err(dev, "no link frequencies defined");
-		ret = -EINVAL;
+		ret = dev_err_probe(dev, -EINVAL, "no link frequencies defined\n");
 		goto check_hwcfg_error;
 	}
 
@@ -905,9 +1031,9 @@ static int ov2740_check_hwcfg(struct device *dev)
 		}
 
 		if (j == bus_cfg.nr_of_link_frequencies) {
-			dev_err(dev, "no link frequency %lld supported",
-				link_freq_menu_items[i]);
-			ret = -EINVAL;
+			ret = dev_err_probe(dev, -EINVAL,
+					    "no link frequency %lld supported\n",
+					    link_freq_menu_items[i]);
 			goto check_hwcfg_error;
 		}
 	}
@@ -918,7 +1044,7 @@ check_hwcfg_error:
 	return ret;
 }
 
-static int ov2740_remove(struct i2c_client *client)
+static void ov2740_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct ov2740 *ov2740 = to_ov2740(sd);
@@ -928,98 +1054,49 @@ static int ov2740_remove(struct i2c_client *client)
 	v4l2_ctrl_handler_free(sd->ctrl_handler);
 	pm_runtime_disable(&client->dev);
 	mutex_destroy(&ov2740->mutex);
-
-	return 0;
-}
-
-static int ov2740_load_otp_data(struct i2c_client *client, struct nvm_data *nvm)
-{
-	struct ov2740 *ov2740 = to_ov2740(i2c_get_clientdata(client));
-	u32 isp_ctrl00 = 0;
-	u32 isp_ctrl01 = 0;
-	int ret;
-
-	ret = ov2740_read_reg(ov2740, OV2740_REG_ISP_CTRL00, 1, &isp_ctrl00);
-	if (ret) {
-		dev_err(&client->dev, "failed to read ISP CTRL00\n");
-		goto exit;
-	}
-	ret = ov2740_read_reg(ov2740, OV2740_REG_ISP_CTRL01, 1, &isp_ctrl01);
-	if (ret) {
-		dev_err(&client->dev, "failed to read ISP CTRL01\n");
-		goto exit;
-	}
-
-	/* Clear bit 5 of ISP CTRL00 */
-	ret = ov2740_write_reg(ov2740, OV2740_REG_ISP_CTRL00, 1,
-			       isp_ctrl00 & ~BIT(5));
-	if (ret) {
-		dev_err(&client->dev, "failed to write ISP CTRL00\n");
-		goto exit;
-	}
-
-	/* Clear bit 7 of ISP CTRL01 */
-	ret = ov2740_write_reg(ov2740, OV2740_REG_ISP_CTRL01, 1,
-			       isp_ctrl01 & ~BIT(7));
-	if (ret) {
-		dev_err(&client->dev, "failed to write ISP CTRL01\n");
-		goto exit;
-	}
-
-	ret = ov2740_write_reg(ov2740, OV2740_REG_MODE_SELECT, 1,
-			       OV2740_MODE_STREAMING);
-	if (ret) {
-		dev_err(&client->dev, "failed to start streaming\n");
-		goto exit;
-	}
-
-	/*
-	 * Users are not allowed to access OTP-related registers and memory
-	 * during the 20 ms period after streaming starts (0x100 = 0x01).
-	 */
-	msleep(20);
-
-	ret = regmap_bulk_read(nvm->regmap, OV2740_REG_OTP_CUSTOMER,
-			       nvm->nvm_buffer, CUSTOMER_USE_OTP_SIZE);
-	if (ret) {
-		dev_err(&client->dev, "failed to read OTP data, ret %d\n", ret);
-		goto exit;
-	}
-
-	ov2740_write_reg(ov2740, OV2740_REG_MODE_SELECT, 1,
-			 OV2740_MODE_STANDBY);
-	ov2740_write_reg(ov2740, OV2740_REG_ISP_CTRL01, 1, isp_ctrl01);
-	ov2740_write_reg(ov2740, OV2740_REG_ISP_CTRL00, 1, isp_ctrl00);
-
-exit:
-	return ret;
 }
 
 static int ov2740_nvmem_read(void *priv, unsigned int off, void *val,
 			     size_t count)
 {
 	struct nvm_data *nvm = priv;
+	struct device *dev = regmap_get_device(nvm->regmap);
+	struct ov2740 *ov2740 = to_ov2740(dev_get_drvdata(dev));
+	int ret = 0;
 
-	memcpy(val, nvm->nvm_buffer + off, count);
+	mutex_lock(&ov2740->mutex);
 
-	return 0;
+	if (nvm->nvm_buffer) {
+		memcpy(val, nvm->nvm_buffer + off, count);
+		goto exit;
+	}
+
+	ret = pm_runtime_resume_and_get(dev);
+	if (ret < 0) {
+		goto exit;
+	}
+
+	ret = ov2740_load_otp_data(nvm);
+	if (!ret)
+		memcpy(val, nvm->nvm_buffer + off, count);
+
+	pm_runtime_put(dev);
+exit:
+	mutex_unlock(&ov2740->mutex);
+	return ret;
 }
 
-static int ov2740_register_nvmem(struct i2c_client *client)
+static int ov2740_register_nvmem(struct i2c_client *client,
+				 struct ov2740 *ov2740)
 {
 	struct nvm_data *nvm;
 	struct regmap_config regmap_config = { };
 	struct nvmem_config nvmem_config = { };
 	struct regmap *regmap;
 	struct device *dev = &client->dev;
-	int ret = 0;
 
 	nvm = devm_kzalloc(dev, sizeof(*nvm), GFP_KERNEL);
 	if (!nvm)
-		return -ENOMEM;
-
-	nvm->nvm_buffer = devm_kzalloc(dev, CUSTOMER_USE_OTP_SIZE, GFP_KERNEL);
-	if (!nvm->nvm_buffer)
 		return -ENOMEM;
 
 	regmap_config.val_bits = 8;
@@ -1030,12 +1107,6 @@ static int ov2740_register_nvmem(struct i2c_client *client)
 		return PTR_ERR(regmap);
 
 	nvm->regmap = regmap;
-
-	ret = ov2740_load_otp_data(client, nvm);
-	if (ret) {
-		dev_err(dev, "failed to load OTP data, ret %d\n", ret);
-		return ret;
-	}
 
 	nvmem_config.name = dev_name(dev);
 	nvmem_config.dev = dev;
@@ -1052,38 +1123,41 @@ static int ov2740_register_nvmem(struct i2c_client *client)
 	nvmem_config.size = CUSTOMER_USE_OTP_SIZE;
 
 	nvm->nvmem = devm_nvmem_register(dev, &nvmem_config);
+	if (IS_ERR(nvm->nvmem))
+		return PTR_ERR(nvm->nvmem);
 
-	return PTR_ERR_OR_ZERO(nvm->nvmem);
+	ov2740->nvm = nvm;
+	return 0;
 }
 
 static int ov2740_probe(struct i2c_client *client)
 {
+	struct device *dev = &client->dev;
 	struct ov2740 *ov2740;
-	int ret = 0;
+	bool full_power;
+	int ret;
 
 	ret = ov2740_check_hwcfg(&client->dev);
-	if (ret) {
-		dev_err(&client->dev, "failed to check HW configuration: %d",
-			ret);
-		return ret;
-	}
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to check HW configuration\n");
 
 	ov2740 = devm_kzalloc(&client->dev, sizeof(*ov2740), GFP_KERNEL);
 	if (!ov2740)
 		return -ENOMEM;
 
 	v4l2_i2c_subdev_init(&ov2740->sd, client, &ov2740_subdev_ops);
-	ret = ov2740_identify_module(ov2740);
-	if (ret) {
-		dev_err(&client->dev, "failed to find sensor: %d", ret);
-		return ret;
+	full_power = acpi_dev_state_d0(&client->dev);
+	if (full_power) {
+		ret = ov2740_identify_module(ov2740);
+		if (ret)
+			return dev_err_probe(dev, ret, "failed to find sensor\n");
 	}
 
 	mutex_init(&ov2740->mutex);
 	ov2740->cur_mode = &supported_modes[0];
 	ret = ov2740_init_controls(ov2740);
 	if (ret) {
-		dev_err(&client->dev, "failed to init controls: %d", ret);
+		dev_err_probe(dev, ret, "failed to init controls\n");
 		goto probe_error_v4l2_ctrl_handler_free;
 	}
 
@@ -1094,26 +1168,23 @@ static int ov2740_probe(struct i2c_client *client)
 	ov2740->pad.flags = MEDIA_PAD_FL_SOURCE;
 	ret = media_entity_pads_init(&ov2740->sd.entity, 1, &ov2740->pad);
 	if (ret) {
-		dev_err(&client->dev, "failed to init entity pads: %d", ret);
+		dev_err_probe(dev, ret, "failed to init entity pads\n");
 		goto probe_error_v4l2_ctrl_handler_free;
 	}
 
-	ret = v4l2_async_register_subdev_sensor_common(&ov2740->sd);
+	ret = v4l2_async_register_subdev_sensor(&ov2740->sd);
 	if (ret < 0) {
-		dev_err(&client->dev, "failed to register V4L2 subdev: %d",
-			ret);
+		dev_err_probe(dev, ret, "failed to register V4L2 subdev\n");
 		goto probe_error_media_entity_cleanup;
 	}
 
-	ret = ov2740_register_nvmem(client);
+	ret = ov2740_register_nvmem(client, ov2740);
 	if (ret)
 		dev_warn(&client->dev, "register nvmem failed, ret %d\n", ret);
 
-	/*
-	 * Device is already turned on by i2c-core with ACPI domain PM.
-	 * Enable runtime PM and turn off the device.
-	 */
-	pm_runtime_set_active(&client->dev);
+	/* Set the device's state to active if it's in D0 state. */
+	if (full_power)
+		pm_runtime_set_active(&client->dev);
 	pm_runtime_enable(&client->dev);
 	pm_runtime_idle(&client->dev);
 
@@ -1129,9 +1200,7 @@ probe_error_v4l2_ctrl_handler_free:
 	return ret;
 }
 
-static const struct dev_pm_ops ov2740_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(ov2740_suspend, ov2740_resume)
-};
+static DEFINE_SIMPLE_DEV_PM_OPS(ov2740_pm_ops, ov2740_suspend, ov2740_resume);
 
 static const struct acpi_device_id ov2740_acpi_ids[] = {
 	{"INT3474"},
@@ -1143,11 +1212,12 @@ MODULE_DEVICE_TABLE(acpi, ov2740_acpi_ids);
 static struct i2c_driver ov2740_i2c_driver = {
 	.driver = {
 		.name = "ov2740",
-		.pm = &ov2740_pm_ops,
+		.pm = pm_sleep_ptr(&ov2740_pm_ops),
 		.acpi_match_table = ov2740_acpi_ids,
 	},
 	.probe_new = ov2740_probe,
 	.remove = ov2740_remove,
+	.flags = I2C_DRV_ACPI_WAIVE_D0_PROBE,
 };
 
 module_i2c_driver(ov2740_i2c_driver);

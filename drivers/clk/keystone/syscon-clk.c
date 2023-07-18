@@ -102,12 +102,9 @@ static int ti_syscon_gate_clk_probe(struct platform_device *pdev)
 		return -EINVAL;
 
 	regmap = syscon_node_to_regmap(dev->of_node);
-	if (IS_ERR(regmap)) {
-		if (PTR_ERR(regmap) == -EPROBE_DEFER)
-			return -EPROBE_DEFER;
-		dev_err(dev, "failed to find parent regmap\n");
-		return PTR_ERR(regmap);
-	}
+	if (IS_ERR(regmap))
+		return dev_err_probe(dev, PTR_ERR(regmap),
+				     "failed to find parent regmap\n");
 
 	num_clks = 0;
 	for (p = data; p->name; p++)
@@ -149,10 +146,38 @@ static const struct ti_syscon_gate_clk_data am654_clk_data[] = {
 	{ /* Sentinel */ },
 };
 
+static const struct ti_syscon_gate_clk_data am64_clk_data[] = {
+	TI_SYSCON_CLK_GATE("epwm_tbclk0", 0x0, 0),
+	TI_SYSCON_CLK_GATE("epwm_tbclk1", 0x0, 1),
+	TI_SYSCON_CLK_GATE("epwm_tbclk2", 0x0, 2),
+	TI_SYSCON_CLK_GATE("epwm_tbclk3", 0x0, 3),
+	TI_SYSCON_CLK_GATE("epwm_tbclk4", 0x0, 4),
+	TI_SYSCON_CLK_GATE("epwm_tbclk5", 0x0, 5),
+	TI_SYSCON_CLK_GATE("epwm_tbclk6", 0x0, 6),
+	TI_SYSCON_CLK_GATE("epwm_tbclk7", 0x0, 7),
+	TI_SYSCON_CLK_GATE("epwm_tbclk8", 0x0, 8),
+	{ /* Sentinel */ },
+};
+
+static const struct ti_syscon_gate_clk_data am62_clk_data[] = {
+	TI_SYSCON_CLK_GATE("epwm_tbclk0", 0x0, 0),
+	TI_SYSCON_CLK_GATE("epwm_tbclk1", 0x0, 1),
+	TI_SYSCON_CLK_GATE("epwm_tbclk2", 0x0, 2),
+	{ /* Sentinel */ },
+};
+
 static const struct of_device_id ti_syscon_gate_clk_ids[] = {
 	{
 		.compatible = "ti,am654-ehrpwm-tbclk",
 		.data = &am654_clk_data,
+	},
+	{
+		.compatible = "ti,am64-epwm-tbclk",
+		.data = &am64_clk_data,
+	},
+	{
+		.compatible = "ti,am62-epwm-tbclk",
+		.data = &am62_clk_data,
 	},
 	{ }
 };

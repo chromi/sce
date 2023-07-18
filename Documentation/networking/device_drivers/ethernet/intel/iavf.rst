@@ -113,7 +113,7 @@ which the AVF is associated. The following are base mode features:
 - AVF device ID
 - HW mailbox is used for VF to PF communications (including on Windows)
 
-IEEE 802.1ad (QinQ) Support
+IEEE 802.1ad (QinQ) Support
 ---------------------------
 The IEEE 802.1ad standard, informally known as QinQ, allows for multiple VLAN
 IDs within a single Ethernet frame. VLAN IDs are sometimes referred to as
@@ -179,7 +179,7 @@ shaper bw_rlimit: for each tc, sets minimum and maximum bandwidth rates.
 Totals must be equal or less than port speed.
 
 For example: min_rate 1Gbit 3Gbit: Verify bandwidth limit using network
-monitoring tools such as ifstat or sar –n DEV [interval] [number of samples]
+monitoring tools such as ``ifstat`` or ``sar -n DEV [interval] [number of samples]``
 
 NOTE:
   Setting up channels via ethtool (ethtool -L) is not supported when the
@@ -319,13 +319,8 @@ This is caused by the way the Linux kernel reports this stressed condition.
 Support
 =======
 For general information, go to the Intel support website at:
-
 https://support.intel.com
-
-or the Intel Wired Networking project hosted by Sourceforge at:
-
-https://sourceforge.net/projects/e1000
 
 If an issue is identified with the released source code on the supported kernel
 with a supported adapter, email the specific information related to the issue
-to e1000-devel@lists.sf.net
+to intel-wired-lan@lists.osuosl.org.

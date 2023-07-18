@@ -42,7 +42,6 @@
 #define DRV_NAME		TELEM_DEV_NAME
 #define TELEM_DEV_NAME_FMT	(TELEM_DEV_NAME "%d")
 static struct class telem_class = {
-	.owner	= THIS_MODULE,
 	.name	= TELEM_CLASS_NAME,
 };
 
@@ -256,7 +255,7 @@ static int telem_open(struct inode *inode, struct file *filp)
 	sess_data->dev_data = dev_data;
 	sess_data->has_msg = false;
 
-	nonseekable_open(inode, filp);
+	stream_open(inode, filp);
 	filp->private_data = sess_data;
 
 	return 0;

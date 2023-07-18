@@ -1014,7 +1014,7 @@ static int ath6kl_fetch_fw_apin(struct ath6kl *ar, const char *name)
 
 		switch (ie_id) {
 		case ATH6KL_FW_IE_FW_VERSION:
-			strlcpy(ar->wiphy->fw_version, data,
+			strscpy(ar->wiphy->fw_version, data,
 				min(sizeof(ar->wiphy->fw_version), ie_len+1));
 
 			ath6kl_dbg(ATH6KL_DBG_BOOT,
@@ -1904,7 +1904,9 @@ void ath6kl_stop_txrx(struct ath6kl *ar)
 		spin_unlock_bh(&ar->list_lock);
 		ath6kl_cfg80211_vif_stop(vif, test_bit(WMI_READY, &ar->flag));
 		rtnl_lock();
+		wiphy_lock(ar->wiphy);
 		ath6kl_cfg80211_vif_cleanup(vif);
+		wiphy_unlock(ar->wiphy);
 		rtnl_unlock();
 		spin_lock_bh(&ar->list_lock);
 	}

@@ -4,7 +4,7 @@
 $id: http://devicetree.org/schemas/usb/cdns,usb3.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: Cadence USBSS-DRD controller bindings
+title: Cadence USBSS-DRD controller
 
 maintainers:
   - Pawel Laszczak <pawell@cadence.com>
@@ -26,16 +26,21 @@ properties:
       - const: dev
 
   interrupts:
+    minItems: 3
     items:
-      - description: OTG/DRD controller interrupt
       - description: XHCI host controller interrupt
       - description: Device controller interrupt
+      - description: OTG/DRD controller interrupt
+      - description: interrupt used to wake up core, e.g when usbcmd.rs is
+                     cleared by xhci core, this interrupt is optional
 
   interrupt-names:
+    minItems: 3
     items:
       - const: host
       - const: peripheral
       - const: otg
+      - const: wakeup
 
   dr_mode:
     enum: [host, otg, peripheral]
@@ -59,7 +64,7 @@ properties:
     description:
       size of memory intended as internal memory for endpoints
       buffers expressed in KB
-    $ref: /schemas/types.yaml#/definitions/uint32
+    $ref: /schemas/types.yaml#/definitions/uint16
 
   cdns,phyrst-a-enable:
     description: Enable resetting of PHY if Rx fail is detected
@@ -70,6 +75,7 @@ required:
   - reg
   - reg-names
   - interrupts
+  - interrupt-names
 
 additionalProperties: false
 

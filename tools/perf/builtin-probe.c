@@ -21,6 +21,7 @@
 #include "util/build-id.h"
 #include "util/strlist.h"
 #include "util/strfilter.h"
+#include "util/symbol.h"
 #include "util/symbol_conf.h"
 #include "util/debug.h"
 #include <subcmd/parse-options.h>
@@ -31,7 +32,7 @@
 #include <linux/zalloc.h>
 
 #define DEFAULT_VAR_FILTER "!__k???tab_* & !__crc_*"
-#define DEFAULT_FUNC_FILTER "!_*"
+#define DEFAULT_FUNC_FILTER "!_* & !*@plt"
 #define DEFAULT_LIST_FILTER "*"
 
 /* Session management structure */
@@ -39,7 +40,6 @@ static struct {
 	int command;	/* Command short_name */
 	bool list_events;
 	bool uprobes;
-	bool quiet;
 	bool target_used;
 	int nevents;
 	struct perf_probe_event events[MAX_PROBES];
@@ -216,7 +216,7 @@ static int opt_set_target_ns(const struct option *opt __maybe_unused,
 			return ret;
 		}
 		nsip = nsinfo__new(ns_pid);
-		if (nsip && nsip->need_setns)
+		if (nsip && nsinfo__need_setns(nsip))
 			params.nsi = nsinfo__get(nsip);
 		nsinfo__put(nsip);
 
@@ -347,7 +347,10 @@ static int perf_add_probe_events(struct perf_probe_event *pevs, int npevs)
 		goto out_cleanup;
 
 	if (params.command == 'D') {	/* it shows definition */
-		ret = show_probe_trace_events(pevs, npevs);
+		if (probe_conf.bootconfig)
+			ret = show_bootconfig_events(pevs, npevs);
+		else
+			ret = show_probe_trace_events(pevs, npevs);
 		goto out_cleanup;
 	}
 
@@ -380,9 +383,18 @@ static int perf_add_probe_events(struct perf_probe_event *pevs, int npevs)
 
 	/* Note that it is possible to skip all events because of blacklist */
 	if (event) {
+#ifndef HAVE_LIBTRACEEVENT
+		pr_info("\nperf is not linked with libtraceevent, to use the new probe you can use tracefs:\n\n");
+		pr_info("\tcd /sys/kernel/tracing/\n");
+		pr_info("\techo 1 > events/%s/%s/enable\n", group, event);
+		pr_info("\techo 1 > tracing_on\n");
+		pr_info("\tcat trace_pipe\n");
+		pr_info("\tBefore removing the probe, echo 0 > events/%s/%s/enable\n", group, event);
+#else
 		/* Show how to use the event. */
 		pr_info("\nYou can now use it in all perf tools, such as:\n\n");
 		pr_info("\tperf record -e %s:%s -aR sleep 1\n\n", group, event);
+#endif
 	}
 
 out_cleanup:
@@ -510,8 +522,8 @@ __cmd_probe(int argc, const char **argv)
 	struct option options[] = {
 	OPT_INCR('v', "verbose", &verbose,
 		    "be more verbose (show parsed arguments, etc)"),
-	OPT_BOOLEAN('q', "quiet", &params.quiet,
-		    "be quiet (do not show any messages)"),
+	OPT_BOOLEAN('q', "quiet", &quiet,
+		    "be quiet (do not show any warnings or messages)"),
 	OPT_CALLBACK_DEFAULT('l', "list", NULL, "[GROUP:]EVENT",
 			     "list up probe events",
 			     opt_set_filter_with_command, DEFAULT_LIST_FILTER),
@@ -581,6 +593,8 @@ __cmd_probe(int argc, const char **argv)
 		   "Look for files with symbols relative to this directory"),
 	OPT_CALLBACK(0, "target-ns", NULL, "pid",
 		     "target pid for namespace contexts", opt_set_target_ns),
+	OPT_BOOLEAN(0, "bootconfig", &probe_conf.bootconfig,
+		    "Output probe definition with bootconfig format"),
 	OPT_END()
 	};
 	int ret;
@@ -607,6 +621,15 @@ __cmd_probe(int argc, const char **argv)
 
 	argc = parse_options(argc, argv, options, probe_usage,
 			     PARSE_OPT_STOP_AT_NON_OPTION);
+
+	if (quiet) {
+		if (verbose != 0) {
+			pr_err("  Error: -v and -q are exclusive.\n");
+			return -EINVAL;
+		}
+		verbose = -1;
+	}
+
 	if (argc > 0) {
 		if (strcmp(argv[0], "-") == 0) {
 			usage_with_options_msg(probe_usage, options,
@@ -624,13 +647,9 @@ __cmd_probe(int argc, const char **argv)
 		params.command = 'a';
 	}
 
-	if (params.quiet) {
-		if (verbose != 0) {
-			pr_err("  Error: -v and -q are exclusive.\n");
-			return -EINVAL;
-		}
-		verbose = -1;
-	}
+	ret = symbol__validate_sym_arguments();
+	if (ret)
+		return ret;
 
 	if (probe_conf.max_probes == 0)
 		probe_conf.max_probes = MAX_PROBES;
@@ -692,6 +711,11 @@ __cmd_probe(int argc, const char **argv)
 		}
 		break;
 	case 'D':
+		if (probe_conf.bootconfig && params.uprobes) {
+			pr_err("  Error: --bootconfig doesn't support uprobes.\n");
+			return -EINVAL;
+		}
+		fallthrough;
 	case 'a':
 
 		/* Ensure the last given target is used */

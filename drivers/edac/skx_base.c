@@ -174,7 +174,7 @@ static bool skx_check_ecc(u32 mcmtr)
 	return !!GET_BITFIELD(mcmtr, 2, 2);
 }
 
-static int skx_get_dimm_config(struct mem_ctl_info *mci)
+static int skx_get_dimm_config(struct mem_ctl_info *mci, struct res_config *cfg)
 {
 	struct skx_pvt *pvt = mci->pvt_info;
 	u32 mtr, mcmtr, amap, mcddrtcfg;
@@ -195,7 +195,7 @@ static int skx_get_dimm_config(struct mem_ctl_info *mci)
 			pci_read_config_dword(imc->chan[i].cdev,
 					      0x80 + 4 * j, &mtr);
 			if (IS_DIMM_PRESENT(mtr)) {
-				ndimms += skx_get_dimm_info(mtr, mcmtr, amap, dimm, imc, i, j);
+				ndimms += skx_get_dimm_info(mtr, mcmtr, amap, dimm, imc, i, j, cfg);
 			} else if (IS_NVDIMM_PRESENT(mcddrtcfg, j)) {
 				ndimms += skx_get_nvdimm_info(dimm, imc, i, j,
 							      EDAC_MOD_STR);
@@ -230,7 +230,8 @@ static int skx_get_dimm_config(struct mem_ctl_info *mci)
 #define SKX_ILV_TARGET(tgt)	((tgt) & 7)
 
 static void skx_show_retry_rd_err_log(struct decoded_addr *res,
-				      char *msg, int len)
+				      char *msg, int len,
+				      bool scrub_err)
 {
 	u32 log0, log1, log2, log3, log4;
 	u32 corr0, corr1, corr2, corr3;
@@ -509,7 +510,7 @@ rir_found:
 }
 
 static u8 skx_close_row[] = {
-	15, 16, 17, 18, 20, 21, 22, 28, 10, 11, 12, 13, 29, 30, 31, 32, 33
+	15, 16, 17, 18, 20, 21, 22, 28, 10, 11, 12, 13, 29, 30, 31, 32, 33, 34
 };
 
 static u8 skx_close_column[] = {
@@ -517,7 +518,7 @@ static u8 skx_close_column[] = {
 };
 
 static u8 skx_open_row[] = {
-	14, 15, 16, 20, 28, 21, 22, 23, 24, 25, 26, 27, 29, 30, 31, 32, 33
+	14, 15, 16, 20, 28, 21, 22, 23, 24, 25, 26, 27, 29, 30, 31, 32, 33, 34
 };
 
 static u8 skx_open_column[] = {
@@ -652,9 +653,15 @@ static int __init skx_init(void)
 
 	edac_dbg(2, "\n");
 
+	if (ghes_get_devices())
+		return -EBUSY;
+
 	owner = edac_get_owner();
 	if (owner && strncmp(owner, EDAC_MOD_STR, sizeof(EDAC_MOD_STR)))
 		return -EBUSY;
+
+	if (cpu_feature_enabled(X86_FEATURE_HYPERVISOR))
+		return -ENODEV;
 
 	id = x86_match_cpu(skx_cpuids);
 	if (!id)
@@ -702,7 +709,7 @@ static int __init skx_init(void)
 			d->imc[i].node_id = node_id;
 			rc = skx_register_mci(&d->imc[i], d->imc[i].chan[0].cdev,
 					      "Skylake Socket", EDAC_MOD_STR,
-					      skx_get_dimm_config);
+					      skx_get_dimm_config, cfg);
 			if (rc < 0)
 				goto fail;
 		}
@@ -710,8 +717,13 @@ static int __init skx_init(void)
 
 	skx_set_decode(skx_decode, skx_show_retry_rd_err_log);
 
-	if (nvdimm_count && skx_adxl_get() == -ENODEV)
-		skx_printk(KERN_NOTICE, "Only decoding DDR4 address!\n");
+	if (nvdimm_count && skx_adxl_get() != -ENODEV) {
+		skx_set_decode(NULL, skx_show_retry_rd_err_log);
+	} else {
+		if (nvdimm_count)
+			skx_printk(KERN_NOTICE, "Only decoding DDR4 address!\n");
+		skx_set_decode(skx_decode, skx_show_retry_rd_err_log);
+	}
 
 	/* Ensure that the OPSTATE is set correctly for POLL or NMI */
 	opstate_init();

@@ -56,8 +56,9 @@ static bool assert_storage_noexist(struct bpf_map *map, const void *key)
 
 static bool connect_send(const char *cgroup_path)
 {
-	bool res = true;
 	int server_fd = -1, client_fd = -1;
+	char message[] = "message";
+	bool res = true;
 
 	if (join_cgroup(cgroup_path))
 		goto out_clean;
@@ -70,7 +71,10 @@ static bool connect_send(const char *cgroup_path)
 	if (client_fd < 0)
 		goto out_clean;
 
-	if (send(client_fd, "message", strlen("message"), 0) < 0)
+	if (send(client_fd, &message, sizeof(message), 0) < 0)
+		goto out_clean;
+
+	if (read(server_fd, &message, sizeof(message)) < 0)
 		goto out_clean;
 
 	res = false;
@@ -102,8 +106,7 @@ static void test_egress_only(int parent_cgroup_fd, int child_cgroup_fd)
 	 */
 	parent_link = bpf_program__attach_cgroup(obj->progs.egress,
 						 parent_cgroup_fd);
-	if (CHECK(IS_ERR(parent_link), "parent-cg-attach",
-		  "err %ld", PTR_ERR(parent_link)))
+	if (!ASSERT_OK_PTR(parent_link, "parent-cg-attach"))
 		goto close_bpf_object;
 	err = connect_send(CHILD_CGROUP);
 	if (CHECK(err, "first-connect-send", "errno %d", errno))
@@ -126,8 +129,7 @@ static void test_egress_only(int parent_cgroup_fd, int child_cgroup_fd)
 	 */
 	child_link = bpf_program__attach_cgroup(obj->progs.egress,
 						child_cgroup_fd);
-	if (CHECK(IS_ERR(child_link), "child-cg-attach",
-		  "err %ld", PTR_ERR(child_link)))
+	if (!ASSERT_OK_PTR(child_link, "child-cg-attach"))
 		goto close_bpf_object;
 	err = connect_send(CHILD_CGROUP);
 	if (CHECK(err, "second-connect-send", "errno %d", errno))
@@ -147,10 +149,8 @@ static void test_egress_only(int parent_cgroup_fd, int child_cgroup_fd)
 		goto close_bpf_object;
 
 close_bpf_object:
-	if (!IS_ERR(parent_link))
-		bpf_link__destroy(parent_link);
-	if (!IS_ERR(child_link))
-		bpf_link__destroy(child_link);
+	bpf_link__destroy(parent_link);
+	bpf_link__destroy(child_link);
 
 	cg_storage_multi_egress_only__destroy(obj);
 }
@@ -176,18 +176,15 @@ static void test_isolated(int parent_cgroup_fd, int child_cgroup_fd)
 	 */
 	parent_egress1_link = bpf_program__attach_cgroup(obj->progs.egress1,
 							 parent_cgroup_fd);
-	if (CHECK(IS_ERR(parent_egress1_link), "parent-egress1-cg-attach",
-		  "err %ld", PTR_ERR(parent_egress1_link)))
+	if (!ASSERT_OK_PTR(parent_egress1_link, "parent-egress1-cg-attach"))
 		goto close_bpf_object;
 	parent_egress2_link = bpf_program__attach_cgroup(obj->progs.egress2,
 							 parent_cgroup_fd);
-	if (CHECK(IS_ERR(parent_egress2_link), "parent-egress2-cg-attach",
-		  "err %ld", PTR_ERR(parent_egress2_link)))
+	if (!ASSERT_OK_PTR(parent_egress2_link, "parent-egress2-cg-attach"))
 		goto close_bpf_object;
 	parent_ingress_link = bpf_program__attach_cgroup(obj->progs.ingress,
 							 parent_cgroup_fd);
-	if (CHECK(IS_ERR(parent_ingress_link), "parent-ingress-cg-attach",
-		  "err %ld", PTR_ERR(parent_ingress_link)))
+	if (!ASSERT_OK_PTR(parent_ingress_link, "parent-ingress-cg-attach"))
 		goto close_bpf_object;
 	err = connect_send(CHILD_CGROUP);
 	if (CHECK(err, "first-connect-send", "errno %d", errno))
@@ -221,18 +218,15 @@ static void test_isolated(int parent_cgroup_fd, int child_cgroup_fd)
 	 */
 	child_egress1_link = bpf_program__attach_cgroup(obj->progs.egress1,
 							child_cgroup_fd);
-	if (CHECK(IS_ERR(child_egress1_link), "child-egress1-cg-attach",
-		  "err %ld", PTR_ERR(child_egress1_link)))
+	if (!ASSERT_OK_PTR(child_egress1_link, "child-egress1-cg-attach"))
 		goto close_bpf_object;
 	child_egress2_link = bpf_program__attach_cgroup(obj->progs.egress2,
 							child_cgroup_fd);
-	if (CHECK(IS_ERR(child_egress2_link), "child-egress2-cg-attach",
-		  "err %ld", PTR_ERR(child_egress2_link)))
+	if (!ASSERT_OK_PTR(child_egress2_link, "child-egress2-cg-attach"))
 		goto close_bpf_object;
 	child_ingress_link = bpf_program__attach_cgroup(obj->progs.ingress,
 							child_cgroup_fd);
-	if (CHECK(IS_ERR(child_ingress_link), "child-ingress-cg-attach",
-		  "err %ld", PTR_ERR(child_ingress_link)))
+	if (!ASSERT_OK_PTR(child_ingress_link, "child-ingress-cg-attach"))
 		goto close_bpf_object;
 	err = connect_send(CHILD_CGROUP);
 	if (CHECK(err, "second-connect-send", "errno %d", errno))
@@ -264,18 +258,12 @@ static void test_isolated(int parent_cgroup_fd, int child_cgroup_fd)
 		goto close_bpf_object;
 
 close_bpf_object:
-	if (!IS_ERR(parent_egress1_link))
-		bpf_link__destroy(parent_egress1_link);
-	if (!IS_ERR(parent_egress2_link))
-		bpf_link__destroy(parent_egress2_link);
-	if (!IS_ERR(parent_ingress_link))
-		bpf_link__destroy(parent_ingress_link);
-	if (!IS_ERR(child_egress1_link))
-		bpf_link__destroy(child_egress1_link);
-	if (!IS_ERR(child_egress2_link))
-		bpf_link__destroy(child_egress2_link);
-	if (!IS_ERR(child_ingress_link))
-		bpf_link__destroy(child_ingress_link);
+	bpf_link__destroy(parent_egress1_link);
+	bpf_link__destroy(parent_egress2_link);
+	bpf_link__destroy(parent_ingress_link);
+	bpf_link__destroy(child_egress1_link);
+	bpf_link__destroy(child_egress2_link);
+	bpf_link__destroy(child_ingress_link);
 
 	cg_storage_multi_isolated__destroy(obj);
 }
@@ -301,18 +289,15 @@ static void test_shared(int parent_cgroup_fd, int child_cgroup_fd)
 	 */
 	parent_egress1_link = bpf_program__attach_cgroup(obj->progs.egress1,
 							 parent_cgroup_fd);
-	if (CHECK(IS_ERR(parent_egress1_link), "parent-egress1-cg-attach",
-		  "err %ld", PTR_ERR(parent_egress1_link)))
+	if (!ASSERT_OK_PTR(parent_egress1_link, "parent-egress1-cg-attach"))
 		goto close_bpf_object;
 	parent_egress2_link = bpf_program__attach_cgroup(obj->progs.egress2,
 							 parent_cgroup_fd);
-	if (CHECK(IS_ERR(parent_egress2_link), "parent-egress2-cg-attach",
-		  "err %ld", PTR_ERR(parent_egress2_link)))
+	if (!ASSERT_OK_PTR(parent_egress2_link, "parent-egress2-cg-attach"))
 		goto close_bpf_object;
 	parent_ingress_link = bpf_program__attach_cgroup(obj->progs.ingress,
 							 parent_cgroup_fd);
-	if (CHECK(IS_ERR(parent_ingress_link), "parent-ingress-cg-attach",
-		  "err %ld", PTR_ERR(parent_ingress_link)))
+	if (!ASSERT_OK_PTR(parent_ingress_link, "parent-ingress-cg-attach"))
 		goto close_bpf_object;
 	err = connect_send(CHILD_CGROUP);
 	if (CHECK(err, "first-connect-send", "errno %d", errno))
@@ -338,18 +323,15 @@ static void test_shared(int parent_cgroup_fd, int child_cgroup_fd)
 	 */
 	child_egress1_link = bpf_program__attach_cgroup(obj->progs.egress1,
 							child_cgroup_fd);
-	if (CHECK(IS_ERR(child_egress1_link), "child-egress1-cg-attach",
-		  "err %ld", PTR_ERR(child_egress1_link)))
+	if (!ASSERT_OK_PTR(child_egress1_link, "child-egress1-cg-attach"))
 		goto close_bpf_object;
 	child_egress2_link = bpf_program__attach_cgroup(obj->progs.egress2,
 							child_cgroup_fd);
-	if (CHECK(IS_ERR(child_egress2_link), "child-egress2-cg-attach",
-		  "err %ld", PTR_ERR(child_egress2_link)))
+	if (!ASSERT_OK_PTR(child_egress2_link, "child-egress2-cg-attach"))
 		goto close_bpf_object;
 	child_ingress_link = bpf_program__attach_cgroup(obj->progs.ingress,
 							child_cgroup_fd);
-	if (CHECK(IS_ERR(child_ingress_link), "child-ingress-cg-attach",
-		  "err %ld", PTR_ERR(child_ingress_link)))
+	if (!ASSERT_OK_PTR(child_ingress_link, "child-ingress-cg-attach"))
 		goto close_bpf_object;
 	err = connect_send(CHILD_CGROUP);
 	if (CHECK(err, "second-connect-send", "errno %d", errno))
@@ -375,23 +357,17 @@ static void test_shared(int parent_cgroup_fd, int child_cgroup_fd)
 		goto close_bpf_object;
 
 close_bpf_object:
-	if (!IS_ERR(parent_egress1_link))
-		bpf_link__destroy(parent_egress1_link);
-	if (!IS_ERR(parent_egress2_link))
-		bpf_link__destroy(parent_egress2_link);
-	if (!IS_ERR(parent_ingress_link))
-		bpf_link__destroy(parent_ingress_link);
-	if (!IS_ERR(child_egress1_link))
-		bpf_link__destroy(child_egress1_link);
-	if (!IS_ERR(child_egress2_link))
-		bpf_link__destroy(child_egress2_link);
-	if (!IS_ERR(child_ingress_link))
-		bpf_link__destroy(child_ingress_link);
+	bpf_link__destroy(parent_egress1_link);
+	bpf_link__destroy(parent_egress2_link);
+	bpf_link__destroy(parent_ingress_link);
+	bpf_link__destroy(child_egress1_link);
+	bpf_link__destroy(child_egress2_link);
+	bpf_link__destroy(child_ingress_link);
 
 	cg_storage_multi_shared__destroy(obj);
 }
 
-void test_cg_storage_multi(void)
+void serial_test_cg_storage_multi(void)
 {
 	int parent_cgroup_fd = -1, child_cgroup_fd = -1;
 

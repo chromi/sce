@@ -193,7 +193,7 @@ static struct mtd_partition * newpart(char *s,
 	parts[this_part].mask_flags = mask_flags;
 	parts[this_part].add_flags = add_flags;
 	if (name)
-		strlcpy(extra_mem, name, name_len + 1);
+		strscpy(extra_mem, name, name_len + 1);
 	else
 		sprintf(extra_mem, "Partition_%03d", this_part);
 	parts[this_part].name = extra_mem;
@@ -226,7 +226,7 @@ static int mtdpart_setup_real(char *s)
 		struct cmdline_mtd_partition *this_mtd;
 		struct mtd_partition *parts;
 		int mtd_id_len, num_parts;
-		char *p, *mtd_id, *semicol;
+		char *p, *mtd_id, *semicol, *open_parenth;
 
 		/*
 		 * Replace the first ';' by a NULL char so strrchr can work
@@ -236,6 +236,14 @@ static int mtdpart_setup_real(char *s)
 		if (semicol)
 			*semicol = '\0';
 
+		/*
+		 * make sure that part-names with ":" will not be handled as
+		 * part of the mtd-id with an ":"
+		 */
+		open_parenth = strchr(s, '(');
+		if (open_parenth)
+			*open_parenth = '\0';
+
 		mtd_id = s;
 
 		/*
@@ -244,6 +252,10 @@ static int mtdpart_setup_real(char *s)
 		 * as an <mtd-id>/<part-definition> separator.
 		 */
 		p = strrchr(s, ':');
+
+		/* Restore the '(' now. */
+		if (open_parenth)
+			*open_parenth = '(';
 
 		/* Restore the ';' now. */
 		if (semicol)
@@ -286,7 +298,7 @@ static int mtdpart_setup_real(char *s)
 		this_mtd->parts = parts;
 		this_mtd->num_parts = num_parts;
 		this_mtd->mtd_id = (char*)(this_mtd + 1);
-		strlcpy(this_mtd->mtd_id, mtd_id, mtd_id_len + 1);
+		strscpy(this_mtd->mtd_id, mtd_id, mtd_id_len + 1);
 
 		/* link into chain */
 		this_mtd->next = partitions;

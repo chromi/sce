@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #ifndef _dcn_3_0_0_OFFSET_HEADER
 #define _dcn_3_0_0_OFFSET_HEADER
 
@@ -8922,7 +8923,7 @@
 #define mmOTG1_OTG_CONTROL                                                                             0x1bc1
 #define mmOTG1_OTG_CONTROL_BASE_IDX                                                                    2
 #define mmOTG1_OTG_BLANK_CONTROL                                                                       0x1bc2
-#define mmOTG1_OTG_BLANK_CONTROL_BASE_IDX
+#define mmOTG1_OTG_BLANK_CONTROL_BASE_IDX                                                              2
 #define mmOTG1_OTG_INTERLACE_CONTROL                                                                   0x1bc4
 #define mmOTG1_OTG_INTERLACE_CONTROL_BASE_IDX                                                          2
 #define mmOTG1_OTG_INTERLACE_STATUS                                                                    0x1bc5

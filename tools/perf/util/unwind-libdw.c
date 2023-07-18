@@ -20,10 +20,24 @@
 
 static char *debuginfo_path;
 
+static int __find_debuginfo(Dwfl_Module *mod __maybe_unused, void **userdata,
+			    const char *modname __maybe_unused, Dwarf_Addr base __maybe_unused,
+			    const char *file_name, const char *debuglink_file __maybe_unused,
+			    GElf_Word debuglink_crc __maybe_unused, char **debuginfo_file_name)
+{
+	const struct dso *dso = *userdata;
+
+	assert(dso);
+	if (dso->symsrc_filename && strcmp (file_name, dso->symsrc_filename))
+		*debuginfo_file_name = strdup(dso->symsrc_filename);
+	return -1;
+}
+
 static const Dwfl_Callbacks offline_callbacks = {
-	.find_debuginfo		= dwfl_standard_find_debuginfo,
+	.find_debuginfo		= __find_debuginfo,
 	.debuginfo_path		= &debuginfo_path,
 	.section_address	= dwfl_offline_section_address,
+	// .find_elf is not set as we use dwfl_report_elf() instead.
 };
 
 static int __report_module(struct addr_location *al, u64 ip,
@@ -38,7 +52,7 @@ static int __report_module(struct addr_location *al, u64 ip,
 	thread__find_symbol(ui->thread, PERF_RECORD_MISC_USER, ip, al);
 
 	if (al->map)
-		dso = al->map->dso;
+		dso = map__dso(al->map);
 
 	if (!dso)
 		return 0;
@@ -48,14 +62,27 @@ static int __report_module(struct addr_location *al, u64 ip,
 		Dwarf_Addr s;
 
 		dwfl_module_info(mod, NULL, &s, NULL, NULL, NULL, NULL, NULL);
-		if (s != al->map->start - al->map->pgoff)
+		if (s != map__start(al->map) - map__pgoff(al->map))
 			mod = 0;
 	}
 
 	if (!mod)
-		mod = dwfl_report_elf(ui->dwfl, dso->short_name,
-				      (dso->symsrc_filename ? dso->symsrc_filename : dso->long_name), -1, al->map->start - al->map->pgoff,
-				      false);
+		mod = dwfl_report_elf(ui->dwfl, dso->short_name, dso->long_name, -1,
+				      map__start(al->map) - map__pgoff(al->map), false);
+	if (!mod) {
+		char filename[PATH_MAX];
+
+		if (dso__build_id_filename(dso, filename, sizeof(filename), false))
+			mod = dwfl_report_elf(ui->dwfl, dso->short_name, filename, -1,
+					      map__start(al->map) - map__pgoff(al->map), false);
+	}
+
+	if (mod) {
+		void **userdatap;
+
+		dwfl_module_info(mod, &userdatap, NULL, NULL, NULL, NULL, NULL, NULL);
+		*userdatap = dso;
+	}
 
 	return mod && dwfl_addrmodule(ui->dwfl, ip) == mod ? 0 : -1;
 }
@@ -88,7 +115,7 @@ static int entry(u64 ip, struct unwind_info *ui)
 	pr_debug("unwind: %s:ip = 0x%" PRIx64 " (0x%" PRIx64 ")\n",
 		 al.sym ? al.sym->name : "''",
 		 ip,
-		 al.map ? al.map->map_ip(al.map, ip) : (u64) 0);
+		 al.map ? map__map_ip(al.map, ip) : (u64) 0);
 	return 0;
 }
 
@@ -107,17 +134,17 @@ static int access_dso_mem(struct unwind_info *ui, Dwarf_Addr addr,
 {
 	struct addr_location al;
 	ssize_t size;
+	struct dso *dso;
 
 	if (!thread__find_map(ui->thread, PERF_RECORD_MISC_USER, addr, &al)) {
 		pr_debug("unwind: no map for %lx\n", (unsigned long)addr);
 		return -1;
 	}
-
-	if (!al.map->dso)
+	dso = map__dso(al.map);
+	if (!dso)
 		return -1;
 
-	size = dso__data_read_addr(al.map->dso, al.map, ui->machine,
-				   addr, (u8 *) data, sizeof(*data));
+	size = dso__data_read_addr(dso, al.map, ui->machine, addr, (u8 *) data, sizeof(*data));
 
 	return !(size == sizeof(*data));
 }
@@ -173,7 +200,8 @@ frame_callback(Dwfl_Frame *state, void *arg)
 	bool isactivation;
 
 	if (!dwfl_frame_pc(state, &pc, NULL)) {
-		pr_err("%s", dwfl_errmsg(-1));
+		if (!ui->best_effort)
+			pr_err("%s", dwfl_errmsg(-1));
 		return DWARF_CB_ABORT;
 	}
 
@@ -181,7 +209,8 @@ frame_callback(Dwfl_Frame *state, void *arg)
 	report_module(pc, ui);
 
 	if (!dwfl_frame_pc(state, &pc, &isactivation)) {
-		pr_err("%s", dwfl_errmsg(-1));
+		if (!ui->best_effort)
+			pr_err("%s", dwfl_errmsg(-1));
 		return DWARF_CB_ABORT;
 	}
 
@@ -195,15 +224,17 @@ frame_callback(Dwfl_Frame *state, void *arg)
 int unwind__get_entries(unwind_entry_cb_t cb, void *arg,
 			struct thread *thread,
 			struct perf_sample *data,
-			int max_stack)
+			int max_stack,
+			bool best_effort)
 {
 	struct unwind_info *ui, ui_buf = {
 		.sample		= data,
 		.thread		= thread,
-		.machine	= thread->maps->machine,
+		.machine	= RC_CHK_ACCESS(thread->maps)->machine,
 		.cb		= cb,
 		.arg		= arg,
 		.max_stack	= max_stack,
+		.best_effort    = best_effort
 	};
 	Dwarf_Word ip;
 	int err = -EINVAL, i;

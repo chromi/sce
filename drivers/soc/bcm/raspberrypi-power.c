@@ -177,7 +177,7 @@ static int rpi_power_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	rpi_domains->fw = rpi_firmware_get(fw_np);
+	rpi_domains->fw = devm_rpi_firmware_get(&pdev->dev, fw_np);
 	of_node_put(fw_np);
 	if (!rpi_domains->fw)
 		return -EPROBE_DEFER;
@@ -243,4 +243,3 @@ builtin_platform_driver(rpi_power_driver);
 MODULE_AUTHOR("Alexander Aring <aar@pengutronix.de>");
 MODULE_AUTHOR("Eric Anholt <eric@anholt.net>");
 MODULE_DESCRIPTION("Raspberry Pi power domain driver");
-MODULE_LICENSE("GPL v2");

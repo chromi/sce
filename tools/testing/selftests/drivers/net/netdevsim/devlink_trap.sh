@@ -24,13 +24,15 @@ ALL_TESTS="
 NETDEVSIM_PATH=/sys/bus/netdevsim/
 DEV_ADDR=1337
 DEV=netdevsim${DEV_ADDR}
-DEVLINK_DEV=netdevsim/${DEV}
 DEBUGFS_DIR=/sys/kernel/debug/netdevsim/$DEV/
 SLEEP_TIME=1
 NETDEV=""
 NUM_NETIFS=0
 source $lib_dir/lib.sh
+
+DEVLINK_DEV=
 source $lib_dir/devlink_lib.sh
+DEVLINK_DEV=netdevsim/${DEV}
 
 require_command udevadm
 
@@ -44,6 +46,17 @@ if [ -d "${NETDEVSIM_PATH}/devices/netdevsim${DEV_ADDR}" ]; then
 	echo "SKIP: Device netdevsim${DEV_ADDR} already exists"
 	exit 1
 fi
+
+check_netdev_down()
+{
+	state=$(cat /sys/class/net/${NETDEV}/flags)
+
+	if [ $((state & 1)) -ne 0 ]; then
+		echo "WARNING: unexpected interface UP, disable NetworkManager?"
+
+		ip link set dev $NETDEV down
+	fi
+}
 
 init_test()
 {
@@ -149,6 +162,7 @@ trap_stats_test()
 
 	RET=0
 
+	check_netdev_down
 	for trap_name in $(devlink_traps_get); do
 		devlink_trap_stats_idle_test $trap_name
 		check_err $? "Stats of trap $trap_name not idle when netdev down"
@@ -163,6 +177,16 @@ trap_stats_test()
 			devlink_trap_action_set $trap_name "drop"
 			devlink_trap_stats_idle_test $trap_name
 			check_err $? "Stats of trap $trap_name not idle when action is drop"
+
+			echo "y"> $DEBUGFS_DIR/fail_trap_drop_counter_get
+			devlink -s trap show $DEVLINK_DEV trap $trap_name &> /dev/null
+			check_fail $? "Managed to read trap (hard dropped) statistics when should not"
+			echo "n"> $DEBUGFS_DIR/fail_trap_drop_counter_get
+			devlink -s trap show $DEVLINK_DEV trap $trap_name &> /dev/null
+			check_err $? "Did not manage to read trap (hard dropped) statistics when should"
+
+			devlink_trap_drop_stats_idle_test $trap_name
+			check_fail $? "Drop stats of trap $trap_name idle when should not"
 		else
 			devlink_trap_stats_idle_test $trap_name
 			check_fail $? "Stats of non-drop trap $trap_name idle when should not"
@@ -242,6 +266,7 @@ trap_group_stats_test()
 
 	RET=0
 
+	check_netdev_down
 	for group_name in $(devlink_trap_groups_get); do
 		devlink_trap_group_stats_idle_test $group_name
 		check_err $? "Stats of trap group $group_name not idle when netdev down"

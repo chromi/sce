@@ -311,7 +311,7 @@
 		interrupt-parent = <&gpio1>;
 		interrupts = <8 0>;   /* boot6 / gpio_8 */
 		spi-max-frequency = <1000000>;
-		pendown-gpio = <&gpio1 8 GPIO_ACTIVE_HIGH>;
+		pendown-gpio = <&gpio1 8 GPIO_ACTIVE_LOW>;
 		vcc-supply = <&reg_vcc3>;
 		pinctrl-names = "default";
 		pinctrl-0 = <&tsc2048_pins>;
@@ -372,7 +372,7 @@
 		gpmc,device-width = <2>;
 		gpmc,wait-pin = <0>;
 		gpmc,wait-monitoring-ns = <0>;
-		gpmc,burst-length= <4>;
+		gpmc,burst-length = <4>;
 		gpmc,cs-on-ns = <0>;
 		gpmc,cs-rd-off-ns = <100>;
 		gpmc,cs-wr-off-ns = <100>;

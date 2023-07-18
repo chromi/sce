@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- *  Copyright IBM Corp. 2012, 2019
+ *  Copyright IBM Corp. 2012, 2022
  *  Author(s): Holger Dengler <hd@linux.vnet.ibm.com>
  */
 
@@ -28,19 +28,16 @@
 #define CEX4C_MIN_MOD_SIZE	 16	/*  256 bits	*/
 #define CEX4C_MAX_MOD_SIZE	512	/* 4096 bits	*/
 
-#define CEX4A_MAX_MESSAGE_SIZE	MSGTYPE50_CRB3_MAX_MSG_SIZE
-#define CEX4C_MAX_MESSAGE_SIZE	MSGTYPE06_MAX_MSG_SIZE
-
 /* Waiting time for requests to be processed.
  * Currently there are some types of request which are not deterministic.
  * But the maximum time limit managed by the stomper code is set to 60sec.
  * Hence we have to wait at least that time period.
  */
-#define CEX4_CLEANUP_TIME	(900*HZ)
+#define CEX4_CLEANUP_TIME	(900 * HZ)
 
 MODULE_AUTHOR("IBM Corporation");
-MODULE_DESCRIPTION("CEX4/CEX5/CEX6/CEX7 Cryptographic Card device driver, " \
-		   "Copyright IBM Corp. 2019");
+MODULE_DESCRIPTION("CEX[45678] Cryptographic Card device driver, " \
+		   "Copyright IBM Corp. 2022");
 MODULE_LICENSE("GPL");
 
 static struct ap_device_id zcrypt_cex4_card_ids[] = {
@@ -51,6 +48,8 @@ static struct ap_device_id zcrypt_cex4_card_ids[] = {
 	{ .dev_type = AP_DEVICE_TYPE_CEX6,
 	  .match_flags = AP_DEVICE_ID_MATCH_CARD_TYPE },
 	{ .dev_type = AP_DEVICE_TYPE_CEX7,
+	  .match_flags = AP_DEVICE_ID_MATCH_CARD_TYPE },
+	{ .dev_type = AP_DEVICE_TYPE_CEX8,
 	  .match_flags = AP_DEVICE_ID_MATCH_CARD_TYPE },
 	{ /* end of list */ },
 };
@@ -66,6 +65,8 @@ static struct ap_device_id zcrypt_cex4_queue_ids[] = {
 	  .match_flags = AP_DEVICE_ID_MATCH_QUEUE_TYPE },
 	{ .dev_type = AP_DEVICE_TYPE_CEX7,
 	  .match_flags = AP_DEVICE_ID_MATCH_QUEUE_TYPE },
+	{ .dev_type = AP_DEVICE_TYPE_CEX8,
+	  .match_flags = AP_DEVICE_ID_MATCH_QUEUE_TYPE },
 	{ /* end of list */ },
 };
 
@@ -78,16 +79,16 @@ static ssize_t cca_serialnr_show(struct device *dev,
 				 struct device_attribute *attr,
 				 char *buf)
 {
+	struct zcrypt_card *zc = dev_get_drvdata(dev);
 	struct cca_info ci;
 	struct ap_card *ac = to_ap_card(dev);
-	struct zcrypt_card *zc = ac->private;
 
 	memset(&ci, 0, sizeof(ci));
 
 	if (ap_domain_index >= 0)
 		cca_get_info(ac->id, ap_domain_index, &ci, zc->online);
 
-	return scnprintf(buf, PAGE_SIZE, "%s\n", ci.serial);
+	return sysfs_emit(buf, "%s\n", ci.serial);
 }
 
 static struct device_attribute dev_attr_cca_serialnr =
@@ -109,9 +110,9 @@ static ssize_t cca_mkvps_show(struct device *dev,
 			      struct device_attribute *attr,
 			      char *buf)
 {
+	struct zcrypt_queue *zq = dev_get_drvdata(dev);
 	int n = 0;
 	struct cca_info ci;
-	struct zcrypt_queue *zq = to_ap_queue(dev)->private;
 	static const char * const cao_state[] = { "invalid", "valid" };
 	static const char * const new_state[] = { "empty", "partial", "full" };
 
@@ -122,51 +123,70 @@ static ssize_t cca_mkvps_show(struct device *dev,
 		     &ci, zq->online);
 
 	if (ci.new_aes_mk_state >= '1' && ci.new_aes_mk_state <= '3')
-		n = scnprintf(buf, PAGE_SIZE, "AES NEW: %s 0x%016llx\n",
-			      new_state[ci.new_aes_mk_state - '1'],
-			      ci.new_aes_mkvp);
+		n += sysfs_emit_at(buf, n, "AES NEW: %s 0x%016llx\n",
+				   new_state[ci.new_aes_mk_state - '1'],
+				   ci.new_aes_mkvp);
 	else
-		n = scnprintf(buf, PAGE_SIZE, "AES NEW: - -\n");
+		n += sysfs_emit_at(buf, n, "AES NEW: - -\n");
 
 	if (ci.cur_aes_mk_state >= '1' && ci.cur_aes_mk_state <= '2')
-		n += scnprintf(buf + n, PAGE_SIZE - n,
-			       "AES CUR: %s 0x%016llx\n",
-			       cao_state[ci.cur_aes_mk_state - '1'],
-			       ci.cur_aes_mkvp);
+		n += sysfs_emit_at(buf, n, "AES CUR: %s 0x%016llx\n",
+				   cao_state[ci.cur_aes_mk_state - '1'],
+				   ci.cur_aes_mkvp);
 	else
-		n += scnprintf(buf + n, PAGE_SIZE - n, "AES CUR: - -\n");
+		n += sysfs_emit_at(buf, n, "AES CUR: - -\n");
 
 	if (ci.old_aes_mk_state >= '1' && ci.old_aes_mk_state <= '2')
-		n += scnprintf(buf + n, PAGE_SIZE - n,
-			       "AES OLD: %s 0x%016llx\n",
-			       cao_state[ci.old_aes_mk_state - '1'],
-			       ci.old_aes_mkvp);
+		n += sysfs_emit_at(buf, n, "AES OLD: %s 0x%016llx\n",
+				   cao_state[ci.old_aes_mk_state - '1'],
+				   ci.old_aes_mkvp);
 	else
-		n += scnprintf(buf + n, PAGE_SIZE - n, "AES OLD: - -\n");
+		n += sysfs_emit_at(buf, n, "AES OLD: - -\n");
 
 	if (ci.new_apka_mk_state >= '1' && ci.new_apka_mk_state <= '3')
-		n += scnprintf(buf + n, PAGE_SIZE - n,
-			       "APKA NEW: %s 0x%016llx\n",
-			       new_state[ci.new_apka_mk_state - '1'],
-			       ci.new_apka_mkvp);
+		n += sysfs_emit_at(buf, n, "APKA NEW: %s 0x%016llx\n",
+				   new_state[ci.new_apka_mk_state - '1'],
+				   ci.new_apka_mkvp);
 	else
-		n += scnprintf(buf + n, PAGE_SIZE - n, "APKA NEW: - -\n");
+		n += sysfs_emit_at(buf, n, "APKA NEW: - -\n");
 
 	if (ci.cur_apka_mk_state >= '1' && ci.cur_apka_mk_state <= '2')
-		n += scnprintf(buf + n, PAGE_SIZE - n,
-			       "APKA CUR: %s 0x%016llx\n",
-			       cao_state[ci.cur_apka_mk_state - '1'],
-			       ci.cur_apka_mkvp);
+		n += sysfs_emit_at(buf, n, "APKA CUR: %s 0x%016llx\n",
+				   cao_state[ci.cur_apka_mk_state - '1'],
+				   ci.cur_apka_mkvp);
 	else
-		n += scnprintf(buf + n, PAGE_SIZE - n, "APKA CUR: - -\n");
+		n += sysfs_emit_at(buf, n, "APKA CUR: - -\n");
 
 	if (ci.old_apka_mk_state >= '1' && ci.old_apka_mk_state <= '2')
-		n += scnprintf(buf + n, PAGE_SIZE - n,
-			       "APKA OLD: %s 0x%016llx\n",
-			       cao_state[ci.old_apka_mk_state - '1'],
-			       ci.old_apka_mkvp);
+		n += sysfs_emit_at(buf, n, "APKA OLD: %s 0x%016llx\n",
+				   cao_state[ci.old_apka_mk_state - '1'],
+				   ci.old_apka_mkvp);
 	else
-		n += scnprintf(buf + n, PAGE_SIZE - n, "APKA OLD: - -\n");
+		n += sysfs_emit_at(buf, n, "APKA OLD: - -\n");
+
+	if (ci.new_asym_mk_state >= '1' && ci.new_asym_mk_state <= '3')
+		n += sysfs_emit_at(buf, n, "ASYM NEW: %s 0x%016llx%016llx\n",
+				   new_state[ci.new_asym_mk_state - '1'],
+				   *((u64 *)(ci.new_asym_mkvp)),
+				   *((u64 *)(ci.new_asym_mkvp + sizeof(u64))));
+	else
+		n += sysfs_emit_at(buf, n, "ASYM NEW: - -\n");
+
+	if (ci.cur_asym_mk_state >= '1' && ci.cur_asym_mk_state <= '2')
+		n += sysfs_emit_at(buf, n, "ASYM CUR: %s 0x%016llx%016llx\n",
+				   cao_state[ci.cur_asym_mk_state - '1'],
+				   *((u64 *)(ci.cur_asym_mkvp)),
+				   *((u64 *)(ci.cur_asym_mkvp + sizeof(u64))));
+	else
+		n += sysfs_emit_at(buf, n, "ASYM CUR: - -\n");
+
+	if (ci.old_asym_mk_state >= '1' && ci.old_asym_mk_state <= '2')
+		n += sysfs_emit_at(buf, n, "ASYM OLD: %s 0x%016llx%016llx\n",
+				   cao_state[ci.old_asym_mk_state - '1'],
+				   *((u64 *)(ci.old_asym_mkvp)),
+				   *((u64 *)(ci.old_asym_mkvp + sizeof(u64))));
+	else
+		n += sysfs_emit_at(buf, n, "ASYM OLD: - -\n");
 
 	return n;
 }
@@ -190,18 +210,18 @@ static ssize_t ep11_api_ordinalnr_show(struct device *dev,
 				       struct device_attribute *attr,
 				       char *buf)
 {
+	struct zcrypt_card *zc = dev_get_drvdata(dev);
 	struct ep11_card_info ci;
 	struct ap_card *ac = to_ap_card(dev);
-	struct zcrypt_card *zc = ac->private;
 
 	memset(&ci, 0, sizeof(ci));
 
 	ep11_get_card_info(ac->id, &ci, zc->online);
 
 	if (ci.API_ord_nr > 0)
-		return scnprintf(buf, PAGE_SIZE, "%u\n", ci.API_ord_nr);
+		return sysfs_emit(buf, "%u\n", ci.API_ord_nr);
 	else
-		return scnprintf(buf, PAGE_SIZE, "\n");
+		return sysfs_emit(buf, "\n");
 }
 
 static struct device_attribute dev_attr_ep11_api_ordinalnr =
@@ -211,20 +231,20 @@ static ssize_t ep11_fw_version_show(struct device *dev,
 				    struct device_attribute *attr,
 				    char *buf)
 {
+	struct zcrypt_card *zc = dev_get_drvdata(dev);
 	struct ep11_card_info ci;
 	struct ap_card *ac = to_ap_card(dev);
-	struct zcrypt_card *zc = ac->private;
 
 	memset(&ci, 0, sizeof(ci));
 
 	ep11_get_card_info(ac->id, &ci, zc->online);
 
 	if (ci.FW_version > 0)
-		return scnprintf(buf, PAGE_SIZE, "%d.%d\n",
-				 (int)(ci.FW_version >> 8),
-				 (int)(ci.FW_version & 0xFF));
+		return sysfs_emit(buf, "%d.%d\n",
+				  (int)(ci.FW_version >> 8),
+				  (int)(ci.FW_version & 0xFF));
 	else
-		return scnprintf(buf, PAGE_SIZE, "\n");
+		return sysfs_emit(buf, "\n");
 }
 
 static struct device_attribute dev_attr_ep11_fw_version =
@@ -234,18 +254,18 @@ static ssize_t ep11_serialnr_show(struct device *dev,
 				  struct device_attribute *attr,
 				  char *buf)
 {
+	struct zcrypt_card *zc = dev_get_drvdata(dev);
 	struct ep11_card_info ci;
 	struct ap_card *ac = to_ap_card(dev);
-	struct zcrypt_card *zc = ac->private;
 
 	memset(&ci, 0, sizeof(ci));
 
 	ep11_get_card_info(ac->id, &ci, zc->online);
 
 	if (ci.serial[0])
-		return scnprintf(buf, PAGE_SIZE, "%16.16s\n", ci.serial);
+		return sysfs_emit(buf, "%16.16s\n", ci.serial);
 	else
-		return scnprintf(buf, PAGE_SIZE, "\n");
+		return sysfs_emit(buf, "\n");
 }
 
 static struct device_attribute dev_attr_ep11_serialnr =
@@ -267,10 +287,10 @@ static ssize_t ep11_card_op_modes_show(struct device *dev,
 				       struct device_attribute *attr,
 				       char *buf)
 {
+	struct zcrypt_card *zc = dev_get_drvdata(dev);
 	int i, n = 0;
 	struct ep11_card_info ci;
 	struct ap_card *ac = to_ap_card(dev);
-	struct zcrypt_card *zc = ac->private;
 
 	memset(&ci, 0, sizeof(ci));
 
@@ -280,11 +300,11 @@ static ssize_t ep11_card_op_modes_show(struct device *dev,
 		if (ci.op_mode & (1ULL << ep11_op_modes[i].mode_bit)) {
 			if (n > 0)
 				buf[n++] = ' ';
-			n += scnprintf(buf + n, PAGE_SIZE - n,
-				       "%s", ep11_op_modes[i].mode_txt);
+			n += sysfs_emit_at(buf, n, "%s",
+					   ep11_op_modes[i].mode_txt);
 		}
 	}
-	n += scnprintf(buf + n, PAGE_SIZE - n, "\n");
+	n += sysfs_emit_at(buf, n, "\n");
 
 	return n;
 }
@@ -312,9 +332,9 @@ static ssize_t ep11_mkvps_show(struct device *dev,
 			       struct device_attribute *attr,
 			       char *buf)
 {
+	struct zcrypt_queue *zq = dev_get_drvdata(dev);
 	int n = 0;
 	struct ep11_domain_info di;
-	struct zcrypt_queue *zq = to_ap_queue(dev)->private;
 	static const char * const cwk_state[] = { "invalid", "valid" };
 	static const char * const nwk_state[] = { "empty", "uncommitted",
 						  "committed" };
@@ -327,28 +347,30 @@ static ssize_t ep11_mkvps_show(struct device *dev,
 				     &di);
 
 	if (di.cur_wk_state == '0') {
-		n = scnprintf(buf, PAGE_SIZE, "WK CUR: %s -\n",
-			      cwk_state[di.cur_wk_state - '0']);
+		n = sysfs_emit(buf, "WK CUR: %s -\n",
+			       cwk_state[di.cur_wk_state - '0']);
 	} else if (di.cur_wk_state == '1') {
-		n = scnprintf(buf, PAGE_SIZE, "WK CUR: %s 0x",
-			      cwk_state[di.cur_wk_state - '0']);
+		n = sysfs_emit(buf, "WK CUR: %s 0x",
+			       cwk_state[di.cur_wk_state - '0']);
 		bin2hex(buf + n, di.cur_wkvp, sizeof(di.cur_wkvp));
 		n += 2 * sizeof(di.cur_wkvp);
-		n += scnprintf(buf + n, PAGE_SIZE - n, "\n");
-	} else
-		n = scnprintf(buf, PAGE_SIZE, "WK CUR: - -\n");
+		n += sysfs_emit_at(buf, n, "\n");
+	} else {
+		n = sysfs_emit(buf, "WK CUR: - -\n");
+	}
 
 	if (di.new_wk_state == '0') {
-		n += scnprintf(buf + n, PAGE_SIZE - n, "WK NEW: %s -\n",
-			       nwk_state[di.new_wk_state - '0']);
+		n += sysfs_emit_at(buf, n, "WK NEW: %s -\n",
+				   nwk_state[di.new_wk_state - '0']);
 	} else if (di.new_wk_state >= '1' && di.new_wk_state <= '2') {
-		n += scnprintf(buf + n, PAGE_SIZE - n, "WK NEW: %s 0x",
-			       nwk_state[di.new_wk_state - '0']);
+		n += sysfs_emit_at(buf, n, "WK NEW: %s 0x",
+				   nwk_state[di.new_wk_state - '0']);
 		bin2hex(buf + n, di.new_wkvp, sizeof(di.new_wkvp));
 		n += 2 * sizeof(di.new_wkvp);
-		n += scnprintf(buf + n, PAGE_SIZE - n, "\n");
-	} else
-		n += scnprintf(buf + n, PAGE_SIZE - n, "WK NEW: - -\n");
+		n += sysfs_emit_at(buf, n, "\n");
+	} else {
+		n += sysfs_emit_at(buf, n, "WK NEW: - -\n");
+	}
 
 	return n;
 }
@@ -360,9 +382,9 @@ static ssize_t ep11_queue_op_modes_show(struct device *dev,
 					struct device_attribute *attr,
 					char *buf)
 {
+	struct zcrypt_queue *zq = dev_get_drvdata(dev);
 	int i, n = 0;
 	struct ep11_domain_info di;
-	struct zcrypt_queue *zq = to_ap_queue(dev)->private;
 
 	memset(&di, 0, sizeof(di));
 
@@ -375,11 +397,11 @@ static ssize_t ep11_queue_op_modes_show(struct device *dev,
 		if (di.op_mode & (1ULL << ep11_op_modes[i].mode_bit)) {
 			if (n > 0)
 				buf[n++] = ' ';
-			n += scnprintf(buf + n, PAGE_SIZE - n,
-				       "%s", ep11_op_modes[i].mode_txt);
+			n += sysfs_emit_at(buf, n, "%s",
+					   ep11_op_modes[i].mode_txt);
 		}
 	}
-	n += scnprintf(buf + n, PAGE_SIZE - n, "\n");
+	n += sysfs_emit_at(buf, n, "\n");
 
 	return n;
 }
@@ -397,8 +419,8 @@ static const struct attribute_group ep11_queue_attr_grp = {
 	.attrs = ep11_queue_attrs,
 };
 
-/**
- * Probe function for CEX4/CEX5/CEX6/CEX7 card device. It always
+/*
+ * Probe function for CEX[45678] card device. It always
  * accepts the AP device since the bus_match already checked
  * the hardware type.
  * @ap_dev: pointer to the AP device.
@@ -417,6 +439,8 @@ static int zcrypt_cex4_card_probe(struct ap_device *ap_dev)
 		  6,   9,  20, 17,  65,	 438, 0, 0};
 	static const int CEX7A_SPEED_IDX[NUM_OPS] = {
 		  6,   8,  17, 15,  54,	 362, 0, 0};
+	static const int CEX8A_SPEED_IDX[NUM_OPS] = {
+		  6,   8,  17, 15,  54,	 362, 0, 0};
 
 	static const int CEX4C_SPEED_IDX[NUM_OPS] = {
 		 59,  69, 308, 83, 278, 2204, 209, 40};
@@ -425,6 +449,8 @@ static int zcrypt_cex4_card_probe(struct ap_device *ap_dev)
 	static const int CEX6C_SPEED_IDX[NUM_OPS] = {
 		 16,  20,  32, 27,  77,	 455,  24,  9};
 	static const int CEX7C_SPEED_IDX[NUM_OPS] = {
+		 14,  16,  26, 23,  64,	 376,  23,  8};
+	static const int CEX8C_SPEED_IDX[NUM_OPS] = {
 		 14,  16,  26, 23,  64,	 376,  23,  8};
 
 	static const int CEX4P_SPEED_IDX[NUM_OPS] = {
@@ -435,6 +461,8 @@ static int zcrypt_cex4_card_probe(struct ap_device *ap_dev)
 		  0,   0,   0,	 0,   0,   0,	0,   9};
 	static const int CEX7P_SPEED_IDX[NUM_OPS] = {
 		  0,   0,   0,	 0,   0,   0,	0,   8};
+	static const int CEX8P_SPEED_IDX[NUM_OPS] = {
+		  0,   0,   0,	 0,   0,   0,	0,   8};
 
 	struct ap_card *ac = to_ap_card(&ap_dev->device);
 	struct zcrypt_card *zc;
@@ -444,7 +472,7 @@ static int zcrypt_cex4_card_probe(struct ap_device *ap_dev)
 	if (!zc)
 		return -ENOMEM;
 	zc->card = ac;
-	ac->private = zc;
+	dev_set_drvdata(&ap_dev->device, zc);
 	if (ap_test_bit(&ac->functions, AP_FUNC_ACCEL)) {
 		if (ac->ap_dev.device_type == AP_DEVICE_TYPE_CEX4) {
 			zc->type_string = "CEX4A";
@@ -458,13 +486,20 @@ static int zcrypt_cex4_card_probe(struct ap_device *ap_dev)
 			zc->type_string = "CEX6A";
 			zc->user_space_type = ZCRYPT_CEX6;
 			zc->speed_rating = CEX6A_SPEED_IDX;
-		} else {
+		} else if (ac->ap_dev.device_type == AP_DEVICE_TYPE_CEX7) {
 			zc->type_string = "CEX7A";
+			zc->speed_rating = CEX7A_SPEED_IDX;
 			/* wrong user space type, just for compatibility
 			 * with the ZCRYPT_STATUS_MASK ioctl.
 			 */
 			zc->user_space_type = ZCRYPT_CEX6;
-			zc->speed_rating = CEX7A_SPEED_IDX;
+		} else {
+			zc->type_string = "CEX8A";
+			zc->speed_rating = CEX8A_SPEED_IDX;
+			/* wrong user space type, just for compatibility
+			 * with the ZCRYPT_STATUS_MASK ioctl.
+			 */
+			zc->user_space_type = ZCRYPT_CEX6;
 		}
 		zc->min_mod_size = CEX4A_MIN_MOD_SIZE;
 		if (ap_test_bit(&ac->functions, AP_FUNC_MEX4K) &&
@@ -480,32 +515,39 @@ static int zcrypt_cex4_card_probe(struct ap_device *ap_dev)
 	} else if (ap_test_bit(&ac->functions, AP_FUNC_COPRO)) {
 		if (ac->ap_dev.device_type == AP_DEVICE_TYPE_CEX4) {
 			zc->type_string = "CEX4C";
-			/* wrong user space type, must be CEX4
+			zc->speed_rating = CEX4C_SPEED_IDX;
+			/* wrong user space type, must be CEX3C
 			 * just keep it for cca compatibility
 			 */
 			zc->user_space_type = ZCRYPT_CEX3C;
-			zc->speed_rating = CEX4C_SPEED_IDX;
 		} else if (ac->ap_dev.device_type == AP_DEVICE_TYPE_CEX5) {
 			zc->type_string = "CEX5C";
-			/* wrong user space type, must be CEX5
+			zc->speed_rating = CEX5C_SPEED_IDX;
+			/* wrong user space type, must be CEX3C
 			 * just keep it for cca compatibility
 			 */
 			zc->user_space_type = ZCRYPT_CEX3C;
-			zc->speed_rating = CEX5C_SPEED_IDX;
 		} else if (ac->ap_dev.device_type == AP_DEVICE_TYPE_CEX6) {
 			zc->type_string = "CEX6C";
-			/* wrong user space type, must be CEX6
-			 * just keep it for cca compatibility
-			 */
-			zc->user_space_type = ZCRYPT_CEX3C;
 			zc->speed_rating = CEX6C_SPEED_IDX;
-		} else {
-			zc->type_string = "CEX7C";
-			/* wrong user space type, must be CEX7
+			/* wrong user space type, must be CEX3C
 			 * just keep it for cca compatibility
 			 */
 			zc->user_space_type = ZCRYPT_CEX3C;
+		} else if (ac->ap_dev.device_type == AP_DEVICE_TYPE_CEX7) {
+			zc->type_string = "CEX7C";
 			zc->speed_rating = CEX7C_SPEED_IDX;
+			/* wrong user space type, must be CEX3C
+			 * just keep it for cca compatibility
+			 */
+			zc->user_space_type = ZCRYPT_CEX3C;
+		} else {
+			zc->type_string = "CEX8C";
+			zc->speed_rating = CEX8C_SPEED_IDX;
+			/* wrong user space type, must be CEX3C
+			 * just keep it for cca compatibility
+			 */
+			zc->user_space_type = ZCRYPT_CEX3C;
 		}
 		zc->min_mod_size = CEX4C_MIN_MOD_SIZE;
 		zc->max_mod_size = CEX4C_MAX_MOD_SIZE;
@@ -523,13 +565,20 @@ static int zcrypt_cex4_card_probe(struct ap_device *ap_dev)
 			zc->type_string = "CEX6P";
 			zc->user_space_type = ZCRYPT_CEX6;
 			zc->speed_rating = CEX6P_SPEED_IDX;
-		} else {
+		} else if (ac->ap_dev.device_type == AP_DEVICE_TYPE_CEX7) {
 			zc->type_string = "CEX7P";
+			zc->speed_rating = CEX7P_SPEED_IDX;
 			/* wrong user space type, just for compatibility
 			 * with the ZCRYPT_STATUS_MASK ioctl.
 			 */
 			zc->user_space_type = ZCRYPT_CEX6;
-			zc->speed_rating = CEX7P_SPEED_IDX;
+		} else {
+			zc->type_string = "CEX8P";
+			zc->speed_rating = CEX8P_SPEED_IDX;
+			/* wrong user space type, just for compatibility
+			 * with the ZCRYPT_STATUS_MASK ioctl.
+			 */
+			zc->user_space_type = ZCRYPT_CEX6;
 		}
 		zc->min_mod_size = CEX4C_MIN_MOD_SIZE;
 		zc->max_mod_size = CEX4C_MAX_MOD_SIZE;
@@ -542,7 +591,6 @@ static int zcrypt_cex4_card_probe(struct ap_device *ap_dev)
 
 	rc = zcrypt_card_register(zc);
 	if (rc) {
-		ac->private = NULL;
 		zcrypt_card_free(zc);
 		return rc;
 	}
@@ -552,7 +600,6 @@ static int zcrypt_cex4_card_probe(struct ap_device *ap_dev)
 					&cca_card_attr_grp);
 		if (rc) {
 			zcrypt_card_unregister(zc);
-			ac->private = NULL;
 			zcrypt_card_free(zc);
 		}
 	} else if (ap_test_bit(&ac->functions, AP_FUNC_EP11)) {
@@ -560,7 +607,6 @@ static int zcrypt_cex4_card_probe(struct ap_device *ap_dev)
 					&ep11_card_attr_grp);
 		if (rc) {
 			zcrypt_card_unregister(zc);
-			ac->private = NULL;
 			zcrypt_card_free(zc);
 		}
 	}
@@ -568,21 +614,21 @@ static int zcrypt_cex4_card_probe(struct ap_device *ap_dev)
 	return rc;
 }
 
-/**
- * This is called to remove the CEX4/CEX5/CEX6/CEX7 card driver
+/*
+ * This is called to remove the CEX[45678] card driver
  * information if an AP card device is removed.
  */
 static void zcrypt_cex4_card_remove(struct ap_device *ap_dev)
 {
+	struct zcrypt_card *zc = dev_get_drvdata(&ap_dev->device);
 	struct ap_card *ac = to_ap_card(&ap_dev->device);
-	struct zcrypt_card *zc = ac->private;
 
 	if (ap_test_bit(&ac->functions, AP_FUNC_COPRO))
 		sysfs_remove_group(&ap_dev->device.kobj, &cca_card_attr_grp);
 	else if (ap_test_bit(&ac->functions, AP_FUNC_EP11))
 		sysfs_remove_group(&ap_dev->device.kobj, &ep11_card_attr_grp);
-	if (zc)
-		zcrypt_card_unregister(zc);
+
+	zcrypt_card_unregister(zc);
 }
 
 static struct ap_driver zcrypt_cex4_card_driver = {
@@ -592,8 +638,8 @@ static struct ap_driver zcrypt_cex4_card_driver = {
 	.flags = AP_DRIVER_FLAG_DEFAULT,
 };
 
-/**
- * Probe function for CEX4/CEX5/CEX6/CEX7 queue device. It always
+/*
+ * Probe function for CEX[45678] queue device. It always
  * accepts the AP device since the bus_match already checked
  * the hardware type.
  * @ap_dev: pointer to the AP device.
@@ -605,19 +651,19 @@ static int zcrypt_cex4_queue_probe(struct ap_device *ap_dev)
 	int rc;
 
 	if (ap_test_bit(&aq->card->functions, AP_FUNC_ACCEL)) {
-		zq = zcrypt_queue_alloc(CEX4A_MAX_MESSAGE_SIZE);
+		zq = zcrypt_queue_alloc(aq->card->maxmsgsize);
 		if (!zq)
 			return -ENOMEM;
 		zq->ops = zcrypt_msgtype(MSGTYPE50_NAME,
 					 MSGTYPE50_VARIANT_DEFAULT);
 	} else if (ap_test_bit(&aq->card->functions, AP_FUNC_COPRO)) {
-		zq = zcrypt_queue_alloc(CEX4C_MAX_MESSAGE_SIZE);
+		zq = zcrypt_queue_alloc(aq->card->maxmsgsize);
 		if (!zq)
 			return -ENOMEM;
 		zq->ops = zcrypt_msgtype(MSGTYPE06_NAME,
 					 MSGTYPE06_VARIANT_DEFAULT);
 	} else if (ap_test_bit(&aq->card->functions, AP_FUNC_EP11)) {
-		zq = zcrypt_queue_alloc(CEX4C_MAX_MESSAGE_SIZE);
+		zq = zcrypt_queue_alloc(aq->card->maxmsgsize);
 		if (!zq)
 			return -ENOMEM;
 		zq->ops = zcrypt_msgtype(MSGTYPE06_NAME,
@@ -631,11 +677,10 @@ static int zcrypt_cex4_queue_probe(struct ap_device *ap_dev)
 	atomic_set(&zq->load, 0);
 	ap_queue_init_state(aq);
 	ap_queue_init_reply(aq, &zq->reply);
-	aq->request_timeout = CEX4_CLEANUP_TIME,
-	aq->private = zq;
+	aq->request_timeout = CEX4_CLEANUP_TIME;
+	dev_set_drvdata(&ap_dev->device, zq);
 	rc = zcrypt_queue_register(zq);
 	if (rc) {
-		aq->private = NULL;
 		zcrypt_queue_free(zq);
 		return rc;
 	}
@@ -645,7 +690,6 @@ static int zcrypt_cex4_queue_probe(struct ap_device *ap_dev)
 					&cca_queue_attr_grp);
 		if (rc) {
 			zcrypt_queue_unregister(zq);
-			aq->private = NULL;
 			zcrypt_queue_free(zq);
 		}
 	} else if (ap_test_bit(&aq->card->functions, AP_FUNC_EP11)) {
@@ -653,7 +697,6 @@ static int zcrypt_cex4_queue_probe(struct ap_device *ap_dev)
 					&ep11_queue_attr_grp);
 		if (rc) {
 			zcrypt_queue_unregister(zq);
-			aq->private = NULL;
 			zcrypt_queue_free(zq);
 		}
 	}
@@ -661,21 +704,21 @@ static int zcrypt_cex4_queue_probe(struct ap_device *ap_dev)
 	return rc;
 }
 
-/**
- * This is called to remove the CEX4/CEX5/CEX6/CEX7 queue driver
+/*
+ * This is called to remove the CEX[45678] queue driver
  * information if an AP queue device is removed.
  */
 static void zcrypt_cex4_queue_remove(struct ap_device *ap_dev)
 {
+	struct zcrypt_queue *zq = dev_get_drvdata(&ap_dev->device);
 	struct ap_queue *aq = to_ap_queue(&ap_dev->device);
-	struct zcrypt_queue *zq = aq->private;
 
 	if (ap_test_bit(&aq->card->functions, AP_FUNC_COPRO))
 		sysfs_remove_group(&ap_dev->device.kobj, &cca_queue_attr_grp);
 	else if (ap_test_bit(&aq->card->functions, AP_FUNC_EP11))
 		sysfs_remove_group(&ap_dev->device.kobj, &ep11_queue_attr_grp);
-	if (zq)
-		zcrypt_queue_unregister(zq);
+
+	zcrypt_queue_unregister(zq);
 }
 
 static struct ap_driver zcrypt_cex4_queue_driver = {

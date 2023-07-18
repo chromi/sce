@@ -7,7 +7,7 @@ $schema: http://devicetree.org/meta-schemas/core.yaml#
 title: ROHM BD71847 and BD71850 Power Management Integrated Circuit regulators
 
 maintainers:
-  - Matti Vaittinen <matti.vaittinen@fi.rohmeurope.com>
+  - Matti Vaittinen <mazziesaccount@gmail.com>
 
 description: |
   List of regulators provided by this controller. BD71847 regulators node
@@ -22,9 +22,9 @@ description: |
   not be disabled by driver at startup. If BUCK5 is disabled at startup the
   voltage monitoring for LDO5/LDO6 can cause PMIC to reset.
 
-#The valid names for BD71847 regulator nodes are:
-#BUCK1, BUCK2, BUCK3, BUCK4, BUCK5, BUCK6
-#LDO1, LDO2, LDO3, LDO4, LDO5, LDO6
+# The valid names for BD71847 regulator nodes are:
+# BUCK1, BUCK2, BUCK3, BUCK4, BUCK5, BUCK6
+# LDO1, LDO2, LDO3, LDO4, LDO5, LDO6
 
 patternProperties:
   "^LDO[1-6]$":
@@ -54,7 +54,7 @@ patternProperties:
           should be "buck1", ..., "buck6"
 
       rohm,dvs-run-voltage:
-        $ref: "/schemas/types.yaml#/definitions/uint32"
+        $ref: /schemas/types.yaml#/definitions/uint32
         minimum: 0
         maximum: 1300000
         description:
@@ -62,7 +62,7 @@ patternProperties:
           bucks which support this. 0 means disabled.
 
       rohm,dvs-idle-voltage:
-        $ref: "/schemas/types.yaml#/definitions/uint32"
+        $ref: /schemas/types.yaml#/definitions/uint32
         minimum: 0
         maximum: 1300000
         description:
@@ -70,7 +70,7 @@ patternProperties:
           bucks which support this. 0 means disabled.
 
       rohm,dvs-suspend-voltage:
-        $ref: "/schemas/types.yaml#/definitions/uint32"
+        $ref: /schemas/types.yaml#/definitions/uint32
         minimum: 0
         maximum: 1300000
         description:
@@ -99,6 +99,55 @@ patternProperties:
           Enable/Disable control of this regulator must be left to the
           PMIC hardware state machine.
         type: boolean
+
+      # Setups where regulator (especially the buck8) output voltage is scaled
+      # by adding external connection where some other regulator output is
+      # connected to feedback-pin (over suitable resistors) is getting popular
+      # amongst users of BD71837. (This allows for example scaling down the
+      # buck8 voltages to suit lover GPU voltages for projects where buck8 is
+      # (ab)used to supply power for GPU.
+      #
+      # So we allow describing this external connection from DT and scale the
+      # voltages accordingly. This is what the connection should look like:
+      #
+      # |---------------|
+      # |       buck 8  |-------+----->Vout
+      # |               |       |
+      # |---------------|       |
+      #        |                |
+      #        |                |
+      #        +-------+--R2----+
+      #                |
+      #                R1
+      #                |
+      #        V FB-pull-up
+      #
+      # Here the buck output is sifted according to formula:
+      #
+      # Vout_o = Vo - (Vpu - Vo)*R2/R1
+      # Linear_step = step_orig*(R1+R2)/R1
+      #
+      # where:
+      # Vout_o is adjusted voltage output at vsel reg value 0
+      # Vo is original voltage output at vsel reg value 0
+      # Vpu is the pull-up voltage V FB-pull-up in the picture
+      # R1 and R2 are resistor values.
+
+      rohm,fb-pull-up-microvolt:
+        description:
+          Feedback-pin has pull-up connection to adjust voltage range. This is
+          the used pull-up voltage before R1.
+
+      rohm,feedback-pull-up-r1-ohms:
+        description:
+          Feedback-pin has pull-up connection to adjust voltage range. This is
+          the used R1 resistor.
+
+      rohm,feedback-pull-up-r2-ohms:
+        description:
+          Feedback-pin has pull-up connection to adjust voltage range. This is
+          the used R2 resistor.
+
     required:
       - regulator-name
 

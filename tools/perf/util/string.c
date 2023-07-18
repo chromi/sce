@@ -15,7 +15,6 @@ const char *dots =
 	"....................................................................."
 	".....................................................................";
 
-#define K 1024LL
 /*
  * perf_atoll()
  * Parse (\d+)(b|B|kb|KB|mb|MB|gb|GB|tb|TB) (e.g. "256MB")
@@ -36,7 +35,7 @@ s64 perf_atoll(const char *str)
 			if (*p)
 				goto out_err;
 
-			__fallthrough;
+			fallthrough;
 		case '\0':
 			return length;
 		default:
@@ -292,4 +291,13 @@ char *strdup_esc(const char *str)
 	} while (p);
 
 	return ret;
+}
+
+unsigned int hex(char c)
+{
+	if (c >= '0' && c <= '9')
+		return c - '0';
+	if (c >= 'a' && c <= 'f')
+		return c - 'a' + 10;
+	return c - 'A' + 10;
 }

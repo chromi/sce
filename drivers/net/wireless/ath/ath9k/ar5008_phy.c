@@ -102,13 +102,8 @@ static void ar5008_write_bank6(struct ath_hw *ah, unsigned int *writecnt)
 	REGWRITE_BUFFER_FLUSH(ah);
 }
 
-/**
+/*
  * ar5008_hw_phy_modify_rx_buffer() - perform analog swizzling of parameters
- * @rfbuf:
- * @reg32:
- * @numBits:
- * @firstBit:
- * @column:
  *
  * Performs analog "swizzling" of parameters into their location.
  * Used on external AR2133/AR5133 radios.
@@ -198,10 +193,8 @@ static void ar5008_hw_force_bias(struct ath_hw *ah, u16 synth_freq)
 	ar5008_write_bank6(ah, &reg_writes);
 }
 
-/**
+/*
  * ar5008_hw_set_channel - tune to a channel on the external AR2133/AR5133 radios
- * @ah: atheros hardware structure
- * @chan:
  *
  * For the external AR2133/AR5133 radios, takes the MHz channel value and set
  * the channel value. Assumes writes enabled to analog bus and bank6 register
@@ -430,10 +423,8 @@ void ar5008_hw_cmn_spur_mitigate(struct ath_hw *ah,
 	REG_WRITE(ah, AR_PHY_MASK2_P_61_45, tmp_mask);
 }
 
-/**
+/*
  * ar5008_hw_spur_mitigate - convert baseband spur frequency for external radios
- * @ah: atheros hardware structure
- * @chan:
  *
  * For non single-chip solutions. Converts to baseband spur frequency given the
  * input channel frequency and compute register settings below.
@@ -1286,13 +1277,13 @@ static void ar5008_hw_set_radar_conf(struct ath_hw *ah)
 
 static void ar5008_hw_init_txpower_cck(struct ath_hw *ah, int16_t *rate_array)
 {
-#define CCK_DELTA(x) ((OLC_FOR_AR9280_20_LATER) ? max((x) - 2, 0) : (x))
-	ah->tx_power[0] = CCK_DELTA(rate_array[rate1l]);
-	ah->tx_power[1] = CCK_DELTA(min(rate_array[rate2l],
+#define CCK_DELTA(_ah, x) ((OLC_FOR_AR9280_20_LATER(_ah)) ? max((x) - 2, 0) : (x))
+	ah->tx_power[0] = CCK_DELTA(ah, rate_array[rate1l]);
+	ah->tx_power[1] = CCK_DELTA(ah, min(rate_array[rate2l],
 					rate_array[rate2s]));
-	ah->tx_power[2] = CCK_DELTA(min(rate_array[rate5_5l],
+	ah->tx_power[2] = CCK_DELTA(ah, min(rate_array[rate5_5l],
 					rate_array[rate5_5s]));
-	ah->tx_power[3] = CCK_DELTA(min(rate_array[rate11l],
+	ah->tx_power[3] = CCK_DELTA(ah, min(rate_array[rate11l],
 					rate_array[rate11s]));
 #undef CCK_DELTA
 }

@@ -123,7 +123,7 @@ iniziale, i kernel ricevono aggiornamenti per più di un ciclo di sviluppo.
 Quindi, per esempio, la storia del kernel 5.2 appare così (anno 2019):
 
 	==============  ===============================
-	15 settembre	5.2 rilascio stabile FIXME settembre è sbagliato
+	 7 luglio	5.2 rilascio stabile
 	14 luglio	5.2.1
 	21 luglio	5.2.2
 	26 luglio	5.2.3
@@ -136,18 +136,11 @@ Quindi, per esempio, la storia del kernel 5.2 appare così (anno 2019):
 La 5.2.21 fu l'aggiornamento finale per la versione 5.2.
 
 Alcuni kernel sono destinati ad essere kernel a "lungo termine"; questi
-riceveranno assistenza per un lungo periodo di tempo.  Al momento in cui
-scriviamo, i manutentori dei kernel stabili a lungo termine sono:
+riceveranno assistenza per un lungo periodo di tempo. Consultate il seguente
+collegamento per avere la lista delle versioni attualmente supportate e i
+relativi manutentori:
 
-	======  ================================  ==========================================
-	3.16	Ben Hutchings			  (kernel stabile molto più a lungo termine)
-	4.4	Greg Kroah-Hartman e Sasha Levin  (kernel stabile molto più a lungo termine)
-	4.9	Greg Kroah-Hartman e Sasha Levin
-	4.14	Greg Kroah-Hartman e Sasha Levin
-	4.19	Greg Kroah-Hartman e Sasha Levin
-	5.4i	Greg Kroah-Hartman e Sasha Levin
-	======  ================================  ==========================================
-
+       https://www.kernel.org/category/releases.html
 
 Questa selezione di kernel di lungo periodo sono puramente dovuti ai loro
 manutentori, alla loro necessità e al tempo per tenere aggiornate proprio
@@ -434,7 +427,7 @@ l'elenco principale lo si trova sul sito:
 	http://vger.kernel.org/vger-lists.html
 
 Esistono liste gestite altrove; un certo numero di queste sono in
-lists.redhat.com.
+redhat.com/mailman/listinfo.
 
 La lista di discussione principale per lo sviluppo del kernel è, ovviamente,
 linux-kernel.  Questa lista è un luogo ostile dove trovarsi; i volumi possono

@@ -14,6 +14,11 @@
 
 struct btrtl_device_info;
 
+struct rtl_chip_type_evt {
+	__u8 status;
+	__u8 type;
+} __packed;
+
 struct rtl_download_cmd {
 	__u8 index;
 	__u8 data[RTL_FRAG_LEN];
@@ -44,8 +49,80 @@ struct rtl_vendor_config_entry {
 struct rtl_vendor_config {
 	__le32 signature;
 	__le16 total_len;
-	struct rtl_vendor_config_entry entry[];
+	__u8 entry[];
 } __packed;
+
+struct rtl_epatch_header_v2 {
+	__u8   signature[8];
+	__u8   fw_version[8];
+	__le32 num_sections;
+} __packed;
+
+struct rtl_section {
+	__le32 opcode;
+	__le32 len;
+	u8     data[];
+} __packed;
+
+struct rtl_section_hdr {
+	__le16 num;
+	__le16 reserved;
+} __packed;
+
+struct rtl_common_subsec {
+	__u8   eco;
+	__u8   prio;
+	__u8   cb[2];
+	__le32 len;
+	__u8   data[];
+};
+
+struct rtl_sec_hdr {
+	__u8   eco;
+	__u8   prio;
+	__u8   key_id;
+	__u8   reserved;
+	__le32 len;
+	__u8   data[];
+} __packed;
+
+struct rtl_subsection {
+	struct list_head list;
+	u32 opcode;
+	u32 len;
+	u8 prio;
+	u8 *data;
+};
+
+struct rtl_iovec {
+	u8  *data;
+	u32 len;
+};
+
+struct rtl_vendor_cmd {
+	__u8 param[5];
+} __packed;
+
+enum {
+	REALTEK_ALT6_CONTINUOUS_TX_CHIP,
+
+	__REALTEK_NUM_FLAGS,
+};
+
+struct btrealtek_data {
+	DECLARE_BITMAP(flags, __REALTEK_NUM_FLAGS);
+};
+
+#define btrealtek_set_flag(hdev, nr)					\
+	do {								\
+		struct btrealtek_data *realtek = hci_get_priv((hdev));	\
+		set_bit((nr), realtek->flags);				\
+	} while (0)
+
+#define btrealtek_get_flag(hdev)					\
+	(((struct btrealtek_data *)hci_get_priv(hdev))->flags)
+
+#define btrealtek_test_flag(hdev, nr)	test_bit((nr), btrealtek_get_flag(hdev))
 
 #if IS_ENABLED(CONFIG_BT_RTL)
 
@@ -54,6 +131,8 @@ struct btrtl_device_info *btrtl_initialize(struct hci_dev *hdev,
 void btrtl_free(struct btrtl_device_info *btrtl_dev);
 int btrtl_download_firmware(struct hci_dev *hdev,
 			    struct btrtl_device_info *btrtl_dev);
+void btrtl_set_quirks(struct hci_dev *hdev,
+		      struct btrtl_device_info *btrtl_dev);
 int btrtl_setup_realtek(struct hci_dev *hdev);
 int btrtl_shutdown_realtek(struct hci_dev *hdev);
 int btrtl_get_uart_settings(struct hci_dev *hdev,
@@ -77,6 +156,11 @@ static inline int btrtl_download_firmware(struct hci_dev *hdev,
 					  struct btrtl_device_info *btrtl_dev)
 {
 	return -EOPNOTSUPP;
+}
+
+static inline void btrtl_set_quirks(struct hci_dev *hdev,
+				    struct btrtl_device_info *btrtl_dev)
+{
 }
 
 static inline int btrtl_setup_realtek(struct hci_dev *hdev)

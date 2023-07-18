@@ -6,6 +6,7 @@
  */
 
 #include <crypto/internal/aead.h>
+#include <crypto/internal/cipher.h>
 #include <crypto/internal/hash.h>
 #include <crypto/internal/skcipher.h>
 #include <crypto/scatterwalk.h>
@@ -217,15 +218,15 @@ static int crypto_ccm_auth(struct aead_request *req, struct scatterlist *plain,
 		cryptlen += ilen;
 	}
 
-	ahash_request_set_crypt(ahreq, plain, pctx->odata, cryptlen);
+	ahash_request_set_crypt(ahreq, plain, odata, cryptlen);
 	err = crypto_ahash_finup(ahreq);
 out:
 	return err;
 }
 
-static void crypto_ccm_encrypt_done(struct crypto_async_request *areq, int err)
+static void crypto_ccm_encrypt_done(void *data, int err)
 {
-	struct aead_request *req = areq->data;
+	struct aead_request *req = data;
 	struct crypto_aead *aead = crypto_aead_reqtfm(req);
 	struct crypto_ccm_req_priv_ctx *pctx = crypto_ccm_reqctx(req);
 	u8 *odata = pctx->odata;
@@ -319,10 +320,9 @@ static int crypto_ccm_encrypt(struct aead_request *req)
 	return err;
 }
 
-static void crypto_ccm_decrypt_done(struct crypto_async_request *areq,
-				   int err)
+static void crypto_ccm_decrypt_done(void *data, int err)
 {
-	struct aead_request *req = areq->data;
+	struct aead_request *req = data;
 	struct crypto_ccm_req_priv_ctx *pctx = crypto_ccm_reqctx(req);
 	struct crypto_aead *aead = crypto_aead_reqtfm(req);
 	unsigned int authsize = crypto_aead_authsize(aead);
@@ -954,3 +954,4 @@ MODULE_ALIAS_CRYPTO("ccm_base");
 MODULE_ALIAS_CRYPTO("rfc4309");
 MODULE_ALIAS_CRYPTO("ccm");
 MODULE_ALIAS_CRYPTO("cbcmac");
+MODULE_IMPORT_NS(CRYPTO_INTERNAL);

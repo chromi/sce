@@ -8,6 +8,7 @@
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/highmem.h>
+#include <linux/iopoll.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
@@ -38,6 +39,9 @@
 #define  SDHCI_SPRD_BIT_CMD_DLY_INV		BIT(13)
 #define  SDHCI_SPRD_BIT_POSRD_DLY_INV		BIT(21)
 #define  SDHCI_SPRD_BIT_NEGRD_DLY_INV		BIT(29)
+
+#define SDHCI_SPRD_REG_32_DLL_STS0	0x210
+#define SDHCI_SPRD_DLL_LOCKED		BIT(18)
 
 #define SDHCI_SPRD_REG_32_BUSY_POSI		0x250
 #define  SDHCI_SPRD_BIT_OUTR_CLK_AUTO_EN	BIT(25)
@@ -201,13 +205,13 @@ static inline u32 sdhci_sprd_calc_div(u32 base_clk, u32 clk)
 	if ((base_clk / div) > (clk * 2))
 		div++;
 
-	if (div > SDHCI_SPRD_CLK_MAX_DIV)
-		div = SDHCI_SPRD_CLK_MAX_DIV;
-
 	if (div % 2)
 		div = (div + 1) / 2;
 	else
 		div = div / 2;
+
+	if (div > SDHCI_SPRD_CLK_MAX_DIV)
+		div = SDHCI_SPRD_CLK_MAX_DIV;
 
 	return div;
 }
@@ -224,13 +228,15 @@ static inline void _sdhci_sprd_set_clock(struct sdhci_host *host,
 	div = ((div & 0x300) >> 2) | ((div & 0xFF) << 8);
 	sdhci_enable_clk(host, div);
 
-	/* enable auto gate sdhc_enable_auto_gate */
-	val = sdhci_readl(host, SDHCI_SPRD_REG_32_BUSY_POSI);
-	mask = SDHCI_SPRD_BIT_OUTR_CLK_AUTO_EN |
-	       SDHCI_SPRD_BIT_INNR_CLK_AUTO_EN;
-	if (mask != (val & mask)) {
-		val |= mask;
-		sdhci_writel(host, val, SDHCI_SPRD_REG_32_BUSY_POSI);
+	/* Enable CLK_AUTO when the clock is greater than 400K. */
+	if (clk > 400000) {
+		val = sdhci_readl(host, SDHCI_SPRD_REG_32_BUSY_POSI);
+		mask = SDHCI_SPRD_BIT_OUTR_CLK_AUTO_EN |
+			SDHCI_SPRD_BIT_INNR_CLK_AUTO_EN;
+		if (mask != (val & mask)) {
+			val |= mask;
+			sdhci_writel(host, val, SDHCI_SPRD_REG_32_BUSY_POSI);
+		}
 	}
 }
 
@@ -256,6 +262,15 @@ static void sdhci_sprd_enable_phy_dll(struct sdhci_host *host)
 	sdhci_writel(host, tmp, SDHCI_SPRD_REG_32_DLL_CFG);
 	/* wait 1ms */
 	usleep_range(1000, 1250);
+
+	if (read_poll_timeout(sdhci_readl, tmp, (tmp & SDHCI_SPRD_DLL_LOCKED),
+		2000, USEC_PER_SEC, false, host, SDHCI_SPRD_REG_32_DLL_STS0)) {
+		pr_err("%s: DLL locked fail!\n", mmc_hostname(host->mmc));
+		pr_info("%s: DLL_STS0 : 0x%x, DLL_CFG : 0x%x\n",
+			 mmc_hostname(host->mmc),
+			 sdhci_readl(host, SDHCI_SPRD_REG_32_DLL_STS0),
+			 sdhci_readl(host, SDHCI_SPRD_REG_32_DLL_CFG));
+	}
 }
 
 static void sdhci_sprd_set_clock(struct sdhci_host *host, unsigned int clock)
@@ -296,7 +311,7 @@ static unsigned int sdhci_sprd_get_max_clock(struct sdhci_host *host)
 
 static unsigned int sdhci_sprd_get_min_clock(struct sdhci_host *host)
 {
-	return 400000;
+	return 100000;
 }
 
 static void sdhci_sprd_set_uhs_signaling(struct sdhci_host *host,
@@ -393,6 +408,7 @@ static void sdhci_sprd_request_done(struct sdhci_host *host,
 static struct sdhci_ops sdhci_sprd_ops = {
 	.read_l = sdhci_sprd_readl,
 	.write_l = sdhci_sprd_writel,
+	.write_w = sdhci_sprd_writew,
 	.write_b = sdhci_sprd_writeb,
 	.set_clock = sdhci_sprd_set_clock,
 	.get_max_clock = sdhci_sprd_get_max_clock,
@@ -456,7 +472,7 @@ static int sdhci_sprd_voltage_switch(struct mmc_host *mmc, struct mmc_ios *ios)
 	}
 
 	if (IS_ERR(sprd_host->pinctrl))
-		return 0;
+		goto reset;
 
 	switch (ios->signal_voltage) {
 	case MMC_SIGNAL_VOLTAGE_180:
@@ -484,6 +500,8 @@ static int sdhci_sprd_voltage_switch(struct mmc_host *mmc, struct mmc_ios *ios)
 
 	/* Wait for 300 ~ 500 us for pin state stable */
 	usleep_range(300, 500);
+
+reset:
 	sdhci_reset(host, SDHCI_RESET_CMD | SDHCI_RESET_DATA);
 
 	return 0;
@@ -535,8 +553,7 @@ static void sdhci_sprd_phy_param_parse(struct sdhci_sprd_host *sprd_host,
 
 static const struct sdhci_pltfm_data sdhci_sprd_pdata = {
 	.quirks = SDHCI_QUIRK_BROKEN_CARD_DETECTION |
-		  SDHCI_QUIRK_DATA_TIMEOUT_USES_SDCLK |
-		  SDHCI_QUIRK_MISSING_CAPS,
+		  SDHCI_QUIRK_DATA_TIMEOUT_USES_SDCLK,
 	.quirks2 = SDHCI_QUIRK2_BROKEN_HS200 |
 		   SDHCI_QUIRK2_USE_32BIT_BLK_CNT |
 		   SDHCI_QUIRK2_PRESET_VALUE_BROKEN,
@@ -653,8 +670,7 @@ static int sdhci_sprd_probe(struct platform_device *pdev)
 	 * will allow these modes to be specified only by device
 	 * tree properties through mmc_of_parse().
 	 */
-	host->caps = sdhci_readl(host, SDHCI_CAPABILITIES);
-	host->caps1 = sdhci_readl(host, SDHCI_CAPABILITIES_1);
+	sdhci_read_caps(host);
 	host->caps1 &= ~(SDHCI_SUPPORT_SDR50 | SDHCI_SUPPORT_SDR104 |
 			 SDHCI_SUPPORT_DDR50);
 
@@ -708,14 +724,14 @@ static int sdhci_sprd_remove(struct platform_device *pdev)
 {
 	struct sdhci_host *host = platform_get_drvdata(pdev);
 	struct sdhci_sprd_host *sprd_host = TO_SPRD_HOST(host);
-	struct mmc_host *mmc = host->mmc;
 
-	mmc_remove_host(mmc);
+	sdhci_remove_host(host, 0);
+
 	clk_disable_unprepare(sprd_host->clk_sdio);
 	clk_disable_unprepare(sprd_host->clk_enable);
 	clk_disable_unprepare(sprd_host->clk_2x_enable);
 
-	mmc_free_host(mmc);
+	sdhci_pltfm_free(pdev);
 
 	return 0;
 }
@@ -788,7 +804,7 @@ static struct platform_driver sdhci_sprd_driver = {
 	.driver = {
 		.name = "sdhci_sprd_r11",
 		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
-		.of_match_table = of_match_ptr(sdhci_sprd_of_match),
+		.of_match_table = sdhci_sprd_of_match,
 		.pm = &sdhci_sprd_pm_ops,
 	},
 };

@@ -141,7 +141,7 @@
  * @fab_port_id: used to indicate current working mode of fabric counters.
  * @fab_lock: lock to protect fabric counters working mode.
  * @cpu: active CPU to which the PMU is bound for accesses.
- * @cpuhp_node: node for CPU hotplug notifier link.
+ * @node: node for CPU hotplug notifier link.
  * @cpuhp_state: state for CPU hotplug notification;
  */
 struct fme_perf_priv {
@@ -192,7 +192,7 @@ static struct attribute *fme_perf_cpumask_attrs[] = {
 	NULL,
 };
 
-static struct attribute_group fme_perf_cpumask_group = {
+static const struct attribute_group fme_perf_cpumask_group = {
 	.attrs = fme_perf_cpumask_attrs,
 };
 
@@ -225,7 +225,7 @@ static struct attribute *fme_perf_format_attrs[] = {
 	NULL,
 };
 
-static struct attribute_group fme_perf_format_group = {
+static const struct attribute_group fme_perf_format_group = {
 	.name = "format",
 	.attrs = fme_perf_format_attrs,
 };
@@ -239,7 +239,7 @@ static struct attribute *fme_perf_events_attrs_empty[] = {
 	NULL,
 };
 
-static struct attribute_group fme_perf_events_group = {
+static const struct attribute_group fme_perf_events_group = {
 	.name = "events",
 	.attrs = fme_perf_events_attrs_empty,
 };
@@ -953,6 +953,8 @@ static int fme_perf_offline_cpu(unsigned int cpu, struct hlist_node *node)
 		return 0;
 
 	priv->cpu = target;
+	perf_pmu_migrate_context(&priv->pmu, cpu, target);
+
 	return 0;
 }
 

@@ -9,8 +9,8 @@
 #include <linux/iommu.h>
 #include <linux/limits.h>
 #include <linux/module.h>
-#include <linux/msi.h>
 #include <linux/of.h>
+#include <linux/of_address.h>
 #include <linux/of_iommu.h>
 #include <linux/of_pci.h>
 #include <linux/pci.h>
@@ -18,74 +18,6 @@
 #include <linux/fsl/mc.h>
 
 #define NO_IOMMU	1
-
-/**
- * of_get_dma_window - Parse *dma-window property and returns 0 if found.
- *
- * @dn: device node
- * @prefix: prefix for property name if any
- * @index: index to start to parse
- * @busno: Returns busno if supported. Otherwise pass NULL
- * @addr: Returns address that DMA starts
- * @size: Returns the range that DMA can handle
- *
- * This supports different formats flexibly. "prefix" can be
- * configured if any. "busno" and "index" are optionally
- * specified. Set 0(or NULL) if not used.
- */
-int of_get_dma_window(struct device_node *dn, const char *prefix, int index,
-		      unsigned long *busno, dma_addr_t *addr, size_t *size)
-{
-	const __be32 *dma_window, *end;
-	int bytes, cur_index = 0;
-	char propname[NAME_MAX], addrname[NAME_MAX], sizename[NAME_MAX];
-
-	if (!dn || !addr || !size)
-		return -EINVAL;
-
-	if (!prefix)
-		prefix = "";
-
-	snprintf(propname, sizeof(propname), "%sdma-window", prefix);
-	snprintf(addrname, sizeof(addrname), "%s#dma-address-cells", prefix);
-	snprintf(sizename, sizeof(sizename), "%s#dma-size-cells", prefix);
-
-	dma_window = of_get_property(dn, propname, &bytes);
-	if (!dma_window)
-		return -ENODEV;
-	end = dma_window + bytes / sizeof(*dma_window);
-
-	while (dma_window < end) {
-		u32 cells;
-		const void *prop;
-
-		/* busno is one cell if supported */
-		if (busno)
-			*busno = be32_to_cpup(dma_window++);
-
-		prop = of_get_property(dn, addrname, NULL);
-		if (!prop)
-			prop = of_get_property(dn, "#address-cells", NULL);
-
-		cells = prop ? be32_to_cpup(prop) : of_n_addr_cells(dn);
-		if (!cells)
-			return -EINVAL;
-		*addr = of_read_number(dma_window, cells);
-		dma_window += cells;
-
-		prop = of_get_property(dn, sizename, NULL);
-		cells = prop ? be32_to_cpup(prop) : of_n_size_cells(dn);
-		if (!cells)
-			return -EINVAL;
-		*size = of_read_number(dma_window, cells);
-		dma_window += cells;
-
-		if (cur_index++ == index)
-			break;
-	}
-	return 0;
-}
-EXPORT_SYMBOL_GPL(of_get_dma_window);
 
 static int of_iommu_xlate(struct device *dev,
 			  struct of_phandle_args *iommu_spec)
@@ -210,11 +142,6 @@ const struct iommu_ops *of_iommu_configure(struct device *dev,
 					     of_pci_iommu_init, &info);
 	} else {
 		err = of_iommu_configure_device(master_np, dev, id);
-
-		fwspec = dev_iommu_fwspec_get(dev);
-		if (!err && fwspec)
-			of_property_read_u32(master_np, "pasid-num-bits",
-					     &fwspec->num_pasid_bits);
 	}
 
 	/*
@@ -245,3 +172,98 @@ const struct iommu_ops *of_iommu_configure(struct device *dev,
 
 	return ops;
 }
+
+static enum iommu_resv_type __maybe_unused
+iommu_resv_region_get_type(struct device *dev,
+			   struct resource *phys,
+			   phys_addr_t start, size_t length)
+{
+	phys_addr_t end = start + length - 1;
+
+	/*
+	 * IOMMU regions without an associated physical region cannot be
+	 * mapped and are simply reservations.
+	 */
+	if (phys->start >= phys->end)
+		return IOMMU_RESV_RESERVED;
+
+	/* may be IOMMU_RESV_DIRECT_RELAXABLE for certain cases */
+	if (start == phys->start && end == phys->end)
+		return IOMMU_RESV_DIRECT;
+
+	dev_warn(dev, "treating non-direct mapping [%pr] -> [%pap-%pap] as reservation\n", &phys,
+		 &start, &end);
+	return IOMMU_RESV_RESERVED;
+}
+
+/**
+ * of_iommu_get_resv_regions - reserved region driver helper for device tree
+ * @dev: device for which to get reserved regions
+ * @list: reserved region list
+ *
+ * IOMMU drivers can use this to implement their .get_resv_regions() callback
+ * for memory regions attached to a device tree node. See the reserved-memory
+ * device tree bindings on how to use these:
+ *
+ *   Documentation/devicetree/bindings/reserved-memory/reserved-memory.txt
+ */
+void of_iommu_get_resv_regions(struct device *dev, struct list_head *list)
+{
+#if IS_ENABLED(CONFIG_OF_ADDRESS)
+	struct of_phandle_iterator it;
+	int err;
+
+	of_for_each_phandle(&it, err, dev->of_node, "memory-region", NULL, 0) {
+		const __be32 *maps, *end;
+		struct resource phys;
+		int size;
+
+		memset(&phys, 0, sizeof(phys));
+
+		/*
+		 * The "reg" property is optional and can be omitted by reserved-memory regions
+		 * that represent reservations in the IOVA space, which are regions that should
+		 * not be mapped.
+		 */
+		if (of_find_property(it.node, "reg", NULL)) {
+			err = of_address_to_resource(it.node, 0, &phys);
+			if (err < 0) {
+				dev_err(dev, "failed to parse memory region %pOF: %d\n",
+					it.node, err);
+				continue;
+			}
+		}
+
+		maps = of_get_property(it.node, "iommu-addresses", &size);
+		if (!maps)
+			continue;
+
+		end = maps + size / sizeof(__be32);
+
+		while (maps < end) {
+			struct device_node *np;
+			u32 phandle;
+
+			phandle = be32_to_cpup(maps++);
+			np = of_find_node_by_phandle(phandle);
+
+			if (np == dev->of_node) {
+				int prot = IOMMU_READ | IOMMU_WRITE;
+				struct iommu_resv_region *region;
+				enum iommu_resv_type type;
+				phys_addr_t iova;
+				size_t length;
+
+				maps = of_translate_dma_region(np, maps, &iova, &length);
+				type = iommu_resv_region_get_type(dev, &phys, iova, length);
+
+				region = iommu_alloc_resv_region(iova, length, prot, type,
+								 GFP_KERNEL);
+				if (region)
+					list_add_tail(&region->list, list);
+			}
+		}
+	}
+#endif
+}
+EXPORT_SYMBOL(of_iommu_get_resv_regions);

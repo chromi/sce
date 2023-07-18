@@ -16,11 +16,13 @@
 #include <linux/io.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
+#include <linux/seq_file.h>
+#include <linux/slab.h>
+
 #include <linux/pinctrl/machine.h>
 #include <linux/pinctrl/pinconf.h>
 #include <linux/pinctrl/pinctrl.h>
 #include <linux/pinctrl/pinmux.h>
-#include <linux/slab.h>
 
 #include "../core.h"
 #include "pinctrl-imx1.h"
@@ -290,7 +292,6 @@ static const struct pinctrl_ops imx1_pctrl_ops = {
 	.pin_dbg_show = imx1_pin_dbg_show,
 	.dt_node_to_map = imx1_dt_node_to_map,
 	.dt_free_map = imx1_dt_free_map,
-
 };
 
 static int imx1_pmx_set(struct pinctrl_dev *pctldev, unsigned selector,

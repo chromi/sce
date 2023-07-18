@@ -567,14 +567,14 @@ static void bcm_sf2_cfp_slice_ipv6(struct bcm_sf2_priv *priv,
 static struct cfp_rule *bcm_sf2_cfp_rule_find(struct bcm_sf2_priv *priv,
 					      int port, u32 location)
 {
-	struct cfp_rule *rule = NULL;
+	struct cfp_rule *rule;
 
 	list_for_each_entry(rule, &priv->cfp.rules_list, next) {
 		if (rule->port == port && rule->fs.location == location)
-			break;
+			return rule;
 	}
 
-	return rule;
+	return NULL;
 }
 
 static int bcm_sf2_cfp_rule_cmp(struct bcm_sf2_priv *priv, int port,
@@ -885,18 +885,15 @@ static int bcm_sf2_cfp_rule_insert(struct dsa_switch *ds, int port,
 			return -EINVAL;
 
 		vid = be16_to_cpu(fs->h_ext.vlan_tci) & VLAN_VID_MASK;
-		vlan.vid_begin = vid;
-		vlan.vid_end = vid;
-		if (cpu_to_be32(fs->h_ext.data[1]) & 1)
+		vlan.vid = vid;
+		if (be32_to_cpu(fs->h_ext.data[1]) & 1)
 			vlan.flags = BRIDGE_VLAN_INFO_UNTAGGED;
 		else
 			vlan.flags = 0;
 
-		ret = ds->ops->port_vlan_prepare(ds, port_num, &vlan);
+		ret = ds->ops->port_vlan_add(ds, port_num, &vlan, NULL);
 		if (ret)
 			return ret;
-
-		ds->ops->port_vlan_add(ds, port_num, &vlan);
 	}
 
 	/*
@@ -942,8 +939,7 @@ static int bcm_sf2_cfp_rule_set(struct dsa_switch *ds, int port,
 		return -EINVAL;
 
 	if ((fs->flow_type & FLOW_EXT) &&
-	    !(ds->ops->port_vlan_prepare || ds->ops->port_vlan_add ||
-	      ds->ops->port_vlan_del))
+	    !(ds->ops->port_vlan_add || ds->ops->port_vlan_del))
 		return -EOPNOTSUPP;
 
 	if (fs->location != RX_CLS_LOC_ANY &&
@@ -1106,7 +1102,7 @@ static int bcm_sf2_cfp_rule_get_all(struct bcm_sf2_priv *priv,
 int bcm_sf2_get_rxnfc(struct dsa_switch *ds, int port,
 		      struct ethtool_rxnfc *nfc, u32 *rule_locs)
 {
-	struct net_device *p = dsa_to_port(ds, port)->cpu_dp->master;
+	struct net_device *p = dsa_port_to_master(dsa_to_port(ds, port));
 	struct bcm_sf2_priv *priv = bcm_sf2_to_priv(ds);
 	int ret = 0;
 
@@ -1149,7 +1145,7 @@ int bcm_sf2_get_rxnfc(struct dsa_switch *ds, int port,
 int bcm_sf2_set_rxnfc(struct dsa_switch *ds, int port,
 		      struct ethtool_rxnfc *nfc)
 {
-	struct net_device *p = dsa_to_port(ds, port)->cpu_dp->master;
+	struct net_device *p = dsa_port_to_master(dsa_to_port(ds, port));
 	struct bcm_sf2_priv *priv = bcm_sf2_to_priv(ds);
 	int ret = 0;
 
@@ -1300,7 +1296,7 @@ void bcm_sf2_cfp_get_strings(struct dsa_switch *ds, int port,
 				 "CFP%03d_%sCntr",
 				 i, bcm_sf2_cfp_stats[j].name);
 			iter = (i - 1) * s + j;
-			strlcpy(data + iter * ETH_GSTRING_LEN,
+			strscpy(data + iter * ETH_GSTRING_LEN,
 				buf, ETH_GSTRING_LEN);
 		}
 	}

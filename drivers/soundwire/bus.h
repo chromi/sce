@@ -7,6 +7,8 @@
 #define DEFAULT_BANK_SWITCH_TIMEOUT 3000
 #define DEFAULT_PROBE_TIMEOUT       2000
 
+u64 sdw_dmi_override_adr(struct sdw_bus *bus, u64 addr);
+
 #if IS_ENABLED(CONFIG_ACPI)
 int sdw_acpi_find_slaves(struct sdw_bus *bus);
 #else
@@ -142,6 +144,13 @@ struct sdw_master_runtime {
 	struct list_head bus_node;
 };
 
+struct sdw_transport_data {
+	int hstart;
+	int hstop;
+	int block_offset;
+	int sub_block_offset;
+};
+
 struct sdw_dpn_prop *sdw_get_slave_dpn_prop(struct sdw_slave *slave,
 					    enum sdw_data_direction direction,
 					    unsigned int port_num);
@@ -149,24 +158,12 @@ int sdw_configure_dpn_intr(struct sdw_slave *slave, int port,
 			   bool enable, int mask);
 
 int sdw_transfer(struct sdw_bus *bus, struct sdw_msg *msg);
-int sdw_transfer_defer(struct sdw_bus *bus, struct sdw_msg *msg,
-		       struct sdw_defer *defer);
+int sdw_transfer_defer(struct sdw_bus *bus, struct sdw_msg *msg);
 
 #define SDW_READ_INTR_CLEAR_RETRY	10
 
 int sdw_fill_msg(struct sdw_msg *msg, struct sdw_slave *slave,
 		 u32 addr, size_t count, u16 dev_num, u8 flags, u8 *buf);
-
-/* Retrieve and return channel count from channel mask */
-static inline int sdw_ch_mask_to_ch(int ch_mask)
-{
-	int c = 0;
-
-	for (c = 0; ch_mask; ch_mask >>= 1)
-		c += ch_mask & 1;
-
-	return c;
-}
 
 /* Fill transport parameter data structure */
 static inline void sdw_fill_xport_params(struct sdw_transport_params *params,
@@ -199,19 +196,6 @@ static inline void sdw_fill_port_params(struct sdw_port_params *params,
 	params->data_mode = data_mode;
 }
 
-/* Read-Modify-Write Slave register */
-static inline int sdw_update(struct sdw_slave *slave, u32 addr, u8 mask, u8 val)
-{
-	int tmp;
-
-	tmp = sdw_read(slave, addr);
-	if (tmp < 0)
-		return tmp;
-
-	tmp = (tmp & ~mask) | val;
-	return sdw_write(slave, addr, tmp);
-}
-
 /* broadcast read/write for tests */
 int sdw_bread_no_pm_unlocked(struct sdw_bus *bus, u16 dev_num, u32 addr);
 int sdw_bwrite_no_pm_unlocked(struct sdw_bus *bus, u16 dev_num, u32 addr, u8 value);
@@ -224,5 +208,7 @@ int sdw_bwrite_no_pm_unlocked(struct sdw_bus *bus, u16 dev_num, u32 addr, u8 val
 
 void sdw_clear_slave_status(struct sdw_bus *bus, u32 request);
 int sdw_slave_modalias(const struct sdw_slave *slave, char *buf, size_t size);
+void sdw_compute_slave_ports(struct sdw_master_runtime *m_rt,
+			     struct sdw_transport_data *t_data);
 
 #endif /* __SDW_BUS_H */

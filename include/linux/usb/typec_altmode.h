@@ -124,12 +124,22 @@ struct typec_altmode *typec_match_altmode(struct typec_altmode **altmodes,
 
 /**
  * typec_altmode_get_orientation - Get cable plug orientation
- * altmode: Handle to the alternate mode
+ * @altmode: Handle to the alternate mode
  */
 static inline enum typec_orientation
 typec_altmode_get_orientation(struct typec_altmode *altmode)
 {
 	return typec_get_orientation(typec_altmode2port(altmode));
+}
+
+/**
+ * typec_altmode_get_svdm_version - Get negotiated SVDM version
+ * @altmode: Handle to the alternate mode
+ */
+static inline int
+typec_altmode_get_svdm_version(struct typec_altmode *altmode)
+{
+	return typec_get_negotiated_svdm_version(typec_altmode2port(altmode));
 }
 
 /**

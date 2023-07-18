@@ -155,7 +155,7 @@ static ssize_t repeat_show(struct device *dev, struct device_attribute *attr,
 
 	mutex_unlock(&data->lock);
 
-	return scnprintf(buf, PAGE_SIZE, "%d\n", repeat);
+	return sysfs_emit(buf, "%d\n", repeat);
 }
 
 static ssize_t repeat_store(struct device *dev, struct device_attribute *attr,
@@ -333,7 +333,7 @@ static DEVICE_ATTR_RW(hw_pattern);
 static umode_t pattern_trig_attrs_mode(struct kobject *kobj,
 				       struct attribute *attr, int index)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
+	struct device *dev = kobj_to_dev(kobj);
 	struct led_classdev *led_cdev = dev_get_drvdata(dev);
 
 	if (attr == &dev_attr_repeat.attr || attr == &dev_attr_pattern.attr)
@@ -430,7 +430,7 @@ static void pattern_trig_deactivate(struct led_classdev *led_cdev)
 	if (led_cdev->pattern_clear)
 		led_cdev->pattern_clear(led_cdev);
 
-	del_timer_sync(&data->timer);
+	timer_shutdown_sync(&data->timer);
 
 	led_set_brightness(led_cdev, LED_OFF);
 	kfree(data);

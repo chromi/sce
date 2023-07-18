@@ -6,7 +6,7 @@
  * Copyright (C) 1998-99  Kirk Reiser.
  * Copyright (C) 2003 David Borowski.
  *
- * specificly written as a driver for the speakup screenreview
+ * specifically written as a driver for the speakup screenreview
  * s not a general device driver.
  */
 #include <linux/unistd.h>
@@ -37,18 +37,27 @@ static unsigned char get_index(struct spk_synth *synth);
 static int in_escape;
 static int is_flushing;
 
-static spinlock_t flush_lock;
+static DEFINE_SPINLOCK(flush_lock);
 static DECLARE_WAIT_QUEUE_HEAD(flush);
 
-static struct var_t vars[] = {
-	{ CAPS_START, .u.s = {"[:dv ap 160] " } },
-	{ CAPS_STOP, .u.s = {"[:dv ap 100 ] " } },
-	{ RATE, .u.n = {"[:ra %d] ", 180, 75, 650, 0, 0, NULL } },
-	{ INFLECTION, .u.n = {"[:dv pr %d] ", 100, 0, 10000, 0, 0, NULL } },
-	{ VOL, .u.n = {"[:dv g5 %d] ", 86, 60, 86, 0, 0, NULL } },
-	{ PUNCT, .u.n = {"[:pu %c] ", 0, 0, 2, 0, 0, "nsa" } },
-	{ VOICE, .u.n = {"[:n%c] ", 0, 0, 9, 0, 0, "phfdburwkv" } },
-	{ DIRECT, .u.n = {NULL, 0, 0, 1, 0, 0, NULL } },
+enum default_vars_id {
+	CAPS_START_ID = 0, CAPS_STOP_ID,
+	RATE_ID, PITCH_ID, INFLECTION_ID,
+	VOL_ID, PUNCT_ID, VOICE_ID,
+	DIRECT_ID, V_LAST_VAR_ID,
+	NB_ID,
+};
+
+static struct var_t vars[NB_ID] = {
+	[CAPS_START_ID] = { CAPS_START, .u.s = {"[:dv ap 160] " } },
+	[CAPS_STOP_ID] = { CAPS_STOP, .u.s = {"[:dv ap 100 ] " } },
+	[RATE_ID] = { RATE, .u.n = {"[:ra %d] ", 180, 75, 650, 0, 0, NULL } },
+	[PITCH_ID] = { PITCH, .u.n = {"[:dv ap %d] ", 122, 50, 350, 0, 0, NULL } },
+	[INFLECTION_ID] = { INFLECTION, .u.n = {"[:dv pr %d] ", 100, 0, 10000, 0, 0, NULL } },
+	[VOL_ID] = { VOL, .u.n = {"[:dv g5 %d] ", 86, 60, 86, 0, 0, NULL } },
+	[PUNCT_ID] = { PUNCT, .u.n = {"[:pu %c] ", 0, 0, 2, 0, 0, "nsa" } },
+	[VOICE_ID] = { VOICE, .u.n = {"[:n%c] ", 0, 0, 9, 0, 0, "phfdburwkv" } },
+	[DIRECT_ID] = { DIRECT, .u.n = {NULL, 0, 0, 1, 0, 0, NULL } },
 	V_LAST_VAR
 };
 
@@ -78,6 +87,8 @@ static struct kobj_attribute direct_attribute =
 	__ATTR(direct, 0644, spk_var_show, spk_var_store);
 static struct kobj_attribute full_time_attribute =
 	__ATTR(full_time, 0644, spk_var_show, spk_var_store);
+static struct kobj_attribute flush_time_attribute =
+	__ATTR(flush_time, 0644, spk_var_show, spk_var_store);
 static struct kobj_attribute jiffy_delta_attribute =
 	__ATTR(jiffy_delta, 0644, spk_var_show, spk_var_store);
 static struct kobj_attribute trigger_time_attribute =
@@ -99,6 +110,7 @@ static struct attribute *synth_attrs[] = {
 	&delay_time_attribute.attr,
 	&direct_attribute.attr,
 	&full_time_attribute.attr,
+	&flush_time_attribute.attr,
 	&jiffy_delta_attribute.attr,
 	&trigger_time_attribute.attr,
 	NULL,	/* need to NULL terminate the list of attributes */
@@ -118,6 +130,7 @@ static struct spk_synth synth_dectlk = {
 	.trigger = 50,
 	.jiffies = 50,
 	.full = 40000,
+	.flush_time = 4000,
 	.dev_name = SYNTH_DEFAULT_DEV,
 	.startup = SYNTH_START,
 	.checkval = SYNTH_CHECK,
@@ -200,18 +213,23 @@ static void do_catch_up(struct spk_synth *synth)
 	static u_char last = '\0';
 	unsigned long flags;
 	unsigned long jiff_max;
-	unsigned long timeout = msecs_to_jiffies(4000);
+	unsigned long timeout;
 	DEFINE_WAIT(wait);
 	struct var_t *jiffy_delta;
 	struct var_t *delay_time;
+	struct var_t *flush_time;
 	int jiffy_delta_val;
 	int delay_time_val;
+	int timeout_val;
 
 	jiffy_delta = spk_get_var(JIFFY);
 	delay_time = spk_get_var(DELAY);
+	flush_time = spk_get_var(FLUSH);
 	spin_lock_irqsave(&speakup_info.spinlock, flags);
 	jiffy_delta_val = jiffy_delta->u.n.value;
+	timeout_val = flush_time->u.n.value;
 	spin_unlock_irqrestore(&speakup_info.spinlock, flags);
+	timeout = msecs_to_jiffies(timeout_val);
 	jiff_max = jiffies + jiffy_delta_val;
 
 	while (!kthread_should_stop()) {
@@ -289,17 +307,34 @@ static void synth_flush(struct spk_synth *synth)
 		synth->io_ops->synth_out(synth, ']');
 	in_escape = 0;
 	is_flushing = 1;
-	synth->io_ops->flush_buffer();
+	synth->io_ops->flush_buffer(synth);
 	synth->io_ops->synth_out(synth, SYNTH_CLEAR);
 }
 
 module_param_named(ser, synth_dectlk.ser, int, 0444);
 module_param_named(dev, synth_dectlk.dev_name, charp, 0444);
 module_param_named(start, synth_dectlk.startup, short, 0444);
+module_param_named(rate, vars[RATE_ID].u.n.default_val, int, 0444);
+module_param_named(pitch, vars[PITCH_ID].u.n.default_val, int, 0444);
+module_param_named(inflection, vars[INFLECTION_ID].u.n.default_val, int, 0444);
+module_param_named(vol, vars[VOL_ID].u.n.default_val, int, 0444);
+module_param_named(punct, vars[PUNCT_ID].u.n.default_val, int, 0444);
+module_param_named(voice, vars[VOICE_ID].u.n.default_val, int, 0444);
+module_param_named(direct, vars[DIRECT_ID].u.n.default_val, int, 0444);
+
+
 
 MODULE_PARM_DESC(ser, "Set the serial port for the synthesizer (0-based).");
 MODULE_PARM_DESC(dev, "Set the device e.g. ttyUSB0, for the synthesizer.");
 MODULE_PARM_DESC(start, "Start the synthesizer once it is loaded.");
+MODULE_PARM_DESC(rate, "Set the rate variable on load.");
+MODULE_PARM_DESC(pitch, "Set the pitch variable on load.");
+MODULE_PARM_DESC(inflection, "Set the inflection variable on load.");
+MODULE_PARM_DESC(vol, "Set the vol variable on load.");
+MODULE_PARM_DESC(punct, "Set the punct variable on load.");
+MODULE_PARM_DESC(voice, "Set the voice variable on load.");
+MODULE_PARM_DESC(direct, "Set the direct variable on load.");
+
 
 module_spk_synth(synth_dectlk);
 

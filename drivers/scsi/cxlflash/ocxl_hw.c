@@ -16,6 +16,7 @@
 #include <linux/poll.h>
 #include <linux/sched/signal.h>
 #include <linux/interrupt.h>
+#include <linux/irqdomain.h>
 #include <asm/xive.h>
 #include <misc/ocxl.h>
 
@@ -329,6 +330,7 @@ static int start_context(struct ocxlflash_context *ctx)
 	struct ocxl_hw_afu *afu = ctx->hw_afu;
 	struct ocxl_afu_config *acfg = &afu->acfg;
 	void *link_token = afu->link_token;
+	struct pci_dev *pdev = afu->pdev;
 	struct device *dev = afu->dev;
 	bool master = ctx->master;
 	struct mm_struct *mm;
@@ -360,8 +362,9 @@ static int start_context(struct ocxlflash_context *ctx)
 		mm = current->mm;
 	}
 
-	rc = ocxl_link_add_pe(link_token, ctx->pe, pid, 0, 0, mm,
-			      ocxlflash_xsl_fault, ctx);
+	rc = ocxl_link_add_pe(link_token, ctx->pe, pid, 0, 0,
+			      pci_dev_id(pdev), mm, ocxlflash_xsl_fault,
+			      ctx);
 	if (unlikely(rc)) {
 		dev_err(dev, "%s: ocxl_link_add_pe failed rc=%d\n",
 			__func__, rc);
@@ -1164,7 +1167,7 @@ static int afu_mmap(struct file *file, struct vm_area_struct *vma)
 	    (ctx->psn_size >> PAGE_SHIFT))
 		return -EINVAL;
 
-	vma->vm_flags |= VM_IO | VM_PFNMAP;
+	vm_flags_set(vma, VM_IO | VM_PFNMAP);
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 	vma->vm_ops = &ocxlflash_vmops;
 	return 0;

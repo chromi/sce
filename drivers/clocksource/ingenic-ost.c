@@ -88,9 +88,9 @@ static int __init ingenic_ost_probe(struct platform_device *pdev)
 		return PTR_ERR(ost->regs);
 
 	map = device_node_to_regmap(dev->parent->of_node);
-	if (!map) {
+	if (IS_ERR(map)) {
 		dev_err(dev, "regmap not found");
-		return -EINVAL;
+		return PTR_ERR(map);
 	}
 
 	ost->clk = devm_clk_get(dev, "ost");
@@ -141,7 +141,7 @@ static int __init ingenic_ost_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int __maybe_unused ingenic_ost_suspend(struct device *dev)
+static int ingenic_ost_suspend(struct device *dev)
 {
 	struct ingenic_ost *ost = dev_get_drvdata(dev);
 
@@ -150,14 +150,14 @@ static int __maybe_unused ingenic_ost_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused ingenic_ost_resume(struct device *dev)
+static int ingenic_ost_resume(struct device *dev)
 {
 	struct ingenic_ost *ost = dev_get_drvdata(dev);
 
 	return clk_enable(ost->clk);
 }
 
-static const struct dev_pm_ops __maybe_unused ingenic_ost_pm_ops = {
+static const struct dev_pm_ops ingenic_ost_pm_ops = {
 	/* _noirq: We want the OST clock to be gated last / ungated first */
 	.suspend_noirq = ingenic_ost_suspend,
 	.resume_noirq  = ingenic_ost_resume,
@@ -167,22 +167,21 @@ static const struct ingenic_ost_soc_info jz4725b_ost_soc_info = {
 	.is64bit = false,
 };
 
-static const struct ingenic_ost_soc_info jz4770_ost_soc_info = {
+static const struct ingenic_ost_soc_info jz4760b_ost_soc_info = {
 	.is64bit = true,
 };
 
 static const struct of_device_id ingenic_ost_of_match[] = {
 	{ .compatible = "ingenic,jz4725b-ost", .data = &jz4725b_ost_soc_info, },
-	{ .compatible = "ingenic,jz4770-ost", .data = &jz4770_ost_soc_info, },
+	{ .compatible = "ingenic,jz4760b-ost", .data = &jz4760b_ost_soc_info, },
+	{ .compatible = "ingenic,jz4770-ost", .data = &jz4760b_ost_soc_info, },
 	{ }
 };
 
 static struct platform_driver ingenic_ost_driver = {
 	.driver = {
 		.name = "ingenic-ost",
-#ifdef CONFIG_PM_SUSPEND
-		.pm = &ingenic_ost_pm_ops,
-#endif
+		.pm = pm_sleep_ptr(&ingenic_ost_pm_ops),
 		.of_match_table = ingenic_ost_of_match,
 	},
 };

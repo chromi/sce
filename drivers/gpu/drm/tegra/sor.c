@@ -16,12 +16,12 @@
 
 #include <soc/tegra/pmc.h>
 
+#include <drm/display/drm_dp_helper.h>
+#include <drm/display/drm_scdc_helper.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_debugfs.h>
-#include <drm/drm_dp_helper.h>
 #include <drm/drm_file.h>
 #include <drm/drm_panel.h>
-#include <drm/drm_scdc_helper.h>
 #include <drm/drm_simple_kms_helper.h>
 
 #include "dc.h"
@@ -1153,7 +1153,7 @@ static int tegra_sor_compute_config(struct tegra_sor *sor,
 				    struct drm_dp_link *link)
 {
 	const u64 f = 100000, link_rate = link->rate * 1000;
-	const u64 pclk = mode->clock * 1000;
+	const u64 pclk = (u64)mode->clock * 1000;
 	u64 input, output, watermark, num;
 	struct tegra_sor_params params;
 	u32 num_syms_per_line;
@@ -2140,10 +2140,8 @@ static void tegra_sor_hdmi_disable_scrambling(struct tegra_sor *sor)
 
 static void tegra_sor_hdmi_scdc_disable(struct tegra_sor *sor)
 {
-	struct i2c_adapter *ddc = sor->output.ddc;
-
-	drm_scdc_set_high_tmds_clock_ratio(ddc, false);
-	drm_scdc_set_scrambling(ddc, false);
+	drm_scdc_set_high_tmds_clock_ratio(&sor->output.connector, false);
+	drm_scdc_set_scrambling(&sor->output.connector, false);
 
 	tegra_sor_hdmi_disable_scrambling(sor);
 }
@@ -2168,10 +2166,8 @@ static void tegra_sor_hdmi_enable_scrambling(struct tegra_sor *sor)
 
 static void tegra_sor_hdmi_scdc_enable(struct tegra_sor *sor)
 {
-	struct i2c_adapter *ddc = sor->output.ddc;
-
-	drm_scdc_set_high_tmds_clock_ratio(ddc, true);
-	drm_scdc_set_scrambling(ddc, true);
+	drm_scdc_set_high_tmds_clock_ratio(&sor->output.connector, true);
+	drm_scdc_set_scrambling(&sor->output.connector, true);
 
 	tegra_sor_hdmi_enable_scrambling(sor);
 }
@@ -2179,9 +2175,8 @@ static void tegra_sor_hdmi_scdc_enable(struct tegra_sor *sor)
 static void tegra_sor_hdmi_scdc_work(struct work_struct *work)
 {
 	struct tegra_sor *sor = container_of(work, struct tegra_sor, scdc.work);
-	struct i2c_adapter *ddc = sor->output.ddc;
 
-	if (!drm_scdc_get_scrambling_status(ddc)) {
+	if (!drm_scdc_get_scrambling_status(&sor->output.connector)) {
 		DRM_DEBUG_KMS("SCDC not scrambled\n");
 		tegra_sor_hdmi_scdc_enable(sor);
 	}
@@ -2964,11 +2959,9 @@ static int tegra_sor_hdmi_probe(struct tegra_sor *sor)
 	int err;
 
 	sor->avdd_io_supply = devm_regulator_get(sor->dev, "avdd-io-hdmi-dp");
-	if (IS_ERR(sor->avdd_io_supply)) {
-		dev_err(sor->dev, "cannot get AVDD I/O supply: %ld\n",
-			PTR_ERR(sor->avdd_io_supply));
-		return PTR_ERR(sor->avdd_io_supply);
-	}
+	if (IS_ERR(sor->avdd_io_supply))
+		return dev_err_probe(sor->dev, PTR_ERR(sor->avdd_io_supply),
+				     "cannot get AVDD I/O supply\n");
 
 	err = tegra_sor_enable_regulator(sor, sor->avdd_io_supply);
 	if (err < 0) {
@@ -2978,11 +2971,9 @@ static int tegra_sor_hdmi_probe(struct tegra_sor *sor)
 	}
 
 	sor->vdd_pll_supply = devm_regulator_get(sor->dev, "vdd-hdmi-dp-pll");
-	if (IS_ERR(sor->vdd_pll_supply)) {
-		dev_err(sor->dev, "cannot get VDD PLL supply: %ld\n",
-			PTR_ERR(sor->vdd_pll_supply));
-		return PTR_ERR(sor->vdd_pll_supply);
-	}
+	if (IS_ERR(sor->vdd_pll_supply))
+		return dev_err_probe(sor->dev, PTR_ERR(sor->vdd_pll_supply),
+				     "cannot get VDD PLL supply\n");
 
 	err = tegra_sor_enable_regulator(sor, sor->vdd_pll_supply);
 	if (err < 0) {
@@ -2992,11 +2983,9 @@ static int tegra_sor_hdmi_probe(struct tegra_sor *sor)
 	}
 
 	sor->hdmi_supply = devm_regulator_get(sor->dev, "hdmi");
-	if (IS_ERR(sor->hdmi_supply)) {
-		dev_err(sor->dev, "cannot get HDMI supply: %ld\n",
-			PTR_ERR(sor->hdmi_supply));
-		return PTR_ERR(sor->hdmi_supply);
-	}
+	if (IS_ERR(sor->hdmi_supply))
+		return dev_err_probe(sor->dev, PTR_ERR(sor->hdmi_supply),
+				     "cannot get HDMI supply\n");
 
 	err = tegra_sor_enable_regulator(sor, sor->hdmi_supply);
 	if (err < 0) {
@@ -3115,25 +3104,31 @@ static int tegra_sor_init(struct host1x_client *client)
 	 * kernel is possible.
 	 */
 	if (sor->rst) {
+		err = pm_runtime_resume_and_get(sor->dev);
+		if (err < 0) {
+			dev_err(sor->dev, "failed to get runtime PM: %d\n", err);
+			return err;
+		}
+
 		err = reset_control_acquire(sor->rst);
 		if (err < 0) {
 			dev_err(sor->dev, "failed to acquire SOR reset: %d\n",
 				err);
-			return err;
+			goto rpm_put;
 		}
 
 		err = reset_control_assert(sor->rst);
 		if (err < 0) {
 			dev_err(sor->dev, "failed to assert SOR reset: %d\n",
 				err);
-			return err;
+			goto rpm_put;
 		}
 	}
 
 	err = clk_prepare_enable(sor->clk);
 	if (err < 0) {
 		dev_err(sor->dev, "failed to enable clock: %d\n", err);
-		return err;
+		goto rpm_put;
 	}
 
 	usleep_range(1000, 3000);
@@ -3144,10 +3139,11 @@ static int tegra_sor_init(struct host1x_client *client)
 			dev_err(sor->dev, "failed to deassert SOR reset: %d\n",
 				err);
 			clk_disable_unprepare(sor->clk);
-			return err;
+			goto rpm_put;
 		}
 
 		reset_control_release(sor->rst);
+		pm_runtime_put(sor->dev);
 	}
 
 	err = clk_prepare_enable(sor->clk_safe);
@@ -3164,6 +3160,12 @@ static int tegra_sor_init(struct host1x_client *client)
 	}
 
 	return 0;
+
+rpm_put:
+	if (sor->rst)
+		pm_runtime_put(sor->dev);
+
+	return err;
 }
 
 static int tegra_sor_exit(struct host1x_client *client)
@@ -3218,7 +3220,7 @@ static int tegra_sor_runtime_resume(struct host1x_client *client)
 	struct device *dev = client->dev;
 	int err;
 
-	err = pm_runtime_get_sync(dev);
+	err = pm_runtime_resume_and_get(dev);
 	if (err < 0) {
 		dev_err(dev, "failed to get runtime PM: %d\n", err);
 		return err;
@@ -3732,12 +3734,8 @@ static int tegra_sor_probe(struct platform_device *pdev)
 		if (!sor->aux)
 			return -EPROBE_DEFER;
 
-		if (get_device(&sor->aux->ddc.dev)) {
-			if (try_module_get(sor->aux->ddc.owner))
-				sor->output.ddc = &sor->aux->ddc;
-			else
-				put_device(&sor->aux->ddc.dev);
-		}
+		if (get_device(sor->aux->dev))
+			sor->output.ddc = &sor->aux->ddc;
 	}
 
 	if (!sor->aux) {
@@ -3765,12 +3763,13 @@ static int tegra_sor_probe(struct platform_device *pdev)
 
 	err = tegra_sor_parse_dt(sor);
 	if (err < 0)
-		return err;
+		goto put_aux;
 
 	err = tegra_output_probe(&sor->output);
-	if (err < 0)
-		return dev_err_probe(&pdev->dev, err,
-				     "failed to probe output\n");
+	if (err < 0) {
+		dev_err_probe(&pdev->dev, err, "failed to probe output\n");
+		goto put_aux;
+	}
 
 	if (sor->ops && sor->ops->probe) {
 		err = sor->ops->probe(sor);
@@ -3789,10 +3788,8 @@ static int tegra_sor_probe(struct platform_device *pdev)
 	}
 
 	err = platform_get_irq(pdev, 0);
-	if (err < 0) {
-		dev_err(&pdev->dev, "failed to get IRQ: %d\n", err);
+	if (err < 0)
 		goto remove;
-	}
 
 	sor->irq = err;
 
@@ -3909,16 +3906,9 @@ static int tegra_sor_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, sor);
 	pm_runtime_enable(&pdev->dev);
 
-	INIT_LIST_HEAD(&sor->client.list);
+	host1x_client_init(&sor->client);
 	sor->client.ops = &sor_client_ops;
 	sor->client.dev = &pdev->dev;
-
-	err = host1x_client_register(&sor->client);
-	if (err < 0) {
-		dev_err(&pdev->dev, "failed to register host1x client: %d\n",
-			err);
-		goto rpm_disable;
-	}
 
 	/*
 	 * On Tegra210 and earlier, provide our own implementation for the
@@ -3931,13 +3921,13 @@ static int tegra_sor_probe(struct platform_device *pdev)
 				      sor->index);
 		if (!name) {
 			err = -ENOMEM;
-			goto unregister;
+			goto uninit;
 		}
 
 		err = host1x_client_resume(&sor->client);
 		if (err < 0) {
 			dev_err(sor->dev, "failed to resume: %d\n", err);
-			goto unregister;
+			goto uninit;
 		}
 
 		sor->clk_pad = tegra_clk_sor_pad_register(sor, name);
@@ -3948,37 +3938,47 @@ static int tegra_sor_probe(struct platform_device *pdev)
 		err = PTR_ERR(sor->clk_pad);
 		dev_err(sor->dev, "failed to register SOR pad clock: %d\n",
 			err);
-		goto unregister;
+		goto uninit;
+	}
+
+	err = __host1x_client_register(&sor->client);
+	if (err < 0) {
+		dev_err(&pdev->dev, "failed to register host1x client: %d\n",
+			err);
+		goto uninit;
 	}
 
 	return 0;
 
-unregister:
-	host1x_client_unregister(&sor->client);
-rpm_disable:
+uninit:
+	host1x_client_exit(&sor->client);
 	pm_runtime_disable(&pdev->dev);
 remove:
+	if (sor->aux)
+		sor->output.ddc = NULL;
+
 	tegra_output_remove(&sor->output);
+put_aux:
+	if (sor->aux)
+		put_device(sor->aux->dev);
+
 	return err;
 }
 
-static int tegra_sor_remove(struct platform_device *pdev)
+static void tegra_sor_remove(struct platform_device *pdev)
 {
 	struct tegra_sor *sor = platform_get_drvdata(pdev);
-	int err;
 
-	err = host1x_client_unregister(&sor->client);
-	if (err < 0) {
-		dev_err(&pdev->dev, "failed to unregister host1x client: %d\n",
-			err);
-		return err;
-	}
+	host1x_client_unregister(&sor->client);
 
 	pm_runtime_disable(&pdev->dev);
 
-	tegra_output_remove(&sor->output);
+	if (sor->aux) {
+		put_device(sor->aux->dev);
+		sor->output.ddc = NULL;
+	}
 
-	return 0;
+	tegra_output_remove(&sor->output);
 }
 
 static int __maybe_unused tegra_sor_suspend(struct device *dev)
@@ -4038,5 +4038,5 @@ struct platform_driver tegra_sor_driver = {
 		.pm = &tegra_sor_pm_ops,
 	},
 	.probe = tegra_sor_probe,
-	.remove = tegra_sor_remove,
+	.remove_new = tegra_sor_remove,
 };

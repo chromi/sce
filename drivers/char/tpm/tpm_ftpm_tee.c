@@ -177,7 +177,7 @@ static u8 ftpm_tee_tpm_op_status(struct tpm_chip *chip)
 
 static bool ftpm_tee_tpm_req_canceled(struct tpm_chip *chip, u8 status)
 {
-	return 0;
+	return false;
 }
 
 static const struct tpm_class_ops ftpm_tee_tpm_ops = {
@@ -254,11 +254,11 @@ static int ftpm_tee_probe(struct device *dev)
 	pvt_data->session = sess_arg.session;
 
 	/* Allocate dynamic shared memory with fTPM TA */
-	pvt_data->shm = tee_shm_alloc(pvt_data->ctx,
-				      MAX_COMMAND_SIZE + MAX_RESPONSE_SIZE,
-				      TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
+	pvt_data->shm = tee_shm_alloc_kernel_buf(pvt_data->ctx,
+						 MAX_COMMAND_SIZE +
+						 MAX_RESPONSE_SIZE);
 	if (IS_ERR(pvt_data->shm)) {
-		dev_err(dev, "%s: tee_shm_alloc failed\n", __func__);
+		dev_err(dev, "%s: tee_shm_alloc_kernel_buf failed\n", __func__);
 		rc = -ENOMEM;
 		goto out_shm_alloc;
 	}
@@ -334,11 +334,11 @@ static int ftpm_tee_remove(struct device *dev)
 	return 0;
 }
 
-static int ftpm_plat_tee_remove(struct platform_device *pdev)
+static void ftpm_plat_tee_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 
-	return ftpm_tee_remove(dev);
+	ftpm_tee_remove(dev);
 }
 
 /**
@@ -367,7 +367,7 @@ static struct platform_driver ftpm_tee_plat_driver = {
 	},
 	.shutdown = ftpm_plat_tee_shutdown,
 	.probe = ftpm_plat_tee_probe,
-	.remove = ftpm_plat_tee_remove,
+	.remove_new = ftpm_plat_tee_remove,
 };
 
 /* UUID of the fTPM TA */
@@ -397,7 +397,13 @@ static int __init ftpm_mod_init(void)
 	if (rc)
 		return rc;
 
-	return driver_register(&ftpm_tee_driver.driver);
+	rc = driver_register(&ftpm_tee_driver.driver);
+	if (rc) {
+		platform_driver_unregister(&ftpm_tee_plat_driver);
+		return rc;
+	}
+
+	return 0;
 }
 
 static void __exit ftpm_mod_exit(void)

@@ -49,6 +49,7 @@ enum ci_hw_regs {
 	OP_USBCMD,
 	OP_USBSTS,
 	OP_USBINTR,
+	OP_FRINDEX,
 	OP_DEVICEADDR,
 	OP_ENDPTLISTADDR,
 	OP_TTCTRL,
@@ -126,12 +127,16 @@ enum ci_revision {
  * struct ci_role_driver - host/gadget role driver
  * @start: start this role
  * @stop: stop this role
+ * @suspend: system suspend handler for this role
+ * @resume: system resume handler for this role
  * @irq: irq handler for this role
  * @name: role name string (host/gadget)
  */
 struct ci_role_driver {
 	int		(*start)(struct ci_hdrc *);
 	void		(*stop)(struct ci_hdrc *);
+	void		(*suspend)(struct ci_hdrc *ci);
+	void		(*resume)(struct ci_hdrc *ci, bool power_lost);
 	irqreturn_t	(*irq)(struct ci_hdrc *);
 	const char	*name;
 };
@@ -195,7 +200,6 @@ struct hw_bank {
  * @phy: pointer to PHY, if any
  * @usb_phy: pointer to USB PHY, if any and if using the USB PHY framework
  * @hcd: pointer to usb_hcd for ehci host driver
- * @debugfs: root dentry for this controller in debugfs
  * @id_event: indicates there is an id event, and handled at ci_otg_work
  * @b_sess_valid_event: indicates there is a vbus event, and handled
  * at ci_otg_work
@@ -204,6 +208,7 @@ struct hw_bank {
  * @in_lpm: if the core in low power mode
  * @wakeup_int: if wakeup interrupt occur
  * @rev: The revision number for controller
+ * @mutex: protect code from concorrent running when doing role switch
  */
 struct ci_hdrc {
 	struct device			*dev;
@@ -249,7 +254,6 @@ struct ci_hdrc {
 	/* old usb_phy interface */
 	struct usb_phy			*usb_phy;
 	struct usb_hcd			*hcd;
-	struct dentry			*debugfs;
 	bool				id_event;
 	bool				b_sess_valid_event;
 	bool				imx28_write_fix;
@@ -257,6 +261,7 @@ struct ci_hdrc {
 	bool				in_lpm;
 	bool				wakeup_int;
 	enum ci_revision		rev;
+	struct mutex                    mutex;
 };
 
 static inline struct ci_role_driver *ci_role(struct ci_hdrc *ci)

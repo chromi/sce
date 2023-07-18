@@ -45,8 +45,6 @@
 #endif
 #include <linux/mem_encrypt.h>
 
-
-#include <drm/drm_agpsupport.h>
 #include <drm/drm_device.h>
 #include <drm/drm_drv.h>
 #include <drm/drm_file.h>
@@ -70,11 +68,8 @@ static pgprot_t drm_io_prot(struct drm_local_map *map,
 {
 	pgprot_t tmp = vm_get_page_prot(vma->vm_flags);
 
-	/* We don't want graphics memory to be mapped encrypted */
-	tmp = pgprot_decrypted(tmp);
-
 #if defined(__i386__) || defined(__x86_64__) || defined(__powerpc__) || \
-    defined(__mips__)
+    defined(__mips__) || defined(__loongarch__)
 	if (map->type == _DRM_REGISTERS && !(map->flags & _DRM_WRITE_COMBINING))
 		tmp = pgprot_noncached(tmp);
 	else
@@ -281,7 +276,7 @@ static void drm_vm_shm_close(struct vm_area_struct *vma)
 			case _DRM_SCATTER_GATHER:
 				break;
 			case _DRM_CONSISTENT:
-				dma_free_coherent(&dev->pdev->dev,
+				dma_free_coherent(dev->dev,
 						  map->size,
 						  map->handle,
 						  map->offset);
@@ -481,7 +476,7 @@ static int drm_mmap_dma(struct file *filp, struct vm_area_struct *vma)
 
 	if (!capable(CAP_SYS_ADMIN) &&
 	    (dma->flags & _DRM_DMA_USE_PCI_RO)) {
-		vma->vm_flags &= ~(VM_WRITE | VM_MAYWRITE);
+		vm_flags_clear(vma, VM_WRITE | VM_MAYWRITE);
 #if defined(__i386__) || defined(__x86_64__)
 		pgprot_val(vma->vm_page_prot) &= ~_PAGE_RW;
 #else
@@ -497,7 +492,7 @@ static int drm_mmap_dma(struct file *filp, struct vm_area_struct *vma)
 
 	vma->vm_ops = &drm_vm_dma_ops;
 
-	vma->vm_flags |= VM_DONTEXPAND | VM_DONTDUMP;
+	vm_flags_set(vma, VM_DONTEXPAND | VM_DONTDUMP);
 
 	drm_vm_open_locked(dev, vma);
 	return 0;
@@ -565,7 +560,7 @@ static int drm_mmap_locked(struct file *filp, struct vm_area_struct *vma)
 		return -EINVAL;
 
 	if (!capable(CAP_SYS_ADMIN) && (map->flags & _DRM_READ_ONLY)) {
-		vma->vm_flags &= ~(VM_WRITE | VM_MAYWRITE);
+		vm_flags_clear(vma, VM_WRITE | VM_MAYWRITE);
 #if defined(__i386__) || defined(__x86_64__)
 		pgprot_val(vma->vm_page_prot) &= ~_PAGE_RW;
 #else
@@ -633,7 +628,7 @@ static int drm_mmap_locked(struct file *filp, struct vm_area_struct *vma)
 	default:
 		return -EINVAL;	/* This should never happen. */
 	}
-	vma->vm_flags |= VM_DONTEXPAND | VM_DONTDUMP;
+	vm_flags_set(vma, VM_DONTEXPAND | VM_DONTDUMP);
 
 	drm_vm_open_locked(dev, vma);
 	return 0;

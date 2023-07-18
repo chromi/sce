@@ -44,14 +44,13 @@
 #include <linux/of_reserved_mem.h>
 #include <linux/shmem_fs.h>
 #include <linux/slab.h>
-#include <linux/version.h>
 
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_bridge.h>
 #include <drm/drm_drv.h>
-#include <drm/drm_fb_cma_helper.h>
-#include <drm/drm_fb_helper.h>
-#include <drm/drm_gem_cma_helper.h>
+#include <drm/drm_fbdev_dma.h>
+#include <drm/drm_fourcc.h>
+#include <drm/drm_gem_dma_helper.h>
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_of.h>
 #include <drm/drm_panel.h>
@@ -208,12 +207,12 @@ pl111_gem_import_sg_table(struct drm_device *dev,
 	if (priv->use_device_memory)
 		return ERR_PTR(-EINVAL);
 
-	return drm_gem_cma_prime_import_sg_table(dev, attach, sgt);
+	return drm_gem_dma_prime_import_sg_table(dev, attach, sgt);
 }
 
-DEFINE_DRM_GEM_CMA_FOPS(drm_fops);
+DEFINE_DRM_GEM_DMA_FOPS(drm_fops);
 
-static struct drm_driver pl111_drm_driver = {
+static const struct drm_driver pl111_drm_driver = {
 	.driver_features =
 		DRIVER_MODESET | DRIVER_GEM | DRIVER_ATOMIC,
 	.ioctls = NULL,
@@ -224,15 +223,11 @@ static struct drm_driver pl111_drm_driver = {
 	.major = 1,
 	.minor = 0,
 	.patchlevel = 0,
-	.dumb_create = drm_gem_cma_dumb_create,
-	.gem_free_object_unlocked = drm_gem_cma_free_object,
-	.gem_vm_ops = &drm_gem_cma_vm_ops,
+	.dumb_create = drm_gem_dma_dumb_create,
 	.prime_handle_to_fd = drm_gem_prime_handle_to_fd,
 	.prime_fd_to_handle = drm_gem_prime_fd_to_handle,
 	.gem_prime_import_sg_table = pl111_gem_import_sg_table,
-	.gem_prime_get_sg_table	= drm_gem_cma_prime_get_sg_table,
-	.gem_prime_mmap = drm_gem_cma_prime_mmap,
-	.gem_prime_vmap = drm_gem_cma_prime_vmap,
+	.gem_prime_mmap = drm_gem_prime_mmap,
 
 #if defined(CONFIG_DEBUG_FS)
 	.debugfs_init = pl111_debugfs_init,
@@ -313,7 +308,7 @@ static int pl111_amba_probe(struct amba_device *amba_dev,
 	if (ret < 0)
 		goto dev_put;
 
-	drm_fbdev_generic_setup(drm, priv->variant->fb_bpp);
+	drm_fbdev_dma_setup(drm, priv->variant->fb_depth);
 
 	return 0;
 
@@ -324,7 +319,7 @@ dev_put:
 	return ret;
 }
 
-static int pl111_amba_remove(struct amba_device *amba_dev)
+static void pl111_amba_remove(struct amba_device *amba_dev)
 {
 	struct device *dev = &amba_dev->dev;
 	struct drm_device *drm = amba_get_drvdata(amba_dev);
@@ -335,8 +330,6 @@ static int pl111_amba_remove(struct amba_device *amba_dev)
 		drm_panel_bridge_remove(priv->bridge);
 	drm_dev_put(drm);
 	of_reserved_mem_device_release(dev);
-
-	return 0;
 }
 
 /*
@@ -358,7 +351,7 @@ static const struct pl111_variant_data pl110_variant = {
 	.is_pl110 = true,
 	.formats = pl110_pixel_formats,
 	.nformats = ARRAY_SIZE(pl110_pixel_formats),
-	.fb_bpp = 16,
+	.fb_depth = 16,
 };
 
 /* RealView, Versatile Express etc use this modern variant */
@@ -383,7 +376,7 @@ static const struct pl111_variant_data pl111_variant = {
 	.name = "PL111",
 	.formats = pl111_pixel_formats,
 	.nformats = ARRAY_SIZE(pl111_pixel_formats),
-	.fb_bpp = 32,
+	.fb_depth = 32,
 };
 
 static const u32 pl110_nomadik_pixel_formats[] = {
@@ -412,7 +405,7 @@ static const struct pl111_variant_data pl110_nomadik_variant = {
 	.is_lcdc = true,
 	.st_bitmux_control = true,
 	.broken_vblank = true,
-	.fb_bpp = 16,
+	.fb_depth = 16,
 };
 
 static const struct amba_id pl111_id_table[] = {

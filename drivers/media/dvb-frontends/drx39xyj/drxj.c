@@ -2325,7 +2325,6 @@ hi_command(struct i2c_device_addr *dev_addr, const struct drxj_hi_cmd *cmd, u16 
 
 	default:
 		return -EINVAL;
-		break;
 	}
 
 	/* Write command */
@@ -2348,6 +2347,7 @@ hi_command(struct i2c_device_addr *dev_addr, const struct drxj_hi_cmd *cmd, u16 
 		do {
 			nr_retries++;
 			if (nr_retries > DRXJ_MAX_RETRIES) {
+				rc = -ETIMEDOUT;
 				pr_err("timeout\n");
 				goto rw_error;
 			}
@@ -3594,7 +3594,6 @@ static int ctrl_set_uio_cfg(struct drx_demod_instance *demod, struct drxuio_cfg 
 			break;
 		default:
 			return -EINVAL;
-			break;
 		}		/* switch ( uio_cfg->mode ) */
 		break;
       /*====================================================================*/
@@ -3618,7 +3617,6 @@ static int ctrl_set_uio_cfg(struct drx_demod_instance *demod, struct drxuio_cfg 
 			break;
 		default:
 			return -EINVAL;
-			break;
 		}		/* switch ( uio_cfg->mode ) */
 		break;
       /*====================================================================*/
@@ -3642,7 +3640,6 @@ static int ctrl_set_uio_cfg(struct drx_demod_instance *demod, struct drxuio_cfg 
 		case DRX_UIO_MODE_FIRMWARE0:
 		default:
 			return -EINVAL;
-			break;
 		}		/* switch ( uio_cfg->mode ) */
 		break;
       /*====================================================================*/
@@ -4779,7 +4776,7 @@ set_frequency(struct drx_demod_instance *demod,
 	bool select_pos_image = false;
 	bool rf_mirror;
 	bool tuner_mirror;
-	bool image_to_select = true;
+	bool image_to_select;
 	s32 fm_frequency_shift = 0;
 
 	rf_mirror = (ext_attr->mirror == DRX_MIRROR_YES) ? true : false;
@@ -9542,7 +9539,8 @@ ctrl_get_qam_sig_quality(struct drx_demod_instance *demod)
 		qam_sl_sig_power = DRXJ_QAM_SL_SIG_POWER_QAM256 << 2;
 		break;
 	default:
-		return -EIO;
+		rc = -EIO;
+		goto rw_error;
 	}
 
 	/* ------------------------------ */
@@ -10919,7 +10917,8 @@ ctrl_set_standard(struct drx_demod_instance *demod, enum drx_standard *standard)
 		break;
 	case DRX_STANDARD_AUTO:
 	default:
-		return -EINVAL;
+		rc = -EINVAL;
+		goto rw_error;
 	}
 
 	/*
@@ -10953,7 +10952,6 @@ ctrl_set_standard(struct drx_demod_instance *demod, enum drx_standard *standard)
 	default:
 		ext_attr->standard = DRX_STANDARD_UNKNOWN;
 		return -EINVAL;
-		break;
 	}
 
 	return 0;
@@ -11072,9 +11070,8 @@ ctrl_power_mode(struct drx_demod_instance *demod, enum drx_power_mode *mode)
 		sio_cc_pwd_mode = SIO_CC_PWD_MODE_LEVEL_OSC;
 		break;
 	default:
-		/* Unknow sleep mode */
+		/* Unknown sleep mode */
 		return -EINVAL;
-		break;
 	}
 
 	/* Check if device needs to be powered up */
@@ -11468,7 +11465,8 @@ static int drxj_open(struct drx_demod_instance *demod)
 
 		if (DRX_ISPOWERDOWNMODE(demod->my_common_attr->current_power_mode)) {
 			pr_err("Should powerup before loading the firmware.");
-			return -EINVAL;
+			rc = -EINVAL;
+			goto rw_error;
 		}
 
 		rc = drx_ctrl_u_code(demod, &ucode_info, UCODE_UPLOAD);
@@ -11896,7 +11894,6 @@ static int drx_ctrl_u_code(struct drx_demod_instance *demod,
 		}
 		default:
 			return -EINVAL;
-			break;
 
 		}
 		mc_data += mc_block_nr_bytes;

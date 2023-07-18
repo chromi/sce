@@ -32,8 +32,13 @@ struct hdmi_codec_daifmt {
 	} fmt;
 	unsigned int bit_clk_inv:1;
 	unsigned int frame_clk_inv:1;
-	unsigned int bit_clk_master:1;
-	unsigned int frame_clk_master:1;
+	unsigned int bit_clk_provider:1;
+	unsigned int frame_clk_provider:1;
+	/* bit_fmt could be standard PCM format or
+	 * IEC958 encoded format. ALSA IEC958 plugin will pass
+	 * IEC958_SUBFRAME format to the underneath driver.
+	 */
+	snd_pcm_format_t bit_fmt;
 };
 
 /*
@@ -60,11 +65,21 @@ struct hdmi_codec_ops {
 
 	/*
 	 * Configures HDMI-encoder for audio stream.
-	 * Mandatory
+	 * Having either prepare or hw_params is mandatory.
 	 */
 	int (*hw_params)(struct device *dev, void *data,
 			 struct hdmi_codec_daifmt *fmt,
 			 struct hdmi_codec_params *hparms);
+
+	/*
+	 * Configures HDMI-encoder for audio stream. Can be called
+	 * multiple times for each setup.
+	 *
+	 * Having either prepare or hw_params is mandatory.
+	 */
+	int (*prepare)(struct device *dev, void *data,
+		       struct hdmi_codec_daifmt *fmt,
+		       struct hdmi_codec_params *hparms);
 
 	/*
 	 * Shuts down the audio stream.
@@ -109,7 +124,11 @@ struct hdmi_codec_ops {
 struct hdmi_codec_pdata {
 	const struct hdmi_codec_ops *ops;
 	uint i2s:1;
+	uint no_i2s_playback:1;
+	uint no_i2s_capture:1;
 	uint spdif:1;
+	uint no_spdif_playback:1;
+	uint no_spdif_capture:1;
 	int max_i2s_channels;
 	void *data;
 };

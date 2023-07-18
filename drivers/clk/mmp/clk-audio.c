@@ -384,15 +384,14 @@ disable_pm_runtime:
 	return ret;
 }
 
-static int mmp2_audio_clk_remove(struct platform_device *pdev)
+static void mmp2_audio_clk_remove(struct platform_device *pdev)
 {
 	pm_clk_destroy(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
-
-	return 0;
 }
 
-static int __maybe_unused mmp2_audio_clk_suspend(struct device *dev)
+#ifdef CONFIG_PM
+static int mmp2_audio_clk_suspend(struct device *dev)
 {
 	struct mmp2_audio_clk *priv = dev_get_drvdata(dev);
 
@@ -404,7 +403,7 @@ static int __maybe_unused mmp2_audio_clk_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused mmp2_audio_clk_resume(struct device *dev)
+static int mmp2_audio_clk_resume(struct device *dev)
 {
 	struct mmp2_audio_clk *priv = dev_get_drvdata(dev);
 
@@ -415,6 +414,7 @@ static int __maybe_unused mmp2_audio_clk_resume(struct device *dev)
 
 	return 0;
 }
+#endif
 
 static const struct dev_pm_ops mmp2_audio_clk_pm_ops = {
 	SET_RUNTIME_PM_OPS(mmp2_audio_clk_suspend, mmp2_audio_clk_resume, NULL)
@@ -434,7 +434,7 @@ static struct platform_driver mmp2_audio_clk_driver = {
 		.pm = &mmp2_audio_clk_pm_ops,
 	},
 	.probe = mmp2_audio_clk_probe,
-	.remove = mmp2_audio_clk_remove,
+	.remove_new = mmp2_audio_clk_remove,
 };
 module_platform_driver(mmp2_audio_clk_driver);
 

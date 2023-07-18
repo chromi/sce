@@ -48,7 +48,7 @@ static struct atmel_classd_pdata *atmel_classd_dt_init(struct device *dev)
 {
 	struct device_node *np = dev->of_node;
 	struct atmel_classd_pdata *pdata;
-	const char *pwm_type;
+	const char *pwm_type_s;
 	int ret;
 
 	if (!np) {
@@ -60,8 +60,8 @@ static struct atmel_classd_pdata *atmel_classd_dt_init(struct device *dev)
 	if (!pdata)
 		return ERR_PTR(-ENOMEM);
 
-	ret = of_property_read_string(np, "atmel,pwm-type", &pwm_type);
-	if ((ret == 0) && (strcmp(pwm_type, "diff") == 0))
+	ret = of_property_read_string(np, "atmel,pwm-type", &pwm_type_s);
+	if ((ret == 0) && (strcmp(pwm_type_s, "diff") == 0))
 		pdata->pwm_type = CLASSD_MR_PWMTYP_DIFF;
 	else
 		pdata->pwm_type = CLASSD_MR_PWMTYP_SINGLE;
@@ -458,7 +458,7 @@ static const struct snd_soc_component_driver atmel_classd_cpu_dai_component = {
 	.num_controls		= ARRAY_SIZE(atmel_classd_snd_controls),
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
-	.endianness		= 1,
+	.legacy_dai_naming	= 1,
 };
 
 /* ASoC sound card */
@@ -473,24 +473,21 @@ static int atmel_classd_asoc_card_init(struct device *dev,
 	if (!dai_link)
 		return -ENOMEM;
 
-	comp = devm_kzalloc(dev, 3 * sizeof(*comp), GFP_KERNEL);
+	comp = devm_kzalloc(dev, 2 * sizeof(*comp), GFP_KERNEL);
 	if (!comp)
 		return -ENOMEM;
 
 	dai_link->cpus		= &comp[0];
 	dai_link->codecs	= &comp[1];
-	dai_link->platforms	= &comp[2];
 
 	dai_link->num_cpus	= 1;
 	dai_link->num_codecs	= 1;
-	dai_link->num_platforms	= 1;
 
 	dai_link->name			= "CLASSD";
 	dai_link->stream_name		= "CLASSD PCM";
 	dai_link->codecs->dai_name	= "snd-soc-dummy-dai";
 	dai_link->cpus->dai_name	= dev_name(dev);
 	dai_link->codecs->name		= "snd-soc-dummy";
-	dai_link->platforms->name	= dev_name(dev);
 
 	card->dai_link	= dai_link;
 	card->num_links	= 1;
@@ -558,8 +555,7 @@ static int atmel_classd_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	io_base = devm_ioremap_resource(dev, res);
+	io_base = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(io_base))
 		return PTR_ERR(io_base);
 
@@ -617,11 +613,6 @@ unregister_codec:
 	return ret;
 }
 
-static int atmel_classd_remove(struct platform_device *pdev)
-{
-	return 0;
-}
-
 static struct platform_driver atmel_classd_driver = {
 	.driver	= {
 		.name		= "atmel-classd",
@@ -629,7 +620,6 @@ static struct platform_driver atmel_classd_driver = {
 		.pm		= &snd_soc_pm_ops,
 	},
 	.probe	= atmel_classd_probe,
-	.remove	= atmel_classd_remove,
 };
 module_platform_driver(atmel_classd_driver);
 

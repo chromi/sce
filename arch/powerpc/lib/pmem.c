@@ -6,6 +6,7 @@
 #include <linux/string.h>
 #include <linux/export.h>
 #include <linux/uaccess.h>
+#include <linux/libnvdimm.h>
 
 #include <asm/cacheflush.h>
 
@@ -84,10 +85,3 @@ void memcpy_flushcache(void *dest, const void *src, size_t size)
 	clean_pmem_range(start, start + size);
 }
 EXPORT_SYMBOL(memcpy_flushcache);
-
-void memcpy_page_flushcache(char *to, struct page *page, size_t offset,
-	size_t len)
-{
-	memcpy_flushcache(to, page_to_virt(page) + offset, len);
-}
-EXPORT_SYMBOL(memcpy_page_flushcache);

@@ -6,7 +6,6 @@
 
 #include <linux/err.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 
 #include "cpufreq-dt.h"
@@ -15,7 +14,7 @@
  * Machines for which the cpufreq device is *always* created, mostly used for
  * platforms using "operating-points" (V1) property.
  */
-static const struct of_device_id whitelist[] __initconst = {
+static const struct of_device_id allowlist[] __initconst = {
 	{ .compatible = "allwinner,sun4i-a10", },
 	{ .compatible = "allwinner,sun5i-a10s", },
 	{ .compatible = "allwinner,sun5i-a13", },
@@ -100,14 +99,19 @@ static const struct of_device_id whitelist[] __initconst = {
  * Machines for which the cpufreq device is *not* created, mostly used for
  * platforms using "operating-points-v2" property.
  */
-static const struct of_device_id blacklist[] __initconst = {
+static const struct of_device_id blocklist[] __initconst = {
 	{ .compatible = "allwinner,sun50i-h6", },
+
+	{ .compatible = "apple,arm-platform", },
+
+	{ .compatible = "arm,vexpress", },
 
 	{ .compatible = "calxeda,highbank", },
 	{ .compatible = "calxeda,ecx-2000", },
 
 	{ .compatible = "fsl,imx7ulp", },
 	{ .compatible = "fsl,imx7d", },
+	{ .compatible = "fsl,imx7s", },
 	{ .compatible = "fsl,imx8mq", },
 	{ .compatible = "fsl,imx8mm", },
 	{ .compatible = "fsl,imx8mn", },
@@ -119,32 +123,48 @@ static const struct of_device_id blacklist[] __initconst = {
 	{ .compatible = "mediatek,mt2712", },
 	{ .compatible = "mediatek,mt7622", },
 	{ .compatible = "mediatek,mt7623", },
+	{ .compatible = "mediatek,mt8167", },
 	{ .compatible = "mediatek,mt817x", },
 	{ .compatible = "mediatek,mt8173", },
 	{ .compatible = "mediatek,mt8176", },
 	{ .compatible = "mediatek,mt8183", },
+	{ .compatible = "mediatek,mt8186", },
+	{ .compatible = "mediatek,mt8365", },
+	{ .compatible = "mediatek,mt8516", },
 
 	{ .compatible = "nvidia,tegra20", },
 	{ .compatible = "nvidia,tegra30", },
 	{ .compatible = "nvidia,tegra124", },
 	{ .compatible = "nvidia,tegra210", },
+	{ .compatible = "nvidia,tegra234", },
 
 	{ .compatible = "qcom,apq8096", },
 	{ .compatible = "qcom,msm8996", },
 	{ .compatible = "qcom,qcs404", },
+	{ .compatible = "qcom,sa8155p" },
+	{ .compatible = "qcom,sa8540p" },
 	{ .compatible = "qcom,sc7180", },
+	{ .compatible = "qcom,sc7280", },
+	{ .compatible = "qcom,sc8180x", },
+	{ .compatible = "qcom,sc8280xp", },
 	{ .compatible = "qcom,sdm845", },
+	{ .compatible = "qcom,sm6115", },
+	{ .compatible = "qcom,sm6350", },
+	{ .compatible = "qcom,sm6375", },
+	{ .compatible = "qcom,sm7225", },
+	{ .compatible = "qcom,sm8150", },
+	{ .compatible = "qcom,sm8250", },
+	{ .compatible = "qcom,sm8350", },
 
 	{ .compatible = "st,stih407", },
 	{ .compatible = "st,stih410", },
 	{ .compatible = "st,stih418", },
 
-	{ .compatible = "sigma,tango4", },
-
 	{ .compatible = "ti,am33xx", },
 	{ .compatible = "ti,am43", },
 	{ .compatible = "ti,dra7", },
 	{ .compatible = "ti,omap3", },
+	{ .compatible = "ti,am625", },
 
 	{ .compatible = "qcom,ipq8064", },
 	{ .compatible = "qcom,apq8064", },
@@ -159,7 +179,7 @@ static bool __init cpu0_node_has_opp_v2_prop(void)
 	struct device_node *np = of_cpu_device_node_get(0);
 	bool ret = false;
 
-	if (of_get_property(np, "operating-points-v2", NULL))
+	if (of_property_present(np, "operating-points-v2"))
 		ret = true;
 
 	of_node_put(np);
@@ -175,13 +195,13 @@ static int __init cpufreq_dt_platdev_init(void)
 	if (!np)
 		return -ENODEV;
 
-	match = of_match_node(whitelist, np);
+	match = of_match_node(allowlist, np);
 	if (match) {
 		data = match->data;
 		goto create_pdev;
 	}
 
-	if (cpu0_node_has_opp_v2_prop() && !of_match_node(blacklist, np))
+	if (cpu0_node_has_opp_v2_prop() && !of_match_node(blocklist, np))
 		goto create_pdev;
 
 	of_node_put(np);

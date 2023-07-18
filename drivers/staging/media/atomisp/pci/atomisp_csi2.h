@@ -25,9 +25,6 @@
 #define CSI2_PAD_SOURCE		1
 #define CSI2_PADS_NUM		2
 
-#define CSI2_OUTPUT_ISP_SUBDEV	BIT(0)
-#define CSI2_OUTPUT_MEMORY	BIT(1)
-
 struct atomisp_device;
 struct v4l2_device;
 struct atomisp_sub_device;
@@ -39,12 +36,10 @@ struct atomisp_mipi_csi2_device {
 
 	struct v4l2_ctrl_handler ctrls;
 	struct atomisp_device *isp;
-
-	u32 output; /* output direction */
 };
 
 int atomisp_csi2_set_ffmt(struct v4l2_subdev *sd,
-			  struct v4l2_subdev_pad_config *cfg,
+			  struct v4l2_subdev_state *sd_state,
 			  unsigned int which, uint16_t pad,
 			  struct v4l2_mbus_framefmt *ffmt);
 int atomisp_mipi_csi2_init(struct atomisp_device *isp);

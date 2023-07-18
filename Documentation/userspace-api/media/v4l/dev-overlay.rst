@@ -37,6 +37,10 @@ capturing and overlay. Optionally these drivers may also permit
 capturing and overlay with a single file descriptor for compatibility
 with V4L and earlier versions of V4L2. [#f1]_
 
+A common application of two file descriptors is the X11
+:ref:`Xv/V4L <xvideo>` interface driver and a V4L2 application.
+While the X server controls video overlay, the application can take
+advantage of memory mapping and DMA.
 
 Querying Capabilities
 =====================
@@ -63,6 +67,7 @@ ioctls must be supported by all video overlay devices.
 Setup
 =====
 
+*Note: support for this has been removed.*
 Before overlay can commence applications must program the driver with
 frame buffer parameters, namely the address and size of the frame buffer
 and the image format, for example RGB 5:6:5. The
@@ -88,11 +93,13 @@ A driver may support any (or none) of five clipping/blending methods:
 1. Chroma-keying displays the overlaid image only where pixels in the
    primary graphics surface assume a certain color.
 
-2. A bitmap can be specified where each bit corresponds to a pixel in
+2. *Note: support for this has been removed.*
+   A bitmap can be specified where each bit corresponds to a pixel in
    the overlaid image. When the bit is set, the corresponding video
    pixel is displayed, otherwise a pixel of the graphics surface.
 
-3. A list of clipping rectangles can be specified. In these regions *no*
+3. *Note: support for this has been removed.*
+   A list of clipping rectangles can be specified. In these regions *no*
    video is displayed, so the graphics surface can be seen here.
 
 4. The framebuffer has an alpha channel that can be used to clip or
@@ -181,6 +188,7 @@ struct v4l2_window
     be 0xRRGGBB on a little endian, 0xBBGGRR on a big endian host.
 
 ``struct v4l2_clip * clips``
+    *Note: support for this has been removed.*
     When chroma-keying has *not* been negotiated and
     :ref:`VIDIOC_G_FBUF <VIDIOC_G_FBUF>` indicated this capability,
     applications can set this field to point to an array of clipping
@@ -197,6 +205,7 @@ struct v4l2_window
     are undefined.
 
 ``__u32 clipcount``
+    *Note: support for this has been removed.*
     When the application set the ``clips`` field, this field must
     contain the number of clipping rectangles in the list. When clip
     lists are not supported the driver ignores this field, its contents
@@ -204,6 +213,7 @@ struct v4l2_window
     supported but no clipping is desired this field must be set to zero.
 
 ``void * bitmap``
+    *Note: support for this has been removed.*
     When chroma-keying has *not* been negotiated and
     :ref:`VIDIOC_G_FBUF <VIDIOC_G_FBUF>` indicated this capability,
     applications can set this field to point to a clipping bit mask.
@@ -289,11 +299,6 @@ To start or stop the frame buffer overlay applications call the
 :ref:`VIDIOC_OVERLAY` ioctl.
 
 .. [#f1]
-   A common application of two file descriptors is the XFree86
-   :ref:`Xv/V4L <xvideo>` interface driver and a V4L2 application.
-   While the X server controls video overlay, the application can take
-   advantage of memory mapping and DMA.
-
    In the opinion of the designers of this API, no driver writer taking
    the efforts to support simultaneous capturing and overlay will
    restrict this ability by requiring a single file descriptor, as in

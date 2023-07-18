@@ -23,7 +23,6 @@
 #include <linux/spinlock.h>
 #include <linux/io.h>
 
-#include <mach/hardware.h>
 #include <asm/irq.h>
 #include <asm/mach/irq.h>
 
@@ -495,7 +494,7 @@ static int locomo_probe(struct platform_device *dev)
 	return __locomo_probe(&dev->dev, mem, irq);
 }
 
-static int locomo_remove(struct platform_device *dev)
+static void locomo_remove(struct platform_device *dev)
 {
 	struct locomo *lchip = platform_get_drvdata(dev);
 
@@ -503,8 +502,6 @@ static int locomo_remove(struct platform_device *dev)
 		__locomo_remove(lchip);
 		platform_set_drvdata(dev, NULL);
 	}
-
-	return 0;
 }
 
 /*
@@ -515,7 +512,7 @@ static int locomo_remove(struct platform_device *dev)
  */
 static struct platform_driver locomo_device_driver = {
 	.probe		= locomo_probe,
-	.remove		= locomo_remove,
+	.remove_new	= locomo_remove,
 #ifdef CONFIG_PM
 	.suspend	= locomo_suspend,
 	.resume		= locomo_resume,
@@ -834,15 +831,13 @@ static int locomo_bus_probe(struct device *dev)
 	return ret;
 }
 
-static int locomo_bus_remove(struct device *dev)
+static void locomo_bus_remove(struct device *dev)
 {
 	struct locomo_dev *ldev = LOCOMO_DEV(dev);
 	struct locomo_driver *drv = LOCOMO_DRV(dev->driver);
-	int ret = 0;
 
 	if (drv->remove)
-		ret = drv->remove(ldev);
-	return ret;
+		drv->remove(ldev);
 }
 
 struct bus_type locomo_bus_type = {

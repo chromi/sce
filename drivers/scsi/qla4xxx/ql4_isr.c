@@ -182,7 +182,7 @@ static void qla4xxx_status_entry(struct scsi_qla_host *ha,
 
 		cmd->result = DID_OK << 16 | scsi_status;
 
-		if (scsi_status != SCSI_CHECK_CONDITION)
+		if (scsi_status != SAM_STAT_CHECK_CONDITION)
 			break;
 
 		/* Copy Sense Data into sense buffer. */
@@ -472,14 +472,12 @@ static void qla4xxx_mbox_status_entry(struct scsi_qla_host *ha,
  **/
 void qla4xxx_process_response_queue(struct scsi_qla_host *ha)
 {
-	uint32_t count = 0;
 	struct srb *srb = NULL;
 	struct status_entry *sts_entry;
 
 	/* Process all responses from response queue */
 	while ((ha->response_ptr->signature != RESPONSE_PROCESSED)) {
 		sts_entry = (struct status_entry *) ha->response_ptr;
-		count++;
 
 		/* Advance pointers for next entry */
 		if (ha->response_out == (RESPONSE_QUEUE_DEPTH - 1)) {

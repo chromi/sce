@@ -2,7 +2,7 @@
 #ifndef _ASM_POWERPC_RTAS_TYPES_H
 #define _ASM_POWERPC_RTAS_TYPES_H
 
-#include <linux/spinlock_types.h>
+#include <linux/compiler_attributes.h>
 
 typedef __be32 rtas_arg_t;
 
@@ -12,23 +12,13 @@ struct rtas_args {
 	__be32 nret;
 	rtas_arg_t args[16];
 	rtas_arg_t *rets;     /* Pointer to return values in args[]. */
-};
+} __aligned(8);
 
 struct rtas_t {
 	unsigned long entry;		/* physical address pointer */
 	unsigned long base;		/* physical address pointer */
 	unsigned long size;
-	arch_spinlock_t lock;
-	struct rtas_args args;
 	struct device_node *dev;	/* virtual address pointer */
-};
-
-struct rtas_suspend_me_data {
-	atomic_t working; /* number of cpus accessing this struct */
-	atomic_t done;
-	int token; /* ibm,suspend-me */
-	atomic_t error;
-	struct completion *complete; /* wait on this until working == 0 */
 };
 
 struct rtas_error_log {

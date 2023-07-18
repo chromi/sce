@@ -1,4 +1,4 @@
-.. SPDX-License-Identifier: GFDL-1.1-no-invariants-or-later
+.. SPDX-License-Identifier: GPL-2.0 OR GFDL-1.1-no-invariants-or-later
 .. c:namespace:: RC
 
 .. _lirc_set_wideband_receiver:
@@ -43,7 +43,7 @@ reduced range of reception.
 
 .. note::
 
-    Wide band receiver might be implictly enabled if you enable
+    Wide band receiver might be implicitly enabled if you enable
     carrier reports. In that case it will be disabled as soon as you disable
     carrier reports. Trying to disable wide band receiver while carrier
     reports are active will do nothing.

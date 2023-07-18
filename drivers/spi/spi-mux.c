@@ -51,22 +51,22 @@ static int spi_mux_select(struct spi_device *spi)
 	struct spi_mux_priv *priv = spi_controller_get_devdata(spi->controller);
 	int ret;
 
-	ret = mux_control_select(priv->mux, spi->chip_select);
+	ret = mux_control_select(priv->mux, spi_get_chipselect(spi, 0));
 	if (ret)
 		return ret;
 
-	if (priv->current_cs == spi->chip_select)
+	if (priv->current_cs == spi_get_chipselect(spi, 0))
 		return 0;
 
 	dev_dbg(&priv->spi->dev, "setting up the mux for cs %d\n",
-		spi->chip_select);
+		spi_get_chipselect(spi, 0));
 
 	/* copy the child device's settings except for the cs */
 	priv->spi->max_speed_hz = spi->max_speed_hz;
 	priv->spi->mode = spi->mode;
 	priv->spi->bits_per_word = spi->bits_per_word;
 
-	priv->current_cs = spi->chip_select;
+	priv->current_cs = spi_get_chipselect(spi, 0);
 
 	return 0;
 }
@@ -137,6 +137,13 @@ static int spi_mux_probe(struct spi_device *spi)
 	priv = spi_controller_get_devdata(ctlr);
 	priv->spi = spi;
 
+	/*
+	 * Increase lockdep class as these lock are taken while the parent bus
+	 * already holds their instance's lock.
+	 */
+	lockdep_set_subclass(&ctlr->io_mutex, 1);
+	lockdep_set_subclass(&ctlr->add_lock, 1);
+
 	priv->mux = devm_mux_control_get(&spi->dev, NULL);
 	if (IS_ERR(priv->mux)) {
 		ret = dev_err_probe(&spi->dev, PTR_ERR(priv->mux),
@@ -154,6 +161,7 @@ static int spi_mux_probe(struct spi_device *spi)
 	ctlr->num_chipselect = mux_control_states(priv->mux);
 	ctlr->bus_num = -1;
 	ctlr->dev.of_node = spi->dev.of_node;
+	ctlr->must_async = true;
 
 	ret = devm_spi_register_controller(&spi->dev, ctlr);
 	if (ret)
@@ -167,10 +175,17 @@ err_put_ctlr:
 	return ret;
 }
 
+static const struct spi_device_id spi_mux_id[] = {
+	{ "spi-mux" },
+	{ }
+};
+MODULE_DEVICE_TABLE(spi, spi_mux_id);
+
 static const struct of_device_id spi_mux_of_match[] = {
 	{ .compatible = "spi-mux" },
 	{ }
 };
+MODULE_DEVICE_TABLE(of, spi_mux_of_match);
 
 static struct spi_driver spi_mux_driver = {
 	.probe  = spi_mux_probe,
@@ -178,6 +193,7 @@ static struct spi_driver spi_mux_driver = {
 		.name   = "spi-mux",
 		.of_match_table = spi_mux_of_match,
 	},
+	.id_table = spi_mux_id,
 };
 
 module_spi_driver(spi_mux_driver);

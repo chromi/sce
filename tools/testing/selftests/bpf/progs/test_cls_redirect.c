@@ -39,8 +39,8 @@ char _license[] SEC("license") = "Dual BSD/GPL";
 /**
  * Destination port and IP used for UDP encapsulation.
  */
-static volatile const __be16 ENCAPSULATION_PORT;
-static volatile const __be32 ENCAPSULATION_IP;
+volatile const __be16 ENCAPSULATION_PORT;
+volatile const __be32 ENCAPSULATION_IP;
 
 typedef struct {
 	uint64_t processed_packets_total;
@@ -70,6 +70,7 @@ typedef struct {
 	uint64_t errors_total_encap_adjust_failed;
 	uint64_t errors_total_encap_buffer_too_small;
 	uint64_t errors_total_redirect_loop;
+	uint64_t errors_total_encap_mtu_violate;
 } metrics_t;
 
 typedef enum {
@@ -407,6 +408,7 @@ static INLINING ret_t forward_with_gre(struct __sk_buff *skb, encap_headers_t *e
 		payload_off - sizeof(struct ethhdr) - sizeof(struct iphdr);
 	int32_t delta = sizeof(struct gre_base_hdr) - encap_overhead;
 	uint16_t proto = ETH_P_IP;
+	uint32_t mtu_len = 0;
 
 	/* Loop protection: the inner packet's TTL is decremented as a safeguard
 	 * against any forwarding loop. As the only interesting field is the TTL
@@ -477,6 +479,11 @@ static INLINING ret_t forward_with_gre(struct __sk_buff *skb, encap_headers_t *e
 			metrics->errors_total_malformed_encapsulation++;
 			return TC_ACT_SHOT;
 		}
+	}
+
+	if (bpf_check_mtu(skb, skb->ifindex, &mtu_len, delta, 0)) {
+		metrics->errors_total_encap_mtu_violate++;
+		return TC_ACT_SHOT;
 	}
 
 	if (bpf_skb_adjust_room(skb, delta, BPF_ADJ_ROOM_NET,
@@ -593,7 +600,7 @@ static INLINING ret_t get_next_hop(buf_t *pkt, encap_headers_t *encap,
 		return TC_ACT_SHOT;
 	}
 
-	/* Skip the remainig next hops (may be zero). */
+	/* Skip the remaining next hops (may be zero). */
 	return skip_next_hops(pkt, encap->unigue.hop_count -
 					   encap->unigue.next_hop - 1);
 }
@@ -603,8 +610,8 @@ static INLINING ret_t get_next_hop(buf_t *pkt, encap_headers_t *encap,
  *
  *    fill_tuple(&t, foo, sizeof(struct iphdr), 123, 321)
  *
- * clang will substitue a costant for sizeof, which allows the verifier
- * to track it's value. Based on this, it can figure out the constant
+ * clang will substitute a constant for sizeof, which allows the verifier
+ * to track its value. Based on this, it can figure out the constant
  * return value, and calling code works while still being "generic" to
  * IPv4 and IPv6.
  */
@@ -921,7 +928,7 @@ static INLINING verdict_t process_ipv6(buf_t *pkt, metrics_t *metrics)
 	}
 }
 
-SEC("classifier/cls_redirect")
+SEC("tc")
 int cls_redirect(struct __sk_buff *skb)
 {
 	metrics_t *metrics = get_global_metrics();

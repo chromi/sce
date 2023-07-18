@@ -22,35 +22,10 @@
 @  IRQs enabled.
 @
 ENTRY(do_vfp)
-	inc_preempt_count r10, r4
- 	ldr	r4, .LCvfp
-	ldr	r11, [r10, #TI_CPU]	@ CPU number
-	add	r10, r10, #TI_VFPSTATE	@ r10 = workspace
-	ldr	pc, [r4]		@ call VFP entry point
+	mov	r1, r10
+	str	lr, [sp, #-8]!
+	add	r3, sp, #4
+	str	r9, [r3]
+	bl	vfp_entry
+	ldr	pc, [sp], #8
 ENDPROC(do_vfp)
-
-ENTRY(vfp_null_entry)
-	dec_preempt_count_ti r10, r4
-	ret	lr
-ENDPROC(vfp_null_entry)
-
-	.align	2
-.LCvfp:
-	.word	vfp_vector
-
-@ This code is called if the VFP does not exist. It needs to flag the
-@ failure to the VFP initialisation code.
-
-	__INIT
-ENTRY(vfp_testing_entry)
-	dec_preempt_count_ti r10, r4
-	ldr	r0, VFP_arch_address
-	str	r0, [r0]		@ set to non-zero value
-	ret	r9			@ we have handled the fault
-ENDPROC(vfp_testing_entry)
-
-	.align	2
-VFP_arch_address:
-	.word	VFP_arch
-
-	__FINIT

@@ -25,6 +25,7 @@
  *
  * Send feedback to <colpatch@us.ibm.com>
  */
+#include <linux/interrupt.h>
 #include <linux/nodemask.h>
 #include <linux/export.h>
 #include <linux/mmzone.h>
@@ -105,14 +106,14 @@ int arch_register_cpu(int num)
 	 * Xen PV guests don't support CPU0 hotplug at all.
 	 */
 	if (c->x86_vendor != X86_VENDOR_INTEL ||
-	    boot_cpu_has(X86_FEATURE_XENPV))
+	    cpu_feature_enabled(X86_FEATURE_XENPV))
 		cpu0_hotpluggable = 0;
 
 	/*
 	 * Two known BSP/CPU0 dependencies: Resume from suspend/hibernate
 	 * depends on BSP. PIC interrupts depend on BSP.
 	 *
-	 * If the BSP depencies are under control, one can tell kernel to
+	 * If the BSP dependencies are under control, one can tell kernel to
 	 * enable BSP hotplug. This basically adds a control file and
 	 * one can attempt to offline BSP.
 	 */
@@ -152,11 +153,6 @@ static int __init arch_register_cpu(int num)
 static int __init topology_init(void)
 {
 	int i;
-
-#ifdef CONFIG_NUMA
-	for_each_online_node(i)
-		register_one_node(i);
-#endif
 
 	for_each_present_cpu(i)
 		arch_register_cpu(i);

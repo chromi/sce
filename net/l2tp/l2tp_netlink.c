@@ -428,6 +428,9 @@ static int l2tp_nl_tunnel_send(struct sk_buff *skb, u32 portid, u32 seq, int fla
 			      L2TP_ATTR_STATS_PAD) ||
 	    nla_put_u64_64bit(skb, L2TP_ATTR_RX_ERRORS,
 			      atomic_long_read(&tunnel->stats.rx_errors),
+			      L2TP_ATTR_STATS_PAD) ||
+	    nla_put_u64_64bit(skb, L2TP_ATTR_RX_INVALID,
+			      atomic_long_read(&tunnel->stats.rx_invalid),
 			      L2TP_ATTR_STATS_PAD))
 		goto nla_put_failure;
 	nla_nest_end(skb, nest);
@@ -771,6 +774,9 @@ static int l2tp_nl_session_send(struct sk_buff *skb, u32 portid, u32 seq, int fl
 			      L2TP_ATTR_STATS_PAD) ||
 	    nla_put_u64_64bit(skb, L2TP_ATTR_RX_ERRORS,
 			      atomic_long_read(&session->stats.rx_errors),
+			      L2TP_ATTR_STATS_PAD) ||
+	    nla_put_u64_64bit(skb, L2TP_ATTR_RX_INVALID,
+			      atomic_long_read(&session->stats.rx_invalid),
 			      L2TP_ATTR_STATS_PAD))
 		goto nla_put_failure;
 	nla_nest_end(skb, nest);
@@ -983,6 +989,7 @@ static struct genl_family l2tp_nl_family __ro_after_init = {
 	.module		= THIS_MODULE,
 	.small_ops	= l2tp_nl_ops,
 	.n_small_ops	= ARRAY_SIZE(l2tp_nl_ops),
+	.resv_start_op	= L2TP_CMD_SESSION_GET + 1,
 	.mcgrps		= l2tp_multicast_group,
 	.n_mcgrps	= ARRAY_SIZE(l2tp_multicast_group),
 };

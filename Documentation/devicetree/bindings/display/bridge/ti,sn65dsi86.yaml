@@ -18,7 +18,7 @@ properties:
     const: ti,sn65dsi86
 
   reg:
-    const: 0x2d
+    enum: [ 0x2c, 0x2d ]
 
   enable-gpios:
     maxItems: 1
@@ -70,55 +70,30 @@ properties:
     const: 1
     description: See ../../pwm/pwm.yaml for description of the cell formats.
 
+  aux-bus:
+    $ref: /schemas/display/dp-aux-bus.yaml#
+
   ports:
-    type: object
-    additionalProperties: false
+    $ref: /schemas/graph.yaml#/properties/ports
 
     properties:
-      "#address-cells":
-        const: 1
-
-      "#size-cells":
-        const: 0
-
       port@0:
-        type: object
-        additionalProperties: false
-
+        $ref: /schemas/graph.yaml#/properties/port
         description:
           Video port for MIPI DSI input
 
-        properties:
-          reg:
-            const: 0
-
-          endpoint:
-            type: object
-            additionalProperties: false
-            properties:
-              remote-endpoint: true
-
-        required:
-          - reg
-
       port@1:
-        type: object
-        additionalProperties: false
-
+        $ref: /schemas/graph.yaml#/$defs/port-base
+        unevaluatedProperties: false
         description:
           Video port for eDP output (panel or connector).
 
         properties:
-          reg:
-            const: 1
-
           endpoint:
-            type: object
-            additionalProperties: false
+            $ref: /schemas/media/video-interfaces.yaml#
+            unevaluatedProperties: false
 
             properties:
-              remote-endpoint: true
-
               data-lanes:
                 oneOf:
                   - minItems: 1
@@ -131,7 +106,6 @@ properties:
                     description:
                       If you have 1 logical lane the bridge supports routing
                       to either port 0 or port 1.  Port 0 is suggested.
-                      See ../../media/video-interface.txt for details.
 
                   - minItems: 2
                     maxItems: 2
@@ -143,7 +117,6 @@ properties:
                     description:
                       If you have 2 logical lanes the bridge supports
                       reordering but only on physical ports 0 and 1.
-                      See ../../media/video-interface.txt for details.
 
                   - minItems: 4
                     maxItems: 4
@@ -157,7 +130,6 @@ properties:
                     description:
                       If you have 4 logical lanes the bridge supports
                       reordering in any way.
-                      See ../../media/video-interface.txt for details.
 
               lane-polarities:
                 minItems: 1
@@ -166,24 +138,17 @@ properties:
                   enum:
                     - 0
                     - 1
-                description: See ../../media/video-interface.txt
 
             dependencies:
               lane-polarities: [data-lanes]
 
-        required:
-          - reg
-
     required:
-      - "#address-cells"
-      - "#size-cells"
       - port@0
       - port@1
 
 required:
   - compatible
   - reg
-  - enable-gpios
   - vccio-supply
   - vpll-supply
   - vcca-supply
@@ -234,8 +199,23 @@ examples:
 
           port@1 {
             reg = <1>;
-            endpoint {
+            sn65dsi86_out: endpoint {
               remote-endpoint = <&panel_in_edp>;
+            };
+          };
+        };
+
+        aux-bus {
+          panel {
+            compatible = "boe,nv133fhm-n62";
+            power-supply = <&pp3300_dx_edp>;
+            backlight = <&backlight>;
+            hpd-gpios = <&sn65dsi86_bridge 2 GPIO_ACTIVE_HIGH>;
+
+            port {
+              panel_in_edp: endpoint {
+                remote-endpoint = <&sn65dsi86_out>;
+              };
             };
           };
         };

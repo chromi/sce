@@ -256,7 +256,7 @@ static int cuse_parse_one(char **pp, char *end, char **keyp, char **valp)
 }
 
 /**
- * cuse_parse_dev_info - parse device info
+ * cuse_parse_devinfo - parse device info
  * @p: device info string
  * @len: length of device info string
  * @devinfo: out parameter for parsed device info
@@ -511,20 +511,18 @@ static int cuse_channel_open(struct inode *inode, struct file *file)
 	fuse_conn_init(&cc->fc, &cc->fm, file->f_cred->user_ns,
 		       &fuse_dev_fiq_ops, NULL);
 
+	cc->fc.release = cuse_fc_release;
 	fud = fuse_dev_alloc_install(&cc->fc);
-	if (!fud) {
-		kfree(cc);
+	fuse_conn_put(&cc->fc);
+	if (!fud)
 		return -ENOMEM;
-	}
 
 	INIT_LIST_HEAD(&cc->list);
-	cc->fc.release = cuse_fc_release;
 
 	cc->fc.initialized = 1;
 	rc = cuse_send_init(cc);
 	if (rc) {
 		fuse_dev_free(fud);
-		fuse_conn_put(&cc->fc);
 		return rc;
 	}
 	file->private_data = fud;
@@ -547,7 +545,6 @@ static int cuse_channel_release(struct inode *inode, struct file *file)
 {
 	struct fuse_dev *fud = file->private_data;
 	struct cuse_conn *cc = fc_to_cc(fud->fc);
-	int rc;
 
 	/* remove from the conntbl, no more access from this point on */
 	mutex_lock(&cuse_lock);
@@ -561,12 +558,8 @@ static int cuse_channel_release(struct inode *inode, struct file *file)
 		unregister_chrdev_region(cc->cdev->dev, 1);
 		cdev_del(cc->cdev);
 	}
-	/* Base reference is now owned by "fud" */
-	fuse_conn_put(&cc->fc);
 
-	rc = fuse_dev_release(inode, file);	/* puts the base reference */
-
-	return rc;
+	return fuse_dev_release(inode, file);
 }
 
 static struct file_operations cuse_channel_fops; /* initialized during init */
@@ -627,8 +620,10 @@ static int __init cuse_init(void)
 	cuse_channel_fops.owner		= THIS_MODULE;
 	cuse_channel_fops.open		= cuse_channel_open;
 	cuse_channel_fops.release	= cuse_channel_release;
+	/* CUSE is not prepared for FUSE_DEV_IOC_CLONE */
+	cuse_channel_fops.unlocked_ioctl	= NULL;
 
-	cuse_class = class_create(THIS_MODULE, "cuse");
+	cuse_class = class_create("cuse");
 	if (IS_ERR(cuse_class))
 		return PTR_ERR(cuse_class);
 

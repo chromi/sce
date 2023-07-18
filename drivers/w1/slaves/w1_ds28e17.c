@@ -31,12 +31,12 @@ MODULE_ALIAS("w1-family-" __stringify(W1_FAMILY_DS28E17));
 
 /* Default I2C speed to be set when a DS28E17 is detected. */
 static int i2c_speed = 100;
-module_param_named(speed, i2c_speed, int, (S_IRUSR | S_IWUSR));
+module_param_named(speed, i2c_speed, int, 0600);
 MODULE_PARM_DESC(speed, "Default I2C speed to be set when a DS28E17 is detected");
 
 /* Default I2C stretch value to be set when a DS28E17 is detected. */
 static char i2c_stretch = 1;
-module_param_named(stretch, i2c_stretch, byte, (S_IRUSR | S_IWUSR));
+module_param_named(stretch, i2c_stretch, byte, 0600);
 MODULE_PARM_DESC(stretch, "Default I2C stretch value to be set when a DS28E17 is detected");
 
 /* DS28E17 device command codes. */
@@ -59,7 +59,7 @@ MODULE_PARM_DESC(stretch, "Default I2C stretch value to be set when a DS28E17 is
 /*
  * Maximum number of I2C bytes to transfer within one CRC16 protected onewire
  * command.
- * */
+ */
 #define W1_F19_WRITE_DATA_LIMIT 255
 
 /* Maximum number of I2C bytes to read with one onewire command. */
@@ -752,18 +752,4 @@ static struct w1_family w1_family_19 = {
 	.fops = &w1_f19_fops,
 };
 
-
-/* Module init and remove functions. */
-static int __init w1_f19_init(void)
-{
-	return w1_register_family(&w1_family_19);
-}
-
-static void __exit w1_f19_fini(void)
-{
-	w1_unregister_family(&w1_family_19);
-}
-
-module_init(w1_f19_init);
-module_exit(w1_f19_fini);
-
+module_w1_family(w1_family_19);

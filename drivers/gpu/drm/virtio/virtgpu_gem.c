@@ -39,9 +39,6 @@ static int virtio_gpu_gem_create(struct drm_file *file,
 	int ret;
 	u32 handle;
 
-	if (vgdev->has_virgl_3d)
-		virtio_gpu_create_context(dev, file);
-
 	ret = virtio_gpu_object_create(vgdev, params, &obj, NULL);
 	if (ret < 0)
 		return ret;
@@ -67,6 +64,7 @@ int virtio_gpu_mode_dumb_create(struct drm_file *file_priv,
 {
 	struct drm_gem_object *gobj;
 	struct virtio_gpu_object_params params = { 0 };
+	struct virtio_gpu_device *vgdev = dev->dev_private;
 	int ret;
 	uint32_t pitch;
 
@@ -82,6 +80,13 @@ int virtio_gpu_mode_dumb_create(struct drm_file *file_priv,
 	params.height = args->height;
 	params.size = args->size;
 	params.dumb = true;
+
+	if (vgdev->has_resource_blob && !vgdev->has_virgl_3d) {
+		params.blob_mem = VIRTGPU_BLOB_MEM_GUEST;
+		params.blob_flags = VIRTGPU_BLOB_FLAG_USE_SHAREABLE;
+		params.blob = true;
+	}
+
 	ret = virtio_gpu_gem_create(file_priv, dev, &params, &gobj,
 				    &args->handle);
 	if (ret)
@@ -118,6 +123,11 @@ int virtio_gpu_gem_object_open(struct drm_gem_object *obj,
 
 	if (!vgdev->has_virgl_3d)
 		goto out_notify;
+
+	/* the context might still be missing when the first ioctl is
+	 * DRM_IOCTL_MODE_CREATE_DUMB or DRM_IOCTL_PRIME_FD_TO_HANDLE
+	 */
+	virtio_gpu_create_context(obj->dev, file);
 
 	objs = virtio_gpu_array_alloc(1);
 	if (!objs)
@@ -204,6 +214,7 @@ void virtio_gpu_array_add_obj(struct virtio_gpu_object_array *objs,
 
 int virtio_gpu_array_lock_resv(struct virtio_gpu_object_array *objs)
 {
+	unsigned int i;
 	int ret;
 
 	if (objs->nents == 1) {
@@ -211,6 +222,16 @@ int virtio_gpu_array_lock_resv(struct virtio_gpu_object_array *objs)
 	} else {
 		ret = drm_gem_lock_reservations(objs->objs, objs->nents,
 						&objs->ticket);
+	}
+	if (ret)
+		return ret;
+
+	for (i = 0; i < objs->nents; ++i) {
+		ret = dma_resv_reserve_fences(objs->objs[i]->resv, 1);
+		if (ret) {
+			virtio_gpu_array_unlock_resv(objs);
+			return ret;
+		}
 	}
 	return ret;
 }
@@ -231,12 +252,16 @@ void virtio_gpu_array_add_fence(struct virtio_gpu_object_array *objs,
 	int i;
 
 	for (i = 0; i < objs->nents; i++)
-		dma_resv_add_excl_fence(objs->objs[i]->resv, fence);
+		dma_resv_add_fence(objs->objs[i]->resv, fence,
+				   DMA_RESV_USAGE_WRITE);
 }
 
 void virtio_gpu_array_put_free(struct virtio_gpu_object_array *objs)
 {
 	u32 i;
+
+	if (!objs)
+		return;
 
 	for (i = 0; i < objs->nents; i++)
 		drm_gem_object_put(objs->objs[i]);

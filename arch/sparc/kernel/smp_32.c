@@ -120,7 +120,7 @@ void cpu_panic(void)
 
 struct linux_prom_registers smp_penguin_ctable = { 0 };
 
-void smp_send_reschedule(int cpu)
+void arch_smp_send_reschedule(int cpu)
 {
 	/*
 	 * CPU model dependent way of implementing IPI generation targeting
@@ -172,11 +172,6 @@ void smp_call_function_interrupt(void)
 	generic_smp_call_function_interrupt();
 	local_cpu_data().irq_call_count++;
 	irq_exit();
-}
-
-int setup_profiling_timer(unsigned int multiplier)
-{
-	return -EINVAL;
 }
 
 void __init smp_prepare_cpus(unsigned int max_cpus)
@@ -348,7 +343,6 @@ static void sparc_start_secondary(void *arg)
 	 */
 	arch_cpu_pre_starting(arg);
 
-	preempt_disable();
 	cpu = smp_processor_id();
 
 	notify_cpu_starting(cpu);

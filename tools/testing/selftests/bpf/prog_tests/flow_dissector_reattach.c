@@ -47,9 +47,9 @@ static int load_prog(enum bpf_prog_type type)
 	};
 	int fd;
 
-	fd = bpf_load_program(type, prog, ARRAY_SIZE(prog), "GPL", 0, NULL, 0);
+	fd = bpf_test_load_program(type, prog, ARRAY_SIZE(prog), "GPL", 0, NULL, 0);
 	if (CHECK_FAIL(fd < 0))
-		perror("bpf_load_program");
+		perror("bpf_test_load_program");
 
 	return fd;
 }
@@ -60,9 +60,9 @@ static __u32 query_prog_id(int prog)
 	__u32 info_len = sizeof(info);
 	int err;
 
-	err = bpf_obj_get_info_by_fd(prog, &info, &info_len);
+	err = bpf_prog_get_info_by_fd(prog, &info, &info_len);
 	if (CHECK_FAIL(err || info_len != sizeof(info))) {
-		perror("bpf_obj_get_info_by_fd");
+		perror("bpf_prog_get_info_by_fd");
 		return 0;
 	}
 
@@ -134,9 +134,9 @@ static void test_link_create_link_create(int netns, int prog1, int prog2)
 	/* Expect failure creating link when another link exists */
 	errno = 0;
 	link2 = bpf_link_create(prog2, netns, BPF_FLOW_DISSECTOR, &opts);
-	if (CHECK_FAIL(link2 != -1 || errno != E2BIG))
+	if (CHECK_FAIL(link2 >= 0 || errno != E2BIG))
 		perror("bpf_prog_attach(prog2) expected E2BIG");
-	if (link2 != -1)
+	if (link2 >= 0)
 		close(link2);
 	CHECK_FAIL(query_attached_prog_id(netns) != query_prog_id(prog1));
 
@@ -159,9 +159,9 @@ static void test_prog_attach_link_create(int netns, int prog1, int prog2)
 	/* Expect failure creating link when prog attached */
 	errno = 0;
 	link = bpf_link_create(prog2, netns, BPF_FLOW_DISSECTOR, &opts);
-	if (CHECK_FAIL(link != -1 || errno != EEXIST))
+	if (CHECK_FAIL(link >= 0 || errno != EEXIST))
 		perror("bpf_link_create(prog2) expected EEXIST");
-	if (link != -1)
+	if (link >= 0)
 		close(link);
 	CHECK_FAIL(query_attached_prog_id(netns) != query_prog_id(prog1));
 
@@ -497,7 +497,7 @@ static void test_link_get_info(int netns, int prog1, int prog2)
 	}
 
 	info_len = sizeof(info);
-	err = bpf_obj_get_info_by_fd(link, &info, &info_len);
+	err = bpf_link_get_info_by_fd(link, &info, &info_len);
 	if (CHECK_FAIL(err)) {
 		perror("bpf_obj_get_info");
 		goto out_unlink;
@@ -521,7 +521,7 @@ static void test_link_get_info(int netns, int prog1, int prog2)
 
 	link_id = info.id;
 	info_len = sizeof(info);
-	err = bpf_obj_get_info_by_fd(link, &info, &info_len);
+	err = bpf_link_get_info_by_fd(link, &info, &info_len);
 	if (CHECK_FAIL(err)) {
 		perror("bpf_obj_get_info");
 		goto out_unlink;
@@ -546,7 +546,7 @@ static void test_link_get_info(int netns, int prog1, int prog2)
 	netns = -1;
 
 	info_len = sizeof(info);
-	err = bpf_obj_get_info_by_fd(link, &info, &info_len);
+	err = bpf_link_get_info_by_fd(link, &info, &info_len);
 	if (CHECK_FAIL(err)) {
 		perror("bpf_obj_get_info");
 		goto out_unlink;
@@ -623,12 +623,12 @@ static void run_tests(int netns)
 	}
 out_close:
 	for (i = 0; i < ARRAY_SIZE(progs); i++) {
-		if (progs[i] != -1)
+		if (progs[i] >= 0)
 			CHECK_FAIL(close(progs[i]));
 	}
 }
 
-void test_flow_dissector_reattach(void)
+void serial_test_flow_dissector_reattach(void)
 {
 	int err, new_net, saved_net;
 

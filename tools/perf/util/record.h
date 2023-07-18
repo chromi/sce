@@ -13,7 +13,6 @@ struct option;
 
 struct record_opts {
 	struct target target;
-	bool	      group;
 	bool	      inherit_stat;
 	bool	      no_buffering;
 	bool	      no_inherit;
@@ -22,10 +21,13 @@ struct record_opts {
 	bool	      raw_samples;
 	bool	      sample_address;
 	bool	      sample_phys_addr;
+	bool	      sample_data_page_size;
+	bool	      sample_code_page_size;
 	bool	      sample_weight;
 	bool	      sample_time;
 	bool	      sample_time_set;
 	bool	      sample_cpu;
+	bool	      sample_identifier;
 	bool	      period;
 	bool	      period_set;
 	bool	      running_time;
@@ -49,6 +51,7 @@ struct record_opts {
 	bool	      no_bpf_event;
 	bool	      kcore;
 	bool	      text_poke;
+	bool	      build_id;
 	unsigned int  freq;
 	unsigned int  mmap_pages;
 	unsigned int  auxtrace_mmap_pages;
@@ -62,7 +65,6 @@ struct record_opts {
 	const char    *auxtrace_snapshot_opts;
 	const char    *auxtrace_sample_opts;
 	bool	      sample_transaction;
-	int	      initial_delay;
 	bool	      use_clockid;
 	clockid_t     clockid;
 	u64	      clockid_res_ns;
@@ -74,6 +76,9 @@ struct record_opts {
 	int	      ctl_fd;
 	int	      ctl_fd_ack;
 	bool	      ctl_fd_close;
+	int	      synth;
+	int	      threads_spec;
+	const char    *threads_user_spec;
 };
 
 extern const char * const *record_usage;

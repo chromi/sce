@@ -131,7 +131,7 @@ int falcon_sflash_xfer(struct spi_device *spi, struct spi_transfer *t,
 				 * especially alen and dumlen.
 				 */
 
-				priv->sfcmd = ((spi->chip_select
+				priv->sfcmd = ((spi_get_chipselect(spi, 0)
 						<< SFCMD_CS_OFFSET)
 					       & SFCMD_CS_MASK);
 				priv->sfcmd |= SFCMD_KEEP_CS_KEEP_SELECTED;
@@ -377,7 +377,7 @@ static int falcon_sflash_xfer_one(struct spi_master *master,
 
 		m->actual_length += t->len;
 
-		WARN_ON(t->delay_usecs || t->delay.value || t->cs_change);
+		WARN_ON(t->delay.value || t->cs_change);
 		spi_flags = 0;
 	}
 

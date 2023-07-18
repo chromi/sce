@@ -1119,7 +1119,6 @@ static int fsl_qdma_probe(struct platform_device *pdev)
 	int ret, i;
 	int blk_num, blk_off;
 	u32 len, chans, queues;
-	struct resource *res;
 	struct fsl_qdma_chan *fsl_chan;
 	struct fsl_qdma_engine *fsl_qdma;
 	struct device_node *np = pdev->dev.of_node;
@@ -1183,18 +1182,15 @@ static int fsl_qdma_probe(struct platform_device *pdev)
 		if (!fsl_qdma->status[i])
 			return -ENOMEM;
 	}
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	fsl_qdma->ctrl_base = devm_ioremap_resource(&pdev->dev, res);
+	fsl_qdma->ctrl_base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(fsl_qdma->ctrl_base))
 		return PTR_ERR(fsl_qdma->ctrl_base);
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 1);
-	fsl_qdma->status_base = devm_ioremap_resource(&pdev->dev, res);
+	fsl_qdma->status_base = devm_platform_ioremap_resource(pdev, 1);
 	if (IS_ERR(fsl_qdma->status_base))
 		return PTR_ERR(fsl_qdma->status_base);
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 2);
-	fsl_qdma->block_base = devm_ioremap_resource(&pdev->dev, res);
+	fsl_qdma->block_base = devm_platform_ioremap_resource(pdev, 2);
 	if (IS_ERR(fsl_qdma->block_base))
 		return PTR_ERR(fsl_qdma->block_base);
 	fsl_qdma->queue = fsl_qdma_alloc_queue_resources(pdev, fsl_qdma);
@@ -1235,7 +1231,11 @@ static int fsl_qdma_probe(struct platform_device *pdev)
 	fsl_qdma->dma_dev.device_synchronize = fsl_qdma_synchronize;
 	fsl_qdma->dma_dev.device_terminate_all = fsl_qdma_terminate_all;
 
-	dma_set_mask(&pdev->dev, DMA_BIT_MASK(40));
+	ret = dma_set_mask(&pdev->dev, DMA_BIT_MASK(40));
+	if (ret) {
+		dev_err(&pdev->dev, "dma_set_mask failure.\n");
+		return ret;
+	}
 
 	platform_set_drvdata(pdev, fsl_qdma);
 

@@ -689,7 +689,8 @@ enum qman_cb_dqrr_result {
 };
 typedef enum qman_cb_dqrr_result (*qman_cb_dqrr)(struct qman_portal *qm,
 					struct qman_fq *fq,
-					const struct qm_dqrr_entry *dqrr);
+					const struct qm_dqrr_entry *dqrr,
+					bool sched_napi);
 
 /*
  * This callback type is used when handling ERNs, FQRNs and FQRLs via MR. They
@@ -1169,6 +1170,15 @@ int qman_delete_cgr(struct qman_cgr *cgr);
  * This will select the proper CPU and run there qman_delete_cgr().
  */
 void qman_delete_cgr_safe(struct qman_cgr *cgr);
+
+/**
+ * qman_update_cgr_safe - Modifies a congestion group object from any CPU
+ * @cgr: the 'cgr' object to modify
+ * @opts: state of the CGR settings
+ *
+ * This will select the proper CPU and modify the CGR settings.
+ */
+int qman_update_cgr_safe(struct qman_cgr *cgr, struct qm_mcc_initcgr *opts);
 
 /**
  * qman_query_cgr_congested - Queries CGR's congestion status

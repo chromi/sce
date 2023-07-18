@@ -209,7 +209,7 @@ static irqreturn_t stm32_rtc_alarm_irq(int irq, void *dev_id)
 	const struct stm32_rtc_events *evts = &rtc->data->events;
 	unsigned int status, cr;
 
-	mutex_lock(&rtc->rtc_dev->ops_lock);
+	rtc_lock(rtc->rtc_dev);
 
 	status = readl_relaxed(rtc->base + regs->sr);
 	cr = readl_relaxed(rtc->base + regs->cr);
@@ -226,7 +226,7 @@ static irqreturn_t stm32_rtc_alarm_irq(int irq, void *dev_id)
 		stm32_rtc_clear_event_flags(rtc, evts->alra);
 	}
 
-	mutex_unlock(&rtc->rtc_dev->ops_lock);
+	rtc_unlock(rtc->rtc_dev);
 
 	return IRQ_HANDLED;
 }
@@ -754,7 +754,7 @@ static int stm32_rtc_probe(struct platform_device *pdev)
 
 	ret = clk_prepare_enable(rtc->rtc_ck);
 	if (ret)
-		goto err;
+		goto err_no_rtc_ck;
 
 	if (rtc->data->need_dbp)
 		regmap_update_bits(rtc->dbp, rtc->dbp_reg,
@@ -830,10 +830,12 @@ static int stm32_rtc_probe(struct platform_device *pdev)
 	}
 
 	return 0;
+
 err:
+	clk_disable_unprepare(rtc->rtc_ck);
+err_no_rtc_ck:
 	if (rtc->data->has_pclk)
 		clk_disable_unprepare(rtc->pclk);
-	clk_disable_unprepare(rtc->rtc_ck);
 
 	if (rtc->data->need_dbp)
 		regmap_update_bits(rtc->dbp, rtc->dbp_reg, rtc->dbp_mask, 0);
@@ -844,7 +846,7 @@ err:
 	return ret;
 }
 
-static int stm32_rtc_remove(struct platform_device *pdev)
+static void stm32_rtc_remove(struct platform_device *pdev)
 {
 	struct stm32_rtc *rtc = platform_get_drvdata(pdev);
 	const struct stm32_rtc_registers *regs = &rtc->data->regs;
@@ -867,8 +869,6 @@ static int stm32_rtc_remove(struct platform_device *pdev)
 
 	dev_pm_clear_wake_irq(&pdev->dev);
 	device_init_wakeup(&pdev->dev, false);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -915,7 +915,7 @@ static SIMPLE_DEV_PM_OPS(stm32_rtc_pm_ops,
 
 static struct platform_driver stm32_rtc_driver = {
 	.probe		= stm32_rtc_probe,
-	.remove		= stm32_rtc_remove,
+	.remove_new	= stm32_rtc_remove,
 	.driver		= {
 		.name	= DRIVER_NAME,
 		.pm	= &stm32_rtc_pm_ops,

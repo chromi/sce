@@ -109,10 +109,7 @@ static int snow_late_probe(struct snd_soc_card *card)
 	rtd = snd_soc_get_pcm_runtime(card, &card->dai_link[0]);
 
 	/* In the multi-codec case codec_dais 0 is MAX98095 and 1 is HDMI. */
-	if (rtd->num_codecs > 1)
-		codec_dai = asoc_rtd_to_codec(rtd, 0);
-	else
-		codec_dai = asoc_rtd_to_codec(rtd, 0);
+	codec_dai = asoc_rtd_to_codec(rtd, 0);
 
 	/* Set the MCLK rate for the codec */
 	return snd_soc_dai_set_sysclk(codec_dai, 0,
@@ -189,7 +186,7 @@ static int snow_probe(struct platform_device *pdev)
 			return PTR_ERR(priv->clk_i2s_bus);
 		}
 	} else {
-		link->codecs->dai_name = "HiFi",
+		link->codecs->dai_name = "HiFi";
 
 		link->cpus->of_node = of_parse_phandle(dev->of_node,
 						"samsung,i2s-controller", 0);
@@ -215,17 +212,14 @@ static int snow_probe(struct platform_device *pdev)
 	snd_soc_card_set_drvdata(card, priv);
 
 	ret = devm_snd_soc_register_card(dev, card);
-	if (ret) {
-		if (ret != -EPROBE_DEFER)
-			dev_err(&pdev->dev,
-				"snd_soc_register_card failed (%d)\n", ret);
-		return ret;
-	}
+	if (ret)
+		return dev_err_probe(&pdev->dev, ret,
+				     "snd_soc_register_card failed\n");
 
-	return ret;
+	return 0;
 }
 
-static int snow_remove(struct platform_device *pdev)
+static void snow_remove(struct platform_device *pdev)
 {
 	struct snow_priv *priv = platform_get_drvdata(pdev);
 	struct snd_soc_dai_link *link = &priv->dai_link;
@@ -235,8 +229,6 @@ static int snow_remove(struct platform_device *pdev)
 	snd_soc_of_put_dai_link_codecs(link);
 
 	clk_put(priv->clk_i2s_bus);
-
-	return 0;
 }
 
 static const struct of_device_id snow_of_match[] = {
@@ -254,7 +246,7 @@ static struct platform_driver snow_driver = {
 		.of_match_table = snow_of_match,
 	},
 	.probe = snow_probe,
-	.remove = snow_remove,
+	.remove_new = snow_remove,
 };
 
 module_platform_driver(snow_driver);

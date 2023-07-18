@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
+#include "gtk.h"
 #include "../evlist.h"
 #include "../callchain.h"
 #include "../evsel.h"
@@ -6,7 +7,6 @@
 #include "../hist.h"
 #include "../helpline.h"
 #include "../string2.h"
-#include "gtk.h"
 #include <signal.h>
 #include <stdlib.h>
 #include <linux/string.h>
@@ -590,10 +590,8 @@ static void perf_gtk__show_hierarchy(GtkWidget *window, struct hists *hists,
 	gtk_container_add(GTK_CONTAINER(window), view);
 }
 
-int perf_evlist__gtk_browse_hists(struct evlist *evlist,
-				  const char *help,
-				  struct hist_browser_timer *hbt __maybe_unused,
-				  float min_pcnt)
+int evlist__gtk_browse_hists(struct evlist *evlist, const char *help,
+			     struct hist_browser_timer *hbt __maybe_unused, float min_pcnt)
 {
 	struct evsel *pos;
 	GtkWidget *vbox;

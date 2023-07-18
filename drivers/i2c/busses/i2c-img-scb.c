@@ -257,7 +257,7 @@
 #define IMG_I2C_TIMEOUT			(msecs_to_jiffies(1000))
 
 /*
- * Worst incs are 1 (innacurate) and 16*256 (irregular).
+ * Worst incs are 1 (inaccurate) and 16*256 (irregular).
  * So a sensible inc is the logarithmic mean: 64 (2^6), which is
  * in the middle of the valid range (0-127).
  */
@@ -1057,7 +1057,7 @@ static int img_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg *msgs,
 			atomic = true;
 	}
 
-	ret = pm_runtime_get_sync(adap->dev.parent);
+	ret = pm_runtime_resume_and_get(adap->dev.parent);
 	if (ret < 0)
 		return ret;
 
@@ -1158,7 +1158,7 @@ static int img_i2c_init(struct img_i2c *i2c)
 	u32 rev;
 	int ret;
 
-	ret = pm_runtime_get_sync(i2c->adap.dev.parent);
+	ret = pm_runtime_resume_and_get(i2c->adap.dev.parent);
 	if (ret < 0)
 		return ret;
 

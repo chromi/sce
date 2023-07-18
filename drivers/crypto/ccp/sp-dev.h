@@ -53,9 +53,19 @@ struct tee_vdata {
 	const unsigned int ring_rptr_reg;
 };
 
+struct platform_access_vdata {
+	const unsigned int cmdresp_reg;
+	const unsigned int cmdbuff_addr_lo_reg;
+	const unsigned int cmdbuff_addr_hi_reg;
+	const unsigned int doorbell_button_reg;
+	const unsigned int doorbell_cmd_reg;
+
+};
+
 struct psp_vdata {
 	const struct sev_vdata *sev;
 	const struct tee_vdata *tee;
+	const struct platform_access_vdata *platform_access;
 	const unsigned int feature_reg;
 	const unsigned int inten_reg;
 	const unsigned int intsts_reg;
@@ -134,8 +144,8 @@ struct sp_device *sp_get_psp_master_device(void);
 int ccp_dev_init(struct sp_device *sp);
 void ccp_dev_destroy(struct sp_device *sp);
 
-int ccp_dev_suspend(struct sp_device *sp);
-int ccp_dev_resume(struct sp_device *sp);
+void ccp_dev_suspend(struct sp_device *sp);
+void ccp_dev_resume(struct sp_device *sp);
 
 #else	/* !CONFIG_CRYPTO_DEV_SP_CCP */
 
@@ -144,15 +154,8 @@ static inline int ccp_dev_init(struct sp_device *sp)
 	return 0;
 }
 static inline void ccp_dev_destroy(struct sp_device *sp) { }
-
-static inline int ccp_dev_suspend(struct sp_device *sp)
-{
-	return 0;
-}
-static inline int ccp_dev_resume(struct sp_device *sp)
-{
-	return 0;
-}
+static inline void ccp_dev_suspend(struct sp_device *sp) { }
+static inline void ccp_dev_resume(struct sp_device *sp) { }
 #endif	/* CONFIG_CRYPTO_DEV_SP_CCP */
 
 #ifdef CONFIG_CRYPTO_DEV_SP_PSP

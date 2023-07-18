@@ -15,6 +15,7 @@ static void free_extent_map_tree(struct extent_map_tree *em_tree)
 	struct extent_map *em;
 	struct rb_node *node;
 
+	write_lock(&em_tree->lock);
 	while (!RB_EMPTY_ROOT(&em_tree->map.rb_root)) {
 		node = rb_first_cached(&em_tree->map);
 		em = rb_entry(node, struct extent_map, rb_node);
@@ -32,6 +33,7 @@ static void free_extent_map_tree(struct extent_map_tree *em_tree)
 #endif
 		free_extent_map(em);
 	}
+	write_unlock(&em_tree->lock);
 }
 
 /*
@@ -484,7 +486,6 @@ static int test_rmap_block(struct btrfs_fs_info *fs_info,
 	em->map_lookup = map;
 
 	map->num_stripes = test->num_stripes;
-	map->stripe_len = BTRFS_STRIPE_LEN;
 	map->type = test->raid_type;
 
 	for (i = 0; i < map->num_stripes; i++) {
@@ -557,7 +558,7 @@ int btrfs_test_extent_map(void)
 		{
 			/*
 			 * Test a chunk with 2 data stripes one of which
-			 * interesects the physical address of the super block
+			 * intersects the physical address of the super block
 			 * is correctly recognised.
 			 */
 			.raid_type = BTRFS_BLOCK_GROUP_RAID1,

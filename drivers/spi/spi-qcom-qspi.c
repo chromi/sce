@@ -8,6 +8,7 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
+#include <linux/pinctrl/consumer.h>
 #include <linux/pm_runtime.h>
 #include <linux/pm_opp.h>
 #include <linux/spi/spi.h>
@@ -142,7 +143,6 @@ struct qcom_qspi {
 	struct clk_bulk_data *clks;
 	struct qspi_xfer xfer;
 	struct icc_path *icc_path_cpu_to_qspi;
-	struct opp_table *opp_table;
 	unsigned long last_speed;
 	/* Lock to protect data accessed by IRQs */
 	spinlock_t lock;
@@ -312,7 +312,7 @@ static int qcom_qspi_prepare_message(struct spi_master *master,
 
 	mstr_cfg = readl(ctrl->base + MSTR_CONFIG);
 	mstr_cfg &= ~CHIP_SELECT_NUM;
-	if (message->spi->chip_select)
+	if (spi_get_chipselect(message->spi, 0))
 		mstr_cfg |= CHIP_SELECT_NUM;
 
 	mstr_cfg |= FB_CLK_EN | PIN_WPN | PIN_HOLDN | SBL_EN | FULL_CYCLE_MODE;
@@ -462,7 +462,7 @@ static int qcom_qspi_probe(struct platform_device *pdev)
 
 	dev = &pdev->dev;
 
-	master = spi_alloc_master(dev, sizeof(*ctrl));
+	master = devm_spi_alloc_master(dev, sizeof(*ctrl));
 	if (!master)
 		return -ENOMEM;
 
@@ -473,54 +473,48 @@ static int qcom_qspi_probe(struct platform_device *pdev)
 	spin_lock_init(&ctrl->lock);
 	ctrl->dev = dev;
 	ctrl->base = devm_platform_ioremap_resource(pdev, 0);
-	if (IS_ERR(ctrl->base)) {
-		ret = PTR_ERR(ctrl->base);
-		goto exit_probe_master_put;
-	}
+	if (IS_ERR(ctrl->base))
+		return PTR_ERR(ctrl->base);
 
 	ctrl->clks = devm_kcalloc(dev, QSPI_NUM_CLKS,
 				  sizeof(*ctrl->clks), GFP_KERNEL);
-	if (!ctrl->clks) {
-		ret = -ENOMEM;
-		goto exit_probe_master_put;
-	}
+	if (!ctrl->clks)
+		return -ENOMEM;
 
 	ctrl->clks[QSPI_CLK_CORE].id = "core";
 	ctrl->clks[QSPI_CLK_IFACE].id = "iface";
 	ret = devm_clk_bulk_get(dev, QSPI_NUM_CLKS, ctrl->clks);
 	if (ret)
-		goto exit_probe_master_put;
+		return ret;
 
 	ctrl->icc_path_cpu_to_qspi = devm_of_icc_get(dev, "qspi-config");
-	if (IS_ERR(ctrl->icc_path_cpu_to_qspi)) {
-		ret = dev_err_probe(dev, PTR_ERR(ctrl->icc_path_cpu_to_qspi),
-				    "Failed to get cpu path\n");
-		goto exit_probe_master_put;
-	}
+	if (IS_ERR(ctrl->icc_path_cpu_to_qspi))
+		return dev_err_probe(dev, PTR_ERR(ctrl->icc_path_cpu_to_qspi),
+				     "Failed to get cpu path\n");
+
 	/* Set BW vote for register access */
 	ret = icc_set_bw(ctrl->icc_path_cpu_to_qspi, Bps_to_icc(1000),
 				Bps_to_icc(1000));
 	if (ret) {
 		dev_err(ctrl->dev, "%s: ICC BW voting failed for cpu: %d\n",
 				__func__, ret);
-		goto exit_probe_master_put;
+		return ret;
 	}
 
 	ret = icc_disable(ctrl->icc_path_cpu_to_qspi);
 	if (ret) {
 		dev_err(ctrl->dev, "%s: ICC disable failed for cpu: %d\n",
 				__func__, ret);
-		goto exit_probe_master_put;
+		return ret;
 	}
 
 	ret = platform_get_irq(pdev, 0);
 	if (ret < 0)
-		goto exit_probe_master_put;
-	ret = devm_request_irq(dev, ret, qcom_qspi_irq,
-			IRQF_TRIGGER_HIGH, dev_name(dev), ctrl);
+		return ret;
+	ret = devm_request_irq(dev, ret, qcom_qspi_irq, 0, dev_name(dev), ctrl);
 	if (ret) {
 		dev_err(dev, "Failed to request irq %d\n", ret);
-		goto exit_probe_master_put;
+		return ret;
 	}
 
 	master->max_speed_hz = 300000000;
@@ -536,16 +530,14 @@ static int qcom_qspi_probe(struct platform_device *pdev)
 	master->handle_err = qcom_qspi_handle_err;
 	master->auto_runtime_pm = true;
 
-	ctrl->opp_table = dev_pm_opp_set_clkname(&pdev->dev, "core");
-	if (IS_ERR(ctrl->opp_table)) {
-		ret = PTR_ERR(ctrl->opp_table);
-		goto exit_probe_master_put;
-	}
+	ret = devm_pm_opp_set_clkname(&pdev->dev, "core");
+	if (ret)
+		return ret;
 	/* OPP table is optional */
-	ret = dev_pm_opp_of_add_table(&pdev->dev);
+	ret = devm_pm_opp_of_add_table(&pdev->dev);
 	if (ret && ret != -ENODEV) {
 		dev_err(&pdev->dev, "invalid OPP table in device tree\n");
-		goto exit_probe_put_clkname;
+		return ret;
 	}
 
 	pm_runtime_use_autosuspend(dev);
@@ -557,30 +549,18 @@ static int qcom_qspi_probe(struct platform_device *pdev)
 		return 0;
 
 	pm_runtime_disable(dev);
-	dev_pm_opp_of_remove_table(&pdev->dev);
-
-exit_probe_put_clkname:
-	dev_pm_opp_put_clkname(ctrl->opp_table);
-
-exit_probe_master_put:
-	spi_master_put(master);
 
 	return ret;
 }
 
-static int qcom_qspi_remove(struct platform_device *pdev)
+static void qcom_qspi_remove(struct platform_device *pdev)
 {
 	struct spi_master *master = platform_get_drvdata(pdev);
-	struct qcom_qspi *ctrl = spi_master_get_devdata(master);
 
 	/* Unregister _before_ disabling pm_runtime() so we stop transfers */
 	spi_unregister_master(master);
 
 	pm_runtime_disable(&pdev->dev);
-	dev_pm_opp_of_remove_table(&pdev->dev);
-	dev_pm_opp_put_clkname(ctrl->opp_table);
-
-	return 0;
 }
 
 static int __maybe_unused qcom_qspi_runtime_suspend(struct device *dev)
@@ -600,6 +580,8 @@ static int __maybe_unused qcom_qspi_runtime_suspend(struct device *dev)
 		return ret;
 	}
 
+	pinctrl_pm_select_sleep_state(dev);
+
 	return 0;
 }
 
@@ -608,6 +590,8 @@ static int __maybe_unused qcom_qspi_runtime_resume(struct device *dev)
 	struct spi_master *master = dev_get_drvdata(dev);
 	struct qcom_qspi *ctrl = spi_master_get_devdata(master);
 	int ret;
+
+	pinctrl_pm_select_default_state(dev);
 
 	ret = icc_enable(ctrl->icc_path_cpu_to_qspi);
 	if (ret) {
@@ -674,7 +658,7 @@ static struct platform_driver qcom_qspi_driver = {
 		.of_match_table = qcom_qspi_dt_match,
 	},
 	.probe = qcom_qspi_probe,
-	.remove = qcom_qspi_remove,
+	.remove_new = qcom_qspi_remove,
 };
 module_platform_driver(qcom_qspi_driver);
 

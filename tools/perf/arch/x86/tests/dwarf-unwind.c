@@ -7,7 +7,6 @@
 #include "event.h"
 #include "debug.h"
 #include "tests/tests.h"
-#include "arch-tests.h"
 
 #define STACK_SIZE 8192
 
@@ -34,7 +33,7 @@ static int sample_ustack(struct perf_sample *sample,
 		return -1;
 	}
 
-	stack_size = map->end - sp;
+	stack_size = map__end(map) - sp;
 	stack_size = stack_size > STACK_SIZE ? STACK_SIZE : stack_size;
 
 	memcpy(buf, (void *) sp, stack_size);

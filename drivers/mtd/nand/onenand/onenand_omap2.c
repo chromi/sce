@@ -371,12 +371,12 @@ static int omap2_onenand_read_bufferram(struct mtd_info *mtd, int area,
 
 	bram_offset = omap2_onenand_bufferram_offset(mtd, area) + area + offset;
 	/*
-	 * If the buffer address is not DMA-able, len is not long enough to make
-	 * DMA transfers profitable or panic_write() may be in an interrupt
-	 * context fallback to PIO mode.
+	 * If the buffer address is not DMA-able, len is not long enough to
+	 * make DMA transfers profitable or if invoked from panic_write()
+	 * fallback to PIO mode.
 	 */
 	if (!virt_addr_valid(buf) || bram_offset & 3 || (size_t)buf & 3 ||
-	    count < 384 || in_interrupt() || oops_in_progress)
+	    count < 384 || mtd->oops_panic_write)
 		goto out_copy;
 
 	xtra = count & 3;
@@ -418,12 +418,12 @@ static int omap2_onenand_write_bufferram(struct mtd_info *mtd, int area,
 
 	bram_offset = omap2_onenand_bufferram_offset(mtd, area) + area + offset;
 	/*
-	 * If the buffer address is not DMA-able, len is not long enough to make
-	 * DMA transfers profitable or panic_write() may be in an interrupt
-	 * context fallback to PIO mode.
+	 * If the buffer address is not DMA-able, len is not long enough to
+	 * make DMA transfers profitable or if invoked from panic_write()
+	 * fallback to PIO mode.
 	 */
 	if (!virt_addr_valid(buf) || bram_offset & 3 || (size_t)buf & 3 ||
-	    count < 384 || in_interrupt() || oops_in_progress)
+	    count < 384 || mtd->oops_panic_write)
 		goto out_copy;
 
 	dma_src = dma_map_single(dev, buf, count, DMA_TO_DEVICE);
@@ -581,7 +581,7 @@ err_release_dma:
 	return r;
 }
 
-static int omap2_onenand_remove(struct platform_device *pdev)
+static void omap2_onenand_remove(struct platform_device *pdev)
 {
 	struct omap2_onenand *c = dev_get_drvdata(&pdev->dev);
 
@@ -589,8 +589,6 @@ static int omap2_onenand_remove(struct platform_device *pdev)
 	if (c->dma_chan)
 		dma_release_channel(c->dma_chan);
 	omap2_onenand_shutdown(pdev);
-
-	return 0;
 }
 
 static const struct of_device_id omap2_onenand_id_table[] = {
@@ -601,7 +599,7 @@ MODULE_DEVICE_TABLE(of, omap2_onenand_id_table);
 
 static struct platform_driver omap2_onenand_driver = {
 	.probe		= omap2_onenand_probe,
-	.remove		= omap2_onenand_remove,
+	.remove_new	= omap2_onenand_remove,
 	.shutdown	= omap2_onenand_shutdown,
 	.driver		= {
 		.name	= DRIVER_NAME,

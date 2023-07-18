@@ -133,6 +133,8 @@ static struct dso *__machine__addnew_vdso(struct machine *machine, const char *s
 	if (dso != NULL) {
 		__dsos__add(&machine->dsos, dso);
 		dso__set_long_name(dso, long_name, false);
+		/* Put dso here because __dsos_add already got it */
+		dso__put(dso);
 	}
 
 	return dso;
@@ -142,10 +144,11 @@ static enum dso_type machine__thread_dso_type(struct machine *machine,
 					      struct thread *thread)
 {
 	enum dso_type dso_type = DSO__TYPE_UNKNOWN;
-	struct map *map;
+	struct map_rb_node *rb_node;
 
-	maps__for_each_entry(thread->maps, map) {
-		struct dso *dso = map->dso;
+	maps__for_each_entry(thread->maps, rb_node) {
+		struct dso *dso = map__dso(rb_node->map);
+
 		if (!dso || dso->long_name[0] != '/')
 			continue;
 		dso_type = dso__type(dso, machine);

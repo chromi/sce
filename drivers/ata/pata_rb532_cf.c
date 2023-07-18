@@ -73,7 +73,7 @@ static struct ata_port_operations rb532_pata_port_ops = {
 
 /* ------------------------------------------------------------------------ */
 
-static struct scsi_host_template rb532_pata_sht = {
+static const struct scsi_host_template rb532_pata_sht = {
 	ATA_PIO_SHT(DRV_NAME),
 };
 
@@ -115,10 +115,10 @@ static int rb532_pata_driver_probe(struct platform_device *pdev)
 	}
 
 	irq = platform_get_irq(pdev, 0);
-	if (irq <= 0) {
-		dev_err(&pdev->dev, "no IRQ resource found\n");
-		return -ENOENT;
-	}
+	if (irq < 0)
+		return irq;
+	if (!irq)
+		return -EINVAL;
 
 	gpiod = devm_gpiod_get(&pdev->dev, NULL, GPIOD_IN);
 	if (IS_ERR(gpiod)) {

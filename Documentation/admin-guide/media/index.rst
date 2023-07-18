@@ -11,12 +11,14 @@ its supported drivers.
 
 Please see:
 
-- :doc:`/userspace-api/media/index`
-     for the userspace APIs used on media devices.
+Documentation/userspace-api/media/index.rst
 
-- :doc:`/driver-api/media/index`
-     for driver development information and Kernel APIs used by
-     media devices;
+  - for the userspace APIs used on media devices.
+
+Documentation/driver-api/media/index.rst
+
+  - for driver development information and Kernel APIs used by
+    media devices;
 
 The media subsystem
 ===================
@@ -36,13 +38,14 @@ The media subsystem
 
 	remote-controller
 
+	cec
+
 	dvb
 
 	cardlist
 
 	v4l-drivers
 	dvb-drivers
-	cec-drivers
 
 **Copyright** |copy| 1999-2020 : LinuxTV Developers
 

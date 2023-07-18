@@ -94,6 +94,7 @@ static struct gpiod_lookup_table gpios_led_table = {
 				NULL, 1, GPIO_ACTIVE_LOW),
 		GPIO_LOOKUP_IDX(AMD_FCH_GPIO_DRIVER_NAME, APU2_GPIO_LINE_LED3,
 				NULL, 2, GPIO_ACTIVE_LOW),
+		{} /* Terminating entry */
 	}
 };
 
@@ -123,6 +124,7 @@ static struct gpiod_lookup_table gpios_key_table = {
 	.table = {
 		GPIO_LOOKUP_IDX(AMD_FCH_GPIO_DRIVER_NAME, APU2_GPIO_LINE_MODESW,
 				NULL, 0, GPIO_ACTIVE_LOW),
+		{} /* Terminating entry */
 	}
 };
 
@@ -289,5 +291,4 @@ MODULE_AUTHOR("Enrico Weigelt, metux IT consult <info@metux.net>");
 MODULE_DESCRIPTION("PC Engines APUv2/APUv3 board GPIO/LEDs/keys driver");
 MODULE_LICENSE("GPL");
 MODULE_DEVICE_TABLE(dmi, apu_gpio_dmi_table);
-MODULE_ALIAS("platform:pcengines-apuv2");
 MODULE_SOFTDEP("pre: platform:" AMD_FCH_GPIO_DRIVER_NAME " platform:leds-gpio platform:gpio_keys_polled");

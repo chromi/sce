@@ -175,8 +175,8 @@ static int sxgbe_set_eee(struct net_device *dev,
 static void sxgbe_getdrvinfo(struct net_device *dev,
 			     struct ethtool_drvinfo *info)
 {
-	strlcpy(info->driver, KBUILD_MODNAME, sizeof(info->driver));
-	strlcpy(info->version, DRV_VERSION, sizeof(info->version));
+	strscpy(info->driver, KBUILD_MODNAME, sizeof(info->driver));
+	strscpy(info->version, DRV_VERSION, sizeof(info->version));
 }
 
 static u32 sxgbe_getmsglevel(struct net_device *dev)
@@ -274,7 +274,9 @@ static u32 sxgbe_usec2riwt(u32 usec, struct sxgbe_priv_data *priv)
 }
 
 static int sxgbe_get_coalesce(struct net_device *dev,
-			      struct ethtool_coalesce *ec)
+			      struct ethtool_coalesce *ec,
+			      struct kernel_ethtool_coalesce *kernel_coal,
+			      struct netlink_ext_ack *extack)
 {
 	struct sxgbe_priv_data *priv = netdev_priv(dev);
 
@@ -285,7 +287,9 @@ static int sxgbe_get_coalesce(struct net_device *dev,
 }
 
 static int sxgbe_set_coalesce(struct net_device *dev,
-			      struct ethtool_coalesce *ec)
+			      struct ethtool_coalesce *ec,
+			      struct kernel_ethtool_coalesce *kernel_coal,
+			      struct netlink_ext_ack *extack)
 {
 	struct sxgbe_priv_data *priv = netdev_priv(dev);
 	unsigned int rx_riwt;

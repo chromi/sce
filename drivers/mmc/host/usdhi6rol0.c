@@ -631,9 +631,9 @@ static void usdhi6_dma_kill(struct usdhi6_host *host)
 		__func__, data->sg_len, data->blocks, data->blksz);
 	/* Abort DMA */
 	if (data->flags & MMC_DATA_READ)
-		dmaengine_terminate_all(host->chan_rx);
+		dmaengine_terminate_sync(host->chan_rx);
 	else
-		dmaengine_terminate_all(host->chan_tx);
+		dmaengine_terminate_sync(host->chan_tx);
 }
 
 static void usdhi6_dma_check_error(struct usdhi6_host *host)
@@ -1186,6 +1186,15 @@ static int usdhi6_sig_volt_switch(struct mmc_host *mmc, struct mmc_ios *ios)
 	return ret;
 }
 
+static int usdhi6_card_busy(struct mmc_host *mmc)
+{
+	struct usdhi6_host *host = mmc_priv(mmc);
+	u32 tmp = usdhi6_read(host, USDHI6_SD_INFO2);
+
+	/* Card is busy if it is pulling dat[0] low */
+	return !(tmp & USDHI6_SD_INFO2_SDDAT0);
+}
+
 static const struct mmc_host_ops usdhi6_ops = {
 	.request	= usdhi6_request,
 	.set_ios	= usdhi6_set_ios,
@@ -1193,6 +1202,7 @@ static const struct mmc_host_ops usdhi6_ops = {
 	.get_ro		= usdhi6_get_ro,
 	.enable_sdio_irq = usdhi6_enable_sdio_irq,
 	.start_signal_voltage_switch = usdhi6_sig_volt_switch,
+	.card_busy = usdhi6_card_busy,
 };
 
 /*			State machine handlers				*/
@@ -1747,8 +1757,10 @@ static int usdhi6_probe(struct platform_device *pdev)
 	irq_cd = platform_get_irq_byname(pdev, "card detect");
 	irq_sd = platform_get_irq_byname(pdev, "data");
 	irq_sdio = platform_get_irq_byname(pdev, "SDIO");
-	if (irq_sd < 0 || irq_sdio < 0)
-		return -ENODEV;
+	if (irq_sd < 0)
+		return irq_sd;
+	if (irq_sdio < 0)
+		return irq_sdio;
 
 	mmc = mmc_alloc_host(sizeof(struct usdhi6_host), dev);
 	if (!mmc)
@@ -1780,8 +1792,7 @@ static int usdhi6_probe(struct platform_device *pdev)
 
 	host->pins_uhs = pinctrl_lookup_state(host->pinctrl, "state_uhs");
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	host->base = devm_ioremap_resource(dev, res);
+	host->base = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(host->base)) {
 		ret = PTR_ERR(host->base);
 		goto e_free_mmc;
@@ -1801,6 +1812,7 @@ static int usdhi6_probe(struct platform_device *pdev)
 
 	version = usdhi6_read(host, USDHI6_VERSION);
 	if ((version & 0xfff) != 0xa0d) {
+		ret = -EPERM;
 		dev_err(dev, "Version not recognized %x\n", version);
 		goto e_clk_off;
 	}
@@ -1858,10 +1870,12 @@ static int usdhi6_probe(struct platform_device *pdev)
 
 	ret = mmc_add_host(mmc);
 	if (ret < 0)
-		goto e_clk_off;
+		goto e_release_dma;
 
 	return 0;
 
+e_release_dma:
+	usdhi6_dma_release(host);
 e_clk_off:
 	clk_disable_unprepare(host->clk);
 e_free_mmc:

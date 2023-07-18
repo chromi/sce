@@ -3,7 +3,9 @@
  *  Copyright (C) 2014  Steven Rostedt, Red Hat Inc
  */
 
+#include <linux/cfi_types.h>
 #include <linux/linkage.h>
+#include <asm/asm-offsets.h>
 #include <asm/ptrace.h>
 #include <asm/ftrace.h>
 #include <asm/export.h>
@@ -129,10 +131,23 @@
 
 	.endm
 
+SYM_TYPED_FUNC_START(ftrace_stub)
+	CALL_DEPTH_ACCOUNT
+	RET
+SYM_FUNC_END(ftrace_stub)
+
+#ifdef CONFIG_FUNCTION_GRAPH_TRACER
+SYM_TYPED_FUNC_START(ftrace_stub_graph)
+	CALL_DEPTH_ACCOUNT
+	RET
+SYM_FUNC_END(ftrace_stub_graph)
+#endif
+
 #ifdef CONFIG_DYNAMIC_FTRACE
 
 SYM_FUNC_START(__fentry__)
-	retq
+	CALL_DEPTH_ACCOUNT
+	RET
 SYM_FUNC_END(__fentry__)
 EXPORT_SYMBOL(__fentry__)
 
@@ -140,15 +155,33 @@ SYM_FUNC_START(ftrace_caller)
 	/* save_mcount_regs fills in first two parameters */
 	save_mcount_regs
 
+	CALL_DEPTH_ACCOUNT
+
+	/* Stack - skipping return address of ftrace_caller */
+	leaq MCOUNT_REG_SIZE+8(%rsp), %rcx
+	movq %rcx, RSP(%rsp)
+
 SYM_INNER_LABEL(ftrace_caller_op_ptr, SYM_L_GLOBAL)
+	ANNOTATE_NOENDBR
 	/* Load the ftrace_ops into the 3rd parameter */
 	movq function_trace_op(%rip), %rdx
 
-	/* regs go into 4th parameter (but make it NULL) */
-	movq $0, %rcx
+	/* regs go into 4th parameter */
+	leaq (%rsp), %rcx
+
+	/* Only ops with REGS flag set should have CS register set */
+	movq $0, CS(%rsp)
+
+	/* Account for the function call below */
+	CALL_DEPTH_ACCOUNT
 
 SYM_INNER_LABEL(ftrace_call, SYM_L_GLOBAL)
+	ANNOTATE_NOENDBR
 	call ftrace_stub
+
+	/* Handlers can change the RIP */
+	movq RIP(%rsp), %rax
+	movq %rax, MCOUNT_REG_SIZE(%rsp)
 
 	restore_mcount_regs
 
@@ -158,23 +191,10 @@ SYM_INNER_LABEL(ftrace_call, SYM_L_GLOBAL)
 	 * layout here.
 	 */
 SYM_INNER_LABEL(ftrace_caller_end, SYM_L_GLOBAL)
-
-	jmp ftrace_epilogue
+	ANNOTATE_NOENDBR
+	RET
 SYM_FUNC_END(ftrace_caller);
-
-SYM_FUNC_START(ftrace_epilogue)
-#ifdef CONFIG_FUNCTION_GRAPH_TRACER
-SYM_INNER_LABEL(ftrace_graph_call, SYM_L_GLOBAL)
-	jmp ftrace_stub
-#endif
-
-/*
- * This is weak to keep gas from relaxing the jumps.
- * It is also used to copy the retq for trampolines.
- */
-SYM_INNER_LABEL_ALIGN(ftrace_stub, SYM_L_WEAK)
-	retq
-SYM_FUNC_END(ftrace_epilogue)
+STACK_FRAME_NON_STANDARD_FP(ftrace_caller)
 
 SYM_FUNC_START(ftrace_regs_caller)
 	/* Save the current flags before any operations that can change them */
@@ -184,7 +204,10 @@ SYM_FUNC_START(ftrace_regs_caller)
 	save_mcount_regs 8
 	/* save_mcount_regs fills in first two parameters */
 
+	CALL_DEPTH_ACCOUNT
+
 SYM_INNER_LABEL(ftrace_regs_caller_op_ptr, SYM_L_GLOBAL)
+	ANNOTATE_NOENDBR
 	/* Load the ftrace_ops into the 3rd parameter */
 	movq function_trace_op(%rip), %rdx
 
@@ -213,7 +236,11 @@ SYM_INNER_LABEL(ftrace_regs_caller_op_ptr, SYM_L_GLOBAL)
 	/* regs go into 4th parameter */
 	leaq (%rsp), %rcx
 
+	/* Account for the function call below */
+	CALL_DEPTH_ACCOUNT
+
 SYM_INNER_LABEL(ftrace_regs_call, SYM_L_GLOBAL)
+	ANNOTATE_NOENDBR
 	call ftrace_stub
 
 	/* Copy flags back to SS, to restore them */
@@ -239,9 +266,9 @@ SYM_INNER_LABEL(ftrace_regs_call, SYM_L_GLOBAL)
 	 * If ORIG_RAX is anything but zero, make this a call to that.
 	 * See arch_ftrace_set_direct_caller().
 	 */
-	movq ORIG_RAX(%rsp), %rax
 	testq	%rax, %rax
 SYM_INNER_LABEL(ftrace_regs_caller_jmp, SYM_L_GLOBAL)
+	ANNOTATE_NOENDBR
 	jnz	1f
 
 	restore_mcount_regs
@@ -249,13 +276,11 @@ SYM_INNER_LABEL(ftrace_regs_caller_jmp, SYM_L_GLOBAL)
 	popfq
 
 	/*
-	 * As this jmp to ftrace_epilogue can be a short jump
-	 * it must not be copied into the trampoline.
-	 * The trampoline will add the code to jump
-	 * to the return.
+	 * The trampoline will add the return.
 	 */
 SYM_INNER_LABEL(ftrace_regs_caller_end, SYM_L_GLOBAL)
-	jmp ftrace_epilogue
+	ANNOTATE_NOENDBR
+	RET
 
 	/* Swap the flags with orig_rax */
 1:	movq MCOUNT_REG_SIZE(%rsp), %rdi
@@ -265,29 +290,38 @@ SYM_INNER_LABEL(ftrace_regs_caller_end, SYM_L_GLOBAL)
 	restore_mcount_regs 8
 	/* Restore flags */
 	popfq
-	UNWIND_HINT_RET_OFFSET
-	jmp	ftrace_epilogue
+	UNWIND_HINT_FUNC
+
+	/*
+	 * The above left an extra return value on the stack; effectively
+	 * doing a tail-call without using a register. This PUSH;RET
+	 * pattern unbalances the RSB, inject a pointless CALL to rebalance.
+	 */
+	ANNOTATE_INTRA_FUNCTION_CALL
+	CALL .Ldo_rebalance
+	int3
+.Ldo_rebalance:
+	add $8, %rsp
+	ALTERNATIVE __stringify(RET), \
+		    __stringify(ANNOTATE_UNRET_SAFE; ret; int3), \
+		    X86_FEATURE_CALL_DEPTH
 
 SYM_FUNC_END(ftrace_regs_caller)
+STACK_FRAME_NON_STANDARD_FP(ftrace_regs_caller)
 
+SYM_FUNC_START(ftrace_stub_direct_tramp)
+	CALL_DEPTH_ACCOUNT
+	RET
+SYM_FUNC_END(ftrace_stub_direct_tramp)
 
 #else /* ! CONFIG_DYNAMIC_FTRACE */
 
 SYM_FUNC_START(__fentry__)
+	CALL_DEPTH_ACCOUNT
+
 	cmpq $ftrace_stub, ftrace_trace_function
 	jnz trace
-
-fgraph_trace:
-#ifdef CONFIG_FUNCTION_GRAPH_TRACER
-	cmpq $ftrace_stub, ftrace_graph_return
-	jnz ftrace_graph_caller
-
-	cmpq $ftrace_graph_entry_stub, ftrace_graph_entry
-	jnz ftrace_graph_caller
-#endif
-
-SYM_INNER_LABEL(ftrace_stub, SYM_L_GLOBAL)
-	retq
+	RET
 
 trace:
 	/* save_mcount_regs fills in first two parameters */
@@ -303,28 +337,18 @@ trace:
 	CALL_NOSPEC r8
 	restore_mcount_regs
 
-	jmp fgraph_trace
+	jmp ftrace_stub
 SYM_FUNC_END(__fentry__)
 EXPORT_SYMBOL(__fentry__)
+STACK_FRAME_NON_STANDARD_FP(__fentry__)
+
 #endif /* CONFIG_DYNAMIC_FTRACE */
 
 #ifdef CONFIG_FUNCTION_GRAPH_TRACER
-SYM_FUNC_START(ftrace_graph_caller)
-	/* Saves rbp into %rdx and fills first parameter  */
-	save_mcount_regs
-
-	leaq MCOUNT_REG_SIZE+8(%rsp), %rsi
-	movq $0, %rdx	/* No framepointers needed */
-	call	prepare_ftrace_return
-
-	restore_mcount_regs
-
-	retq
-SYM_FUNC_END(ftrace_graph_caller)
-
 SYM_CODE_START(return_to_handler)
-	UNWIND_HINT_EMPTY
-	subq  $24, %rsp
+	UNWIND_HINT_UNDEFINED
+	ANNOTATE_NOENDBR
+	subq  $16, %rsp
 
 	/* Save the return values */
 	movq %rax, (%rsp)
@@ -336,7 +360,20 @@ SYM_CODE_START(return_to_handler)
 	movq %rax, %rdi
 	movq 8(%rsp), %rdx
 	movq (%rsp), %rax
-	addq $24, %rsp
-	JMP_NOSPEC rdi
+
+	addq $16, %rsp
+	/*
+	 * Jump back to the old return address. This cannot be JMP_NOSPEC rdi
+	 * since IBT would demand that contain ENDBR, which simply isn't so for
+	 * return addresses. Use a retpoline here to keep the RSB balanced.
+	 */
+	ANNOTATE_INTRA_FUNCTION_CALL
+	call .Ldo_rop
+	int3
+.Ldo_rop:
+	mov %rdi, (%rsp)
+	ALTERNATIVE __stringify(RET), \
+		    __stringify(ANNOTATE_UNRET_SAFE; ret; int3), \
+		    X86_FEATURE_CALL_DEPTH
 SYM_CODE_END(return_to_handler)
 #endif

@@ -6,8 +6,11 @@
 #include <linux/pm_qos.h>
 #include <linux/sort.h>
 
+#include "gem/i915_gem_internal.h"
+
 #include "intel_engine_heartbeat.h"
 #include "intel_engine_pm.h"
+#include "intel_engine_regs.h"
 #include "intel_gpu_commands.h"
 #include "intel_gt_clock_utils.h"
 #include "intel_gt_pm.h"
@@ -119,14 +122,14 @@ create_spin_counter(struct intel_engine_cs *engine,
 		if (srm) {
 			*cs++ = MI_STORE_REGISTER_MEM_GEN8;
 			*cs++ = i915_mmio_reg_offset(CS_GPR(COUNT));
-			*cs++ = lower_32_bits(vma->node.start + end * sizeof(*cs));
-			*cs++ = upper_32_bits(vma->node.start + end * sizeof(*cs));
+			*cs++ = lower_32_bits(i915_vma_offset(vma) + end * sizeof(*cs));
+			*cs++ = upper_32_bits(i915_vma_offset(vma) + end * sizeof(*cs));
 		}
 	}
 
 	*cs++ = MI_BATCH_BUFFER_START_GEN8;
-	*cs++ = lower_32_bits(vma->node.start + loop * sizeof(*cs));
-	*cs++ = upper_32_bits(vma->node.start + loop * sizeof(*cs));
+	*cs++ = lower_32_bits(i915_vma_offset(vma) + loop * sizeof(*cs));
+	*cs++ = upper_32_bits(i915_vma_offset(vma) + loop * sizeof(*cs));
 	GEM_BUG_ON(cs - base > end);
 
 	i915_gem_object_flush_map(obj);
@@ -185,7 +188,10 @@ static u8 rps_set_check(struct intel_rps *rps, u8 freq)
 {
 	mutex_lock(&rps->lock);
 	GEM_BUG_ON(!intel_rps_is_active(rps));
-	intel_rps_set(rps, freq);
+	if (wait_for(!intel_rps_set(rps, freq), 50)) {
+		mutex_unlock(&rps->lock);
+		return 0;
+	}
 	GEM_BUG_ON(rps->last_freq != freq);
 	mutex_unlock(&rps->lock);
 
@@ -201,7 +207,7 @@ static void show_pstate_limits(struct intel_rps *rps)
 			i915_mmio_reg_offset(BXT_RP_STATE_CAP),
 			intel_uncore_read(rps_to_uncore(rps),
 					  BXT_RP_STATE_CAP));
-	} else if (IS_GEN(i915, 9)) {
+	} else if (GRAPHICS_VER(i915) == 9) {
 		pr_info("P_STATE_LIMITS[%x]: 0x%08x\n",
 			i915_mmio_reg_offset(GEN9_RP_STATE_LIMITS),
 			intel_uncore_read(rps_to_uncore(rps),
@@ -219,7 +225,7 @@ int live_rps_clock_interval(void *arg)
 	struct igt_spinner spin;
 	int err = 0;
 
-	if (!intel_rps_is_enabled(rps))
+	if (!intel_rps_is_enabled(rps) || GRAPHICS_VER(gt->i915) < 6)
 		return 0;
 
 	if (igt_spinner_init(&spin, gt))
@@ -293,13 +299,13 @@ int live_rps_clock_interval(void *arg)
 			for (i = 0; i < 5; i++) {
 				preempt_disable();
 
-				dt_[i] = ktime_get();
 				cycles_[i] = -intel_uncore_read_fw(gt->uncore, GEN6_RP_CUR_UP_EI);
+				dt_[i] = ktime_get();
 
 				udelay(1000);
 
-				dt_[i] = ktime_sub(ktime_get(), dt_[i]);
 				cycles_[i] += intel_uncore_read_fw(gt->uncore, GEN6_RP_CUR_UP_EI);
+				dt_[i] = ktime_sub(ktime_get(), dt_[i]);
 
 				preempt_enable();
 			}
@@ -503,7 +509,7 @@ static void show_pcu_config(struct intel_rps *rps)
 
 	min_gpu_freq = rps->min_freq;
 	max_gpu_freq = rps->max_freq;
-	if (INTEL_GEN(i915) >= 9) {
+	if (GRAPHICS_VER(i915) >= 9) {
 		/* Convert GT frequency to 50 HZ units */
 		min_gpu_freq /= GEN9_FREQ_SCALER;
 		max_gpu_freq /= GEN9_FREQ_SCALER;
@@ -515,9 +521,8 @@ static void show_pcu_config(struct intel_rps *rps)
 	for (gpu_freq = min_gpu_freq; gpu_freq <= max_gpu_freq; gpu_freq++) {
 		int ia_freq = gpu_freq;
 
-		sandybridge_pcode_read(i915,
-				       GEN6_PCODE_READ_MIN_FREQ_TABLE,
-				       &ia_freq, NULL);
+		snb_pcode_read(rps_to_gt(rps)->uncore, GEN6_PCODE_READ_MIN_FREQ_TABLE,
+			       &ia_freq, NULL);
 
 		pr_info("%5d  %5d  %5d\n",
 			gpu_freq * 50,
@@ -532,8 +537,8 @@ static u64 __measure_frequency(u32 *cntr, int duration_ms)
 {
 	u64 dc, dt;
 
-	dt = ktime_get();
 	dc = READ_ONCE(*cntr);
+	dt = ktime_get();
 	usleep_range(1000 * duration_ms, 2000 * duration_ms);
 	dc = READ_ONCE(*cntr) - dc;
 	dt = ktime_get() - dt;
@@ -561,8 +566,8 @@ static u64 __measure_cs_frequency(struct intel_engine_cs *engine,
 {
 	u64 dc, dt;
 
-	dt = ktime_get();
 	dc = intel_uncore_read_fw(engine->uncore, CS_GPR(0));
+	dt = ktime_get();
 	usleep_range(1000 * duration_ms, 2000 * duration_ms);
 	dc = intel_uncore_read_fw(engine->uncore, CS_GPR(0)) - dc;
 	dt = ktime_get() - dt;
@@ -603,7 +608,7 @@ int live_rps_frequency_cs(void *arg)
 	int err = 0;
 
 	/*
-	 * The premise is that the GPU does change freqency at our behest.
+	 * The premise is that the GPU does change frequency at our behest.
 	 * Let's check there is a correspondence between the requested
 	 * frequency, the actual frequency, and the observed clock rate.
 	 */
@@ -611,7 +616,7 @@ int live_rps_frequency_cs(void *arg)
 	if (!intel_rps_is_enabled(rps))
 		return 0;
 
-	if (INTEL_GEN(gt->i915) < 8) /* for CS simplicity */
+	if (GRAPHICS_VER(gt->i915) < 8) /* for CS simplicity */
 		return 0;
 
 	if (CPU_LATENCY >= 0)
@@ -647,12 +652,10 @@ int live_rps_frequency_cs(void *arg)
 			goto err_vma;
 		}
 
-		err = i915_request_await_object(rq, vma->obj, false);
-		if (!err)
-			err = i915_vma_move_to_active(vma, rq, 0);
+		err = i915_vma_move_to_active(vma, rq, 0);
 		if (!err)
 			err = rq->engine->emit_bb_start(rq,
-							vma->node.start,
+							i915_vma_offset(vma),
 							PAGE_SIZE, 0);
 		i915_request_add(rq);
 		if (err)
@@ -744,7 +747,7 @@ int live_rps_frequency_srm(void *arg)
 	int err = 0;
 
 	/*
-	 * The premise is that the GPU does change freqency at our behest.
+	 * The premise is that the GPU does change frequency at our behest.
 	 * Let's check there is a correspondence between the requested
 	 * frequency, the actual frequency, and the observed clock rate.
 	 */
@@ -752,7 +755,7 @@ int live_rps_frequency_srm(void *arg)
 	if (!intel_rps_is_enabled(rps))
 		return 0;
 
-	if (INTEL_GEN(gt->i915) < 8) /* for CS simplicity */
+	if (GRAPHICS_VER(gt->i915) < 8) /* for CS simplicity */
 		return 0;
 
 	if (CPU_LATENCY >= 0)
@@ -788,12 +791,10 @@ int live_rps_frequency_srm(void *arg)
 			goto err_vma;
 		}
 
-		err = i915_request_await_object(rq, vma->obj, false);
-		if (!err)
-			err = i915_vma_move_to_active(vma, rq, 0);
+		err = i915_vma_move_to_active(vma, rq, 0);
 		if (!err)
 			err = rq->engine->emit_bb_start(rq,
-							vma->node.start,
+							i915_vma_offset(vma),
 							PAGE_SIZE, 0);
 		i915_request_add(rq);
 		if (err)
@@ -1028,7 +1029,7 @@ int live_rps_interrupt(void *arg)
 	 * First, let's check whether or not we are receiving interrupts.
 	 */
 
-	if (!intel_rps_has_interrupts(rps))
+	if (!intel_rps_has_interrupts(rps) || GRAPHICS_VER(gt->i915) < 6)
 		return 0;
 
 	intel_gt_pm_get(gt);
@@ -1093,8 +1094,8 @@ static u64 __measure_power(int duration_ms)
 {
 	u64 dE, dt;
 
-	dt = ktime_get();
 	dE = librapl_energy_uJ();
+	dt = ktime_get();
 	usleep_range(1000 * duration_ms, 2000 * duration_ms);
 	dE = librapl_energy_uJ() - dE;
 	dt = ktime_get() - dt;
@@ -1102,19 +1103,25 @@ static u64 __measure_power(int duration_ms)
 	return div64_u64(1000 * 1000 * dE, dt);
 }
 
-static u64 measure_power_at(struct intel_rps *rps, int *freq)
+static u64 measure_power(struct intel_rps *rps, int *freq)
 {
 	u64 x[5];
 	int i;
 
-	*freq = rps_set_check(rps, *freq);
 	for (i = 0; i < 5; i++)
 		x[i] = __measure_power(5);
-	*freq = (*freq + read_cagf(rps)) / 2;
+
+	*freq = (*freq + intel_rps_read_actual_frequency(rps)) / 2;
 
 	/* A simple triangle filter for better result stability */
 	sort(x, 5, sizeof(*x), cmp_u64, NULL);
 	return div_u64(x[1] + 2 * x[2] + x[3], 4);
+}
+
+static u64 measure_power_at(struct intel_rps *rps, int *freq)
+{
+	*freq = rps_set_check(rps, *freq);
+	return measure_power(rps, freq);
 }
 
 int live_rps_power(void *arg)
@@ -1133,10 +1140,10 @@ int live_rps_power(void *arg)
 	 * that theory.
 	 */
 
-	if (!intel_rps_is_enabled(rps))
+	if (!intel_rps_is_enabled(rps) || GRAPHICS_VER(gt->i915) < 6)
 		return 0;
 
-	if (!librapl_energy_uJ())
+	if (!librapl_supported(gt->i915))
 		return 0;
 
 	if (igt_spinner_init(&spin, gt))
@@ -1237,7 +1244,7 @@ int live_rps_dynamic(void *arg)
 	 * moving parts into dynamic reclocking based on load.
 	 */
 
-	if (!intel_rps_is_enabled(rps))
+	if (!intel_rps_is_enabled(rps) || GRAPHICS_VER(gt->i915) < 6)
 		return 0;
 
 	if (igt_spinner_init(&spin, gt))

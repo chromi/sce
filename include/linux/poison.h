@@ -27,11 +27,7 @@
 #define TIMER_ENTRY_STATIC	((void *) 0x300 + POISON_POINTER_DELTA)
 
 /********** mm/page_poison.c **********/
-#ifdef CONFIG_PAGE_POISONING_ZERO
-#define PAGE_POISON 0x00
-#else
 #define PAGE_POISON 0xaa
-#endif
 
 /********** mm/page_alloc.c ************/
 
@@ -81,5 +77,17 @@
 
 /********** security/ **********/
 #define KEY_DESTROY		0xbd
+
+/********** net/core/page_pool.c **********/
+#define PP_SIGNATURE		(0x40 + POISON_POINTER_DELTA)
+
+/********** net/core/skbuff.c **********/
+#define SKB_LIST_POISON_NEXT	((void *)(0x800 + POISON_POINTER_DELTA))
+
+/********** kernel/bpf/ **********/
+#define BPF_PTR_POISON ((void *)(0xeB9FUL + POISON_POINTER_DELTA))
+
+/********** VFS **********/
+#define VFS_PTR_POISON ((void *)(0xF5 + POISON_POINTER_DELTA))
 
 #endif

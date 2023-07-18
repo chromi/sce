@@ -49,7 +49,14 @@
 #define BNXT_RE_CHIP_ID0_CHIP_MET_SFT		0x18
 
 enum {
-	BNXT_RE_UCNTX_CMASK_HAVE_CCTX = 0x1ULL
+	BNXT_RE_UCNTX_CMASK_HAVE_CCTX = 0x1ULL,
+	BNXT_RE_UCNTX_CMASK_HAVE_MODE = 0x02ULL,
+};
+
+enum bnxt_re_wqe_mode {
+	BNXT_QPLIB_WQE_MODE_STATIC	= 0x00,
+	BNXT_QPLIB_WQE_MODE_VARIABLE	= 0x01,
+	BNXT_QPLIB_WQE_MODE_INVALID	= 0x02,
 };
 
 struct bnxt_re_uctx_resp {
@@ -62,6 +69,8 @@ struct bnxt_re_uctx_resp {
 	__aligned_u64 comp_mask;
 	__u32 chip_id0;
 	__u32 chip_id1;
+	__u32 mode;
+	__u32 rsvd1; /* padding */
 };
 
 /*
@@ -85,6 +94,10 @@ struct bnxt_re_cq_resp {
 	__u32 tail;
 	__u32 phase;
 	__u32 rsvd;
+};
+
+struct bnxt_re_resize_cq_req {
+	__aligned_u64 cq_va;
 };
 
 struct bnxt_re_qp_req {

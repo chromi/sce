@@ -5,11 +5,17 @@
  * Copyright 2020 Michael Walle <michael@walle.cc>
  */
 
-#include <linux/gpio/driver.h>
-#include <linux/gpio/regmap.h>
-#include <linux/kernel.h>
+#include <linux/bits.h>
+#include <linux/device.h>
+#include <linux/err.h>
+#include <linux/io.h>
 #include <linux/module.h>
 #include <linux/regmap.h>
+#include <linux/slab.h>
+#include <linux/types.h>
+
+#include <linux/gpio/driver.h>
+#include <linux/gpio/regmap.h>
 
 struct gpio_regmap {
 	struct device *parent;
@@ -111,6 +117,11 @@ static int gpio_regmap_get_direction(struct gpio_chip *chip,
 	unsigned int base, val, reg, mask;
 	int invert, ret;
 
+	if (gpio->reg_dat_base && !gpio->reg_set_base)
+		return GPIO_LINE_DIRECTION_IN;
+	if (gpio->reg_set_base && !gpio->reg_dat_base)
+		return GPIO_LINE_DIRECTION_OUT;
+
 	if (gpio->reg_dir_out_base) {
 		base = gpio_regmap_addr(gpio->reg_dir_out_base);
 		invert = 0;
@@ -178,12 +189,6 @@ static int gpio_regmap_direction_output(struct gpio_chip *chip,
 	return gpio_regmap_set_direction(chip, offset, true);
 }
 
-void gpio_regmap_set_drvdata(struct gpio_regmap *gpio, void *data)
-{
-	gpio->driver_data = data;
-}
-EXPORT_SYMBOL_GPL(gpio_regmap_set_drvdata);
-
 void *gpio_regmap_get_drvdata(struct gpio_regmap *gpio)
 {
 	return gpio->driver_data;
@@ -226,6 +231,7 @@ struct gpio_regmap *gpio_regmap_register(const struct gpio_regmap_config *config
 		return ERR_PTR(-ENOMEM);
 
 	gpio->parent = config->parent;
+	gpio->driver_data = config->drvdata;
 	gpio->regmap = config->regmap;
 	gpio->ngpio_per_reg = config->ngpio_per_reg;
 	gpio->reg_stride = config->reg_stride;
@@ -249,19 +255,12 @@ struct gpio_regmap *gpio_regmap_register(const struct gpio_regmap_config *config
 
 	chip = &gpio->gpio_chip;
 	chip->parent = config->parent;
+	chip->fwnode = config->fwnode;
 	chip->base = -1;
 	chip->ngpio = config->ngpio;
 	chip->names = config->names;
 	chip->label = config->label ?: dev_name(config->parent);
-
-	/*
-	 * If our regmap is fast_io we should probably set can_sleep to false.
-	 * Right now, the regmap doesn't save this property, nor is there any
-	 * access function for it.
-	 * The only regmap type which uses fast_io is regmap-mmio. For now,
-	 * assume a safe default of true here.
-	 */
-	chip->can_sleep = true;
+	chip->can_sleep = regmap_might_sleep(config->regmap);
 
 	chip->get = gpio_regmap_get;
 	if (gpio->reg_set_base && gpio->reg_clr_base)
@@ -269,8 +268,8 @@ struct gpio_regmap *gpio_regmap_register(const struct gpio_regmap_config *config
 	else if (gpio->reg_set_base)
 		chip->set = gpio_regmap_set;
 
+	chip->get_direction = gpio_regmap_get_direction;
 	if (gpio->reg_dir_in_base || gpio->reg_dir_out_base) {
-		chip->get_direction = gpio_regmap_get_direction;
 		chip->direction_input = gpio_regmap_direction_input;
 		chip->direction_output = gpio_regmap_direction_output;
 	}
@@ -306,9 +305,9 @@ void gpio_regmap_unregister(struct gpio_regmap *gpio)
 }
 EXPORT_SYMBOL_GPL(gpio_regmap_unregister);
 
-static void devm_gpio_regmap_unregister(struct device *dev, void *res)
+static void devm_gpio_regmap_unregister(void *res)
 {
-	gpio_regmap_unregister(*(struct gpio_regmap **)res);
+	gpio_regmap_unregister(res);
 }
 
 /**
@@ -325,20 +324,17 @@ static void devm_gpio_regmap_unregister(struct device *dev, void *res)
 struct gpio_regmap *devm_gpio_regmap_register(struct device *dev,
 					      const struct gpio_regmap_config *config)
 {
-	struct gpio_regmap **ptr, *gpio;
-
-	ptr = devres_alloc(devm_gpio_regmap_unregister, sizeof(*ptr),
-			   GFP_KERNEL);
-	if (!ptr)
-		return ERR_PTR(-ENOMEM);
+	struct gpio_regmap *gpio;
+	int ret;
 
 	gpio = gpio_regmap_register(config);
-	if (!IS_ERR(gpio)) {
-		*ptr = gpio;
-		devres_add(dev, ptr);
-	} else {
-		devres_free(ptr);
-	}
+
+	if (IS_ERR(gpio))
+		return gpio;
+
+	ret = devm_add_action_or_reset(dev, devm_gpio_regmap_unregister, gpio);
+	if (ret)
+		return ERR_PTR(ret);
 
 	return gpio;
 }

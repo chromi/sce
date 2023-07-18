@@ -14,12 +14,12 @@ Contents:
    3com/vortex
    amazon/ena
    altera/altera_tse
+   amd/pds_core
    aquantia/atlantic
    chelsio/cxgb
    cirrus/cs89x0
    dlink/dl2k
    davicom/dm9000
-   dec/de4x5
    dec/dmfe
    freescale/dpaa
    freescale/dpaa2/index
@@ -32,25 +32,27 @@ Contents:
    intel/fm10k
    intel/igb
    intel/igbvf
-   intel/ixgb
    intel/ixgbe
    intel/ixgbevf
    intel/i40e
    intel/iavf
    intel/ice
    marvell/octeontx2
-   mellanox/mlx5
+   marvell/octeon_ep
+   mellanox/mlx5/index
    microsoft/netvsc
    neterion/s2io
-   neterion/vxge
    netronome/nfp
    pensando/ionic
    smsc/smc9
    stmicro/stmmac
    ti/cpsw
    ti/cpsw_switchdev
+   ti/am65_nuss_cpsw_switchdev
    ti/tlan
    toshiba/spider_net
+   wangxun/txgbe
+   wangxun/ngbe
 
 .. only::  subproject and html
 

@@ -79,7 +79,6 @@ context.  This is represented by the fs_context structure::
 		unsigned int		sb_flags;
 		unsigned int		sb_flags_mask;
 		unsigned int		s_iflags;
-		unsigned int		lsm_flags;
 		enum fs_context_purpose	purpose:8;
 		...
 	};
@@ -562,17 +561,6 @@ or looking up of superblocks.
 
 The following helpers all wrap sget_fc():
 
-   * ::
-
-       int vfs_get_super(struct fs_context *fc,
-		         enum vfs_get_super_keying keying,
-		         int (*fill_super)(struct super_block *sb,
-					   struct fs_context *fc))
-
-     This creates/looks up a deviceless superblock.  The keying indicates how
-     many superblocks of this type may exist and in what manner they may be
-     shared:
-
 	(1) vfs_get_single_super
 
 	    Only one such superblock may exist in the system.  Any further
@@ -774,7 +762,7 @@ process the parameters it is given.
      should just be set to lie inside the low-to-high range.
 
      If all is good, true is returned.  If the table is invalid, errors are
-     logged to dmesg and false is returned.
+     logged to the kernel log buffer and false is returned.
 
    * ::
 
@@ -782,7 +770,7 @@ process the parameters it is given.
 
      This performs some validation checks on a parameter description.  It
      returns true if the description is good and false if it is not.  It will
-     log errors to dmesg if validation fails.
+     log errors to the kernel log buffer if validation fails.
 
    * ::
 
@@ -814,6 +802,7 @@ process the parameters it is given.
        int fs_lookup_param(struct fs_context *fc,
 			   struct fs_parameter *value,
 			   bool want_bdev,
+			   unsigned int flags,
 			   struct path *_path);
 
      This takes a parameter that carries a string or filename type and attempts

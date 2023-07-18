@@ -89,6 +89,11 @@ static char *compress =
 module_param(compress, charp, 0444);
 MODULE_PARM_DESC(compress, "compression to use");
 
+/* How much of the kernel log to snapshot */
+unsigned long kmsg_bytes = CONFIG_PSTORE_DEFAULT_KMSG_BYTES;
+module_param(kmsg_bytes, ulong, 0444);
+MODULE_PARM_DESC(kmsg_bytes, "amount of kernel log to snapshot (in bytes)");
+
 /* Compression parameters */
 static struct crypto_comp *tfm;
 
@@ -99,9 +104,6 @@ struct pstore_zbackend {
 
 static char *big_oops_buf;
 static size_t big_oops_buf_sz;
-
-/* How much of the console log to snapshot */
-unsigned long kmsg_bytes = PSTORE_DEFAULT_KMSG_BYTES;
 
 void pstore_set_kmsg_bytes(int bytes)
 {
@@ -143,21 +145,22 @@ static void pstore_timer_kick(void)
 	mod_timer(&pstore_timer, jiffies + msecs_to_jiffies(pstore_update_ms));
 }
 
-/*
- * Should pstore_dump() wait for a concurrent pstore_dump()? If
- * not, the current pstore_dump() will report a failure to dump
- * and return.
- */
-static bool pstore_cannot_wait(enum kmsg_dump_reason reason)
+static bool pstore_cannot_block_path(enum kmsg_dump_reason reason)
 {
-	/* In NMI path, pstore shouldn't block regardless of reason. */
+	/*
+	 * In case of NMI path, pstore shouldn't be blocked
+	 * regardless of reason.
+	 */
 	if (in_nmi())
 		return true;
 
 	switch (reason) {
 	/* In panic case, other cpus are stopped by smp_send_stop(). */
 	case KMSG_DUMP_PANIC:
-	/* Emergency restart shouldn't be blocked. */
+	/*
+	 * Emergency restart shouldn't be blocked by spinning on
+	 * pstore_info::buf_lock.
+	 */
 	case KMSG_DUMP_EMERG:
 		return true;
 	default:
@@ -218,7 +221,7 @@ static int zbufsize_842(size_t size)
 #if IS_ENABLED(CONFIG_PSTORE_ZSTD_COMPRESS)
 static int zbufsize_zstd(size_t size)
 {
-	return ZSTD_compressBound(size);
+	return zstd_compress_bound(size);
 }
 #endif
 
@@ -269,7 +272,7 @@ static int pstore_compress(const void *in, void *out,
 {
 	int ret;
 
-	if (!IS_ENABLED(CONFIG_PSTORE_COMPRESSION))
+	if (!IS_ENABLED(CONFIG_PSTORE_COMPRESS))
 		return -EINVAL;
 
 	ret = crypto_comp_compress(tfm, in, inlen, out, &outlen);
@@ -385,25 +388,27 @@ void pstore_record_init(struct pstore_record *record,
 static void pstore_dump(struct kmsg_dumper *dumper,
 			enum kmsg_dump_reason reason)
 {
+	struct kmsg_dump_iter iter;
 	unsigned long	total = 0;
 	const char	*why;
 	unsigned int	part = 1;
+	unsigned long	flags = 0;
+	int		saved_ret = 0;
 	int		ret;
 
 	why = kmsg_dump_reason_str(reason);
 
-	if (down_trylock(&psinfo->buf_lock)) {
-		/* Failed to acquire lock: give up if we cannot wait. */
-		if (pstore_cannot_wait(reason)) {
-			pr_err("dump skipped in %s path: may corrupt error record\n",
-				in_nmi() ? "NMI" : why);
+	if (pstore_cannot_block_path(reason)) {
+		if (!spin_trylock_irqsave(&psinfo->buf_lock, flags)) {
+			pr_err("dump skipped in %s path because of concurrent dump\n",
+					in_nmi() ? "NMI" : why);
 			return;
 		}
-		if (down_interruptible(&psinfo->buf_lock)) {
-			pr_err("could not grab semaphore?!\n");
-			return;
-		}
+	} else {
+		spin_lock_irqsave(&psinfo->buf_lock, flags);
 	}
+
+	kmsg_dump_rewind(&iter);
 
 	oopscount++;
 	while (total < kmsg_bytes) {
@@ -435,7 +440,7 @@ static void pstore_dump(struct kmsg_dumper *dumper,
 		dst_size -= header_size;
 
 		/* Write dump contents. */
-		if (!kmsg_dump_get_buffer(dumper, true, dst + header_size,
+		if (!kmsg_dump_get_buffer(&iter, true, dst + header_size,
 					  dst_size, &dump_size))
 			break;
 
@@ -459,13 +464,21 @@ static void pstore_dump(struct kmsg_dumper *dumper,
 		if (ret == 0 && reason == KMSG_DUMP_OOPS) {
 			pstore_new_entry = 1;
 			pstore_timer_kick();
+		} else {
+			/* Preserve only the first non-zero returned value. */
+			if (!saved_ret)
+				saved_ret = ret;
 		}
 
 		total += record.size;
 		part++;
 	}
+	spin_unlock_irqrestore(&psinfo->buf_lock, flags);
 
-	up(&psinfo->buf_lock);
+	if (saved_ret) {
+		pr_err_once("backend (%s) writing error (%d)\n", psinfo->name,
+			    saved_ret);
+	}
 }
 
 static struct kmsg_dumper pstore_dumper = {
@@ -561,8 +574,9 @@ out:
 int pstore_register(struct pstore_info *psi)
 {
 	if (backend && strcmp(backend, psi->name)) {
-		pr_warn("ignoring unexpected backend '%s'\n", psi->name);
-		return -EPERM;
+		pr_warn("backend '%s' already in use: ignoring '%s'\n",
+			backend, psi->name);
+		return -EBUSY;
 	}
 
 	/* Sanity check flags. */
@@ -591,7 +605,7 @@ int pstore_register(struct pstore_info *psi)
 		psi->write_user = pstore_write_user_compat;
 	psinfo = psi;
 	mutex_init(&psinfo->read_mutex);
-	sema_init(&psinfo->buf_lock, 1);
+	spin_lock_init(&psinfo->buf_lock);
 
 	if (psi->flags & PSTORE_FLAGS_DMESG)
 		allocate_buf_for_compression();
@@ -661,6 +675,8 @@ void pstore_unregister(struct pstore_info *psi)
 	psinfo = NULL;
 	kfree(backend);
 	backend = NULL;
+
+	pr_info("Unregistered %s as persistent store backend\n", psi->name);
 	mutex_unlock(&psinfo_lock);
 }
 EXPORT_SYMBOL_GPL(pstore_unregister);
@@ -671,7 +687,7 @@ static void decompress_record(struct pstore_record *record)
 	int unzipped_len;
 	char *unzipped, *workspace;
 
-	if (!IS_ENABLED(CONFIG_PSTORE_COMPRESSION) || !record->compressed)
+	if (!IS_ENABLED(CONFIG_PSTORE_COMPRESS) || !record->compressed)
 		return;
 
 	/* Only PSTORE_TYPE_DMESG support compression. */
@@ -768,6 +784,7 @@ void pstore_get_backend_records(struct pstore_info *psi,
 		if (rc) {
 			/* pstore_mkfile() did not take record, so free it. */
 			kfree(record->buf);
+			kfree(record->priv);
 			kfree(record);
 			if (rc != -EEXIST || !quiet)
 				failed++;

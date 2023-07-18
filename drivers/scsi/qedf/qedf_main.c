@@ -536,7 +536,9 @@ static void qedf_update_link_speed(struct qedf_ctx *qedf,
 	if (linkmode_intersects(link->supported_caps, sup_caps))
 		lport->link_supported_speeds |= FC_PORTSPEED_20GBIT;
 
-	fc_host_supported_speeds(lport->host) = lport->link_supported_speeds;
+	if (lport->host && lport->host->shost_data)
+		fc_host_supported_speeds(lport->host) =
+			lport->link_supported_speeds;
 }
 
 static void qedf_bw_update(void *dev)
@@ -738,7 +740,7 @@ static int qedf_eh_abort(struct scsi_cmnd *sc_cmd)
 	}
 
 
-	io_req = (struct qedf_ioreq *)sc_cmd->SCp.ptr;
+	io_req = qedf_priv(sc_cmd)->io_req;
 	if (!io_req) {
 		QEDF_ERR(&qedf->dbg_ctx,
 			 "sc_cmd not queued with lld, sc_cmd=%p op=0x%02x, port_id=%06x\n",
@@ -871,7 +873,7 @@ static int qedf_eh_device_reset(struct scsi_cmnd *sc_cmd)
 
 bool qedf_wait_for_upload(struct qedf_ctx *qedf)
 {
-	struct qedf_rport *fcport = NULL;
+	struct qedf_rport *fcport;
 	int wait_cnt = 120;
 
 	while (wait_cnt--) {
@@ -886,7 +888,7 @@ bool qedf_wait_for_upload(struct qedf_ctx *qedf)
 
 	rcu_read_lock();
 	list_for_each_entry_rcu(fcport, &qedf->fcports, peers) {
-		if (fcport && test_bit(QEDF_RPORT_SESSION_READY,
+		if (test_bit(QEDF_RPORT_SESSION_READY,
 				       &fcport->flags)) {
 			if (fcport->rdata)
 				QEDF_ERR(&qedf->dbg_ctx,
@@ -897,9 +899,9 @@ bool qedf_wait_for_upload(struct qedf_ctx *qedf)
 					 "Waiting for fcport %p.\n", fcport);
 			}
 	}
+
 	rcu_read_unlock();
 	return false;
-
 }
 
 /* Performs soft reset of qedf_ctx by simulating a link down/up */
@@ -909,7 +911,7 @@ void qedf_ctx_soft_reset(struct fc_lport *lport)
 	struct qed_link_output if_link;
 
 	if (lport->vport) {
-		QEDF_ERR(NULL, "Cannot issue host reset on NPIV port.\n");
+		printk_ratelimited("Cannot issue host reset on NPIV port.\n");
 		return;
 	}
 
@@ -977,14 +979,14 @@ static int qedf_slave_configure(struct scsi_device *sdev)
 	return 0;
 }
 
-static struct scsi_host_template qedf_host_template = {
+static const struct scsi_host_template qedf_host_template = {
 	.module 	= THIS_MODULE,
 	.name 		= QEDF_MODULE_NAME,
 	.this_id 	= -1,
 	.cmd_per_lun	= 32,
 	.max_sectors 	= 0xffff,
 	.queuecommand 	= qedf_queuecommand,
-	.shost_attrs	= qedf_host_attrs,
+	.shost_groups	= qedf_host_groups,
 	.eh_abort_handler	= qedf_eh_abort,
 	.eh_device_reset_handler = qedf_eh_device_reset, /* lun reset */
 	.eh_target_reset_handler = qedf_eh_target_reset, /* target reset */
@@ -994,6 +996,7 @@ static struct scsi_host_template qedf_host_template = {
 	.sg_tablesize = QEDF_MAX_BDS_PER_CMD,
 	.can_queue = FCOE_PARAMS_NUM_TASKS,
 	.change_queue_depth = scsi_change_queue_depth,
+	.cmd_size = sizeof(struct qedf_cmd_priv),
 };
 
 static int qedf_get_paged_crc_eof(struct sk_buff *skb, int tlen)
@@ -1064,7 +1067,6 @@ static int qedf_xmit(struct fc_lport *lport, struct fc_frame *fp)
 	u32			crc;
 	unsigned int		hlen, tlen, elen;
 	int			wlen;
-	struct fc_stats		*stats;
 	struct fc_lport *tmp_lport;
 	struct fc_lport *vn_port = NULL;
 	struct qedf_rport *fcport;
@@ -1212,10 +1214,8 @@ static int qedf_xmit(struct fc_lport *lport, struct fc_frame *fp)
 	hp->fcoe_sof = sof;
 
 	/*update tx stats */
-	stats = per_cpu_ptr(lport->stats, get_cpu());
-	stats->TxFrames++;
-	stats->TxWords += wlen;
-	put_cpu();
+	this_cpu_inc(lport->stats->TxFrames);
+	this_cpu_add(lport->stats->TxWords, wlen);
 
 	/* Get VLAN ID from skb for printing purposes */
 	__vlan_hwaccel_get_tag(skb, &vlan_tci);
@@ -1413,6 +1413,8 @@ static void qedf_upload_connection(struct qedf_ctx *qedf,
 	 */
 	term_params = dma_alloc_coherent(&qedf->pdev->dev, QEDF_TERM_BUFF_SIZE,
 		&term_params_dma, GFP_KERNEL);
+	if (!term_params)
+		return;
 
 	QEDF_INFO(&(qedf->dbg_ctx), QEDF_LOG_CONN, "Uploading connection "
 		   "port_id=%06x.\n", fcport->rdata->ids.port_id);
@@ -1715,6 +1717,9 @@ static void qedf_setup_fdmi(struct qedf_ctx *qedf)
 	    FW_MAJOR_VERSION, FW_MINOR_VERSION, FW_REVISION_VERSION,
 	    FW_ENGINEERING_VERSION);
 
+	snprintf(fc_host_vendor_identifier(lport->host),
+		FC_VENDOR_IDENTIFIER, "%s", "Marvell");
+
 }
 
 static int qedf_lport_setup(struct qedf_ctx *qedf)
@@ -1825,22 +1830,20 @@ static int qedf_vport_create(struct fc_vport *vport, bool disabled)
 		fcoe_wwn_to_str(vport->port_name, buf, sizeof(buf));
 		QEDF_WARN(&(base_qedf->dbg_ctx), "Failed to create vport, "
 			   "WWPN (0x%s) already exists.\n", buf);
-		goto err1;
+		return rc;
 	}
 
 	if (atomic_read(&base_qedf->link_state) != QEDF_LINK_UP) {
 		QEDF_WARN(&(base_qedf->dbg_ctx), "Cannot create vport "
 			   "because link is not up.\n");
-		rc = -EIO;
-		goto err1;
+		return -EIO;
 	}
 
 	vn_port = libfc_vport_create(vport, sizeof(struct qedf_ctx));
 	if (!vn_port) {
 		QEDF_WARN(&(base_qedf->dbg_ctx), "Could not create lport "
 			   "for vport.\n");
-		rc = -ENOMEM;
-		goto err1;
+		return -ENOMEM;
 	}
 
 	fcoe_wwn_to_str(vport->port_name, buf, sizeof(buf));
@@ -1859,12 +1862,13 @@ static int qedf_vport_create(struct fc_vport *vport, bool disabled)
 	vport_qedf->cmd_mgr = base_qedf->cmd_mgr;
 	init_completion(&vport_qedf->flogi_compl);
 	INIT_LIST_HEAD(&vport_qedf->fcports);
+	INIT_DELAYED_WORK(&vport_qedf->stag_work, qedf_stag_change_work);
 
 	rc = qedf_vport_libfc_config(vport, vn_port);
 	if (rc) {
 		QEDF_ERR(&(base_qedf->dbg_ctx), "Could not allocate memory "
 		    "for lport stats.\n");
-		goto err2;
+		goto err;
 	}
 
 	fc_set_wwnn(vn_port, vport->node_name);
@@ -1877,12 +1881,13 @@ static int qedf_vport_create(struct fc_vport *vport, bool disabled)
 	vn_port->host->max_lun = qedf_max_lun;
 	vn_port->host->sg_tablesize = QEDF_MAX_BDS_PER_CMD;
 	vn_port->host->max_cmd_len = QEDF_MAX_CDB_LEN;
+	vn_port->host->max_id = QEDF_MAX_SESSIONS;
 
 	rc = scsi_add_host(vn_port->host, &vport->dev);
 	if (rc) {
 		QEDF_WARN(&base_qedf->dbg_ctx,
 			  "Error adding Scsi_Host rc=0x%x.\n", rc);
-		goto err2;
+		goto err;
 	}
 
 	/* Set default dev_loss_tmo based on module parameter */
@@ -1916,6 +1921,27 @@ static int qedf_vport_create(struct fc_vport *vport, bool disabled)
 		fc_vport_setlink(vn_port);
 	}
 
+	/* Set symbolic node name */
+	if (base_qedf->pdev->device == QL45xxx)
+		snprintf(fc_host_symbolic_name(vn_port->host), 256,
+			 "Marvell FastLinQ 45xxx FCoE v%s", QEDF_VERSION);
+
+	if (base_qedf->pdev->device == QL41xxx)
+		snprintf(fc_host_symbolic_name(vn_port->host), 256,
+			 "Marvell FastLinQ 41xxx FCoE v%s", QEDF_VERSION);
+
+	/* Set supported speed */
+	fc_host_supported_speeds(vn_port->host) = n_port->link_supported_speeds;
+
+	/* Set speed */
+	vn_port->link_speed = n_port->link_speed;
+
+	/* Set port type */
+	fc_host_port_type(vn_port->host) = FC_PORTTYPE_NPIV;
+
+	/* Set maxframe size */
+	fc_host_maxframe_size(vn_port->host) = n_port->mfs;
+
 	QEDF_INFO(&(base_qedf->dbg_ctx), QEDF_LOG_NPIV, "vn_port=%p.\n",
 		   vn_port);
 
@@ -1923,9 +1949,10 @@ static int qedf_vport_create(struct fc_vport *vport, bool disabled)
 	vport_qedf->dbg_ctx.host_no = vn_port->host->host_no;
 	vport_qedf->dbg_ctx.pdev = base_qedf->pdev;
 
-err2:
+	return 0;
+
+err:
 	scsi_host_put(vn_port->host);
-err1:
 	return rc;
 }
 
@@ -1966,8 +1993,7 @@ static int qedf_vport_destroy(struct fc_vport *vport)
 	fc_lport_free_stats(vn_port);
 
 	/* Release Scsi_Host */
-	if (vn_port->host)
-		scsi_host_put(vn_port->host);
+	scsi_host_put(vn_port->host);
 
 out:
 	return 0;
@@ -2166,7 +2192,7 @@ static bool qedf_fp_has_work(struct qedf_fastpath *fp)
 	struct qedf_ctx *qedf = fp->qedf;
 	struct global_queue *que;
 	struct qed_sb_info *sb_info = fp->sb_info;
-	struct status_block_e4 *sb = sb_info->sb_virt;
+	struct status_block *sb = sb_info->sb_virt;
 	u16 prod_idx;
 
 	/* Get the pointer to the global CQ this completion is on */
@@ -2193,12 +2219,11 @@ static bool qedf_process_completions(struct qedf_fastpath *fp)
 {
 	struct qedf_ctx *qedf = fp->qedf;
 	struct qed_sb_info *sb_info = fp->sb_info;
-	struct status_block_e4 *sb = sb_info->sb_virt;
+	struct status_block *sb = sb_info->sb_virt;
 	struct global_queue *que;
 	u16 prod_idx;
 	struct fcoe_cqe *cqe;
 	struct qedf_io_work *io_work;
-	int num_handled = 0;
 	unsigned int cpu;
 	struct qedf_ioreq *io_req = NULL;
 	u16 xid;
@@ -2221,7 +2246,6 @@ static bool qedf_process_completions(struct qedf_fastpath *fp)
 
 	while (new_cqes) {
 		fp->completions++;
-		num_handled++;
 		cqe = &que->cq[que->cq_cons_idx];
 
 		comp_type = (cqe->cqe_data >> FCOE_CQE_CQE_TYPE_SHIFT) &
@@ -2684,12 +2708,12 @@ void qedf_fp_io_handler(struct work_struct *work)
 static int qedf_alloc_and_init_sb(struct qedf_ctx *qedf,
 	struct qed_sb_info *sb_info, u16 sb_id)
 {
-	struct status_block_e4 *sb_virt;
+	struct status_block *sb_virt;
 	dma_addr_t sb_phys;
 	int ret;
 
 	sb_virt = dma_alloc_coherent(&qedf->pdev->dev,
-	    sizeof(struct status_block_e4), &sb_phys, GFP_KERNEL);
+	    sizeof(struct status_block), &sb_phys, GFP_KERNEL);
 
 	if (!sb_virt) {
 		QEDF_ERR(&qedf->dbg_ctx,
@@ -2925,7 +2949,6 @@ static int qedf_alloc_bdq(struct qedf_ctx *qedf)
 	int i;
 	struct scsi_bd *pbl;
 	u64 *list;
-	dma_addr_t page;
 
 	/* Alloc dma memory for BDQ buffers */
 	for (i = 0; i < QEDF_BDQ_SIZE; i++) {
@@ -2986,11 +3009,9 @@ static int qedf_alloc_bdq(struct qedf_ctx *qedf)
 	qedf->bdq_pbl_list_num_entries = qedf->bdq_pbl_mem_size /
 	    QEDF_PAGE_SIZE;
 	list = (u64 *)qedf->bdq_pbl_list;
-	page = qedf->bdq_pbl_list_dma;
 	for (i = 0; i < qedf->bdq_pbl_list_num_entries; i++) {
 		*list = qedf->bdq_pbl_dma;
 		list++;
-		page += QEDF_PAGE_SIZE;
 	}
 
 	return 0;
@@ -3000,7 +3021,7 @@ static int qedf_alloc_global_queues(struct qedf_ctx *qedf)
 {
 	u32 *list;
 	int i;
-	int status = 0, rc;
+	int status;
 	u32 *pbl;
 	dma_addr_t page;
 	int num_pages;
@@ -3012,7 +3033,7 @@ static int qedf_alloc_global_queues(struct qedf_ctx *qedf)
 	 */
 	if (!qedf->num_queues) {
 		QEDF_ERR(&(qedf->dbg_ctx), "No MSI-X vectors available!\n");
-		return 1;
+		return -ENOMEM;
 	}
 
 	/*
@@ -3020,7 +3041,7 @@ static int qedf_alloc_global_queues(struct qedf_ctx *qedf)
 	 * addresses of our queues
 	 */
 	if (!qedf->p_cpuq) {
-		status = 1;
+		status = -EINVAL;
 		QEDF_ERR(&qedf->dbg_ctx, "p_cpuq is NULL.\n");
 		goto mem_alloc_failure;
 	}
@@ -3036,8 +3057,8 @@ static int qedf_alloc_global_queues(struct qedf_ctx *qedf)
 		   "qedf->global_queues=%p.\n", qedf->global_queues);
 
 	/* Allocate DMA coherent buffers for BDQ */
-	rc = qedf_alloc_bdq(qedf);
-	if (rc) {
+	status = qedf_alloc_bdq(qedf);
+	if (status) {
 		QEDF_ERR(&qedf->dbg_ctx, "Unable to allocate bdq.\n");
 		goto mem_alloc_failure;
 	}
@@ -3408,6 +3429,16 @@ retry_probe:
 		goto err2;
 	}
 
+	if (mode != QEDF_MODE_RECOVERY) {
+		qedf->devlink = qed_ops->common->devlink_register(qedf->cdev);
+		if (IS_ERR(qedf->devlink)) {
+			QEDF_ERR(&qedf->dbg_ctx, "Cannot register devlink\n");
+			rc = PTR_ERR(qedf->devlink);
+			qedf->devlink = NULL;
+			goto err2;
+		}
+	}
+
 	/* Record BDQ producer doorbell addresses */
 	qedf->bdq_primary_prod = qedf->dev_info.primary_dbq_rq_addr;
 	qedf->bdq_secondary_prod = qedf->dev_info.secondary_bdq_rq_addr;
@@ -3520,6 +3551,7 @@ retry_probe:
 		host->transportt = qedf_fc_transport_template;
 		host->max_lun = qedf_max_lun;
 		host->max_cmd_len = QEDF_MAX_CDB_LEN;
+		host->max_id = QEDF_MAX_SESSIONS;
 		host->can_queue = FCOE_PARAMS_NUM_TASKS;
 		rc = scsi_add_host(host, &pdev->dev);
 		if (rc) {
@@ -3670,11 +3702,6 @@ err2:
 err1:
 	scsi_host_put(lport->host);
 err0:
-	if (qedf) {
-		QEDF_INFO(&qedf->dbg_ctx, QEDF_LOG_DISC, "Probe done.\n");
-
-		clear_bit(QEDF_PROBING, &qedf->flags);
-	}
 	return rc;
 }
 
@@ -3713,7 +3740,7 @@ static void __qedf_remove(struct pci_dev *pdev, int mode)
 	else
 		fc_fabric_logoff(qedf->lport);
 
-	if (qedf_wait_for_upload(qedf) == false)
+	if (!qedf_wait_for_upload(qedf))
 		QEDF_ERR(&qedf->dbg_ctx, "Could not upload all sessions.\n");
 
 #ifdef CONFIG_DEBUG_FS
@@ -3789,6 +3816,11 @@ static void __qedf_remove(struct pci_dev *pdev, int mode)
 		QEDF_ERR(&(qedf->dbg_ctx),
 			"Failed to send drv state to MFW.\n");
 
+	if (mode != QEDF_MODE_RECOVERY && qedf->devlink) {
+		qed_ops->common->devlink_unregister(qedf->devlink);
+		qedf->devlink = NULL;
+	}
+
 	qed_ops->common->slowpath_stop(qedf->cdev);
 	qed_ops->common->remove(qedf->cdev);
 
@@ -3846,8 +3878,9 @@ void qedf_schedule_hw_err_handler(void *dev, enum qed_hw_err_type err_type)
 		/* Prevent HW attentions from being reasserted */
 		qed_ops->common->attn_clr_enable(qedf->cdev, true);
 
-		if (qedf_enable_recovery)
-			qed_ops->common->recovery_process(qedf->cdev);
+		if (qedf_enable_recovery && qedf->devlink)
+			qed_ops->common->report_fatal_error(qedf->devlink,
+				err_type);
 
 		break;
 	default:
@@ -3957,11 +3990,9 @@ void qedf_stag_change_work(struct work_struct *work)
 	struct qedf_ctx *qedf =
 	    container_of(work, struct qedf_ctx, stag_work.work);
 
-	if (!qedf) {
-		QEDF_ERR(NULL, "qedf is NULL");
-		return;
-	}
-	QEDF_ERR(&qedf->dbg_ctx, "Performing software context reset.\n");
+	printk_ratelimited("[%s]:[%s:%d]:%d: Performing software context reset.",
+			dev_name(&qedf->pdev->dev), __func__, __LINE__,
+			qedf->dbg_ctx.host_no);
 	qedf_ctx_soft_reset(qedf->lport);
 }
 

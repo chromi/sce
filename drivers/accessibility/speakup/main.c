@@ -65,6 +65,7 @@ int spk_key_echo, spk_say_word_ctl;
 int spk_say_ctrl, spk_bell_pos;
 short spk_punc_mask;
 int spk_punc_level, spk_reading_punc;
+int spk_cur_phonetic;
 char spk_str_caps_start[MAXVARLEN + 1] = "\0";
 char spk_str_caps_stop[MAXVARLEN + 1] = "\0";
 char spk_str_pause[MAXVARLEN + 1] = "\0";
@@ -90,19 +91,18 @@ const u_char spk_key_defaults[] = {
 #include "speakupmap.h"
 };
 
-/* Speakup Cursor Track Variables */
-static int cursor_track = 1, prev_cursor_track = 1;
-
-/* cursor track modes, must be ordered same as cursor_msgs */
-enum {
+/* cursor track modes, must be ordered same as cursor_msgs in enum msg_index_t */
+enum cursor_track {
 	CT_Off = 0,
 	CT_On,
 	CT_Highlight,
 	CT_Window,
-	CT_Max
+	CT_Max,
+	read_all_mode = CT_Max,
 };
 
-#define read_all_mode CT_Max
+/* Speakup Cursor Track Variables */
+static enum cursor_track cursor_track = 1, prev_cursor_track = 1;
 
 static struct tty_struct *tty;
 
@@ -390,10 +390,6 @@ static void say_attributes(struct vc_data *vc)
 	int fg = spk_attr & 0x0f;
 	int bg = spk_attr >> 4;
 
-	if (fg > 8) {
-		synth_printf("%s ", spk_msg_get(MSG_BRIGHT));
-		fg -= 8;
-	}
 	synth_printf("%s", spk_msg_get(MSG_COLORS_START + fg));
 	if (bg > 7) {
 		synth_printf(" %s ", spk_msg_get(MSG_ON_BLINKING));
@@ -404,15 +400,17 @@ static void say_attributes(struct vc_data *vc)
 	synth_printf("%s\n", spk_msg_get(MSG_COLORS_START + bg));
 }
 
-enum {
-	edge_top = 1,
+/* must be ordered same as edge_msgs in enum msg_index_t */
+enum edge {
+	edge_none = 0,
+	edge_top,
 	edge_bottom,
 	edge_left,
 	edge_right,
 	edge_quiet
 };
 
-static void announce_edge(struct vc_data *vc, int msg_id)
+static void announce_edge(struct vc_data *vc, enum edge msg_id)
 {
 	if (spk_bleeps & 1)
 		bleep(spk_y);
@@ -473,7 +471,7 @@ static u16 get_char(struct vc_data *vc, u16 *pos, u_char *attribs)
 			c |= 0x100;
 		}
 
-		ch = inverse_translate(vc, c, 1);
+		ch = inverse_translate(vc, c, true);
 		*attribs = (w & 0xff00) >> 8;
 	}
 	return ch;
@@ -607,7 +605,8 @@ static void say_prev_word(struct vc_data *vc)
 {
 	u_char temp;
 	u16 ch;
-	u_short edge_said = 0, last_state = 0, state = 0;
+	enum edge edge_said = edge_none;
+	u_short last_state = 0, state = 0;
 
 	spk_parked |= 0x01;
 
@@ -652,7 +651,7 @@ static void say_prev_word(struct vc_data *vc)
 	}
 	if (spk_x == 0 && edge_said == edge_quiet)
 		edge_said = edge_left;
-	if (edge_said > 0 && edge_said < edge_quiet)
+	if (edge_said > edge_none && edge_said < edge_quiet)
 		announce_edge(vc, edge_said);
 	say_word(vc);
 }
@@ -661,7 +660,8 @@ static void say_next_word(struct vc_data *vc)
 {
 	u_char temp;
 	u16 ch;
-	u_short edge_said = 0, last_state = 2, state = 0;
+	enum edge edge_said = edge_none;
+	u_short last_state = 2, state = 0;
 
 	spk_parked |= 0x01;
 	if (spk_x == vc->vc_cols - 1 && spk_y == vc->vc_rows - 1) {
@@ -693,7 +693,7 @@ static void say_next_word(struct vc_data *vc)
 		spk_pos += 2;
 		last_state = state;
 	}
-	if (edge_said > 0)
+	if (edge_said > edge_none)
 		announce_edge(vc, edge_said);
 	say_word(vc);
 }
@@ -1269,20 +1269,29 @@ int spk_set_key_info(const u_char *key_info, u_char *k_buffer)
 	return 0;
 }
 
-static struct var_t spk_vars[] = {
+enum spk_vars_id {
+	BELL_POS_ID = 0, SPELL_DELAY_ID, ATTRIB_BLEEP_ID,
+	BLEEPS_ID, BLEEP_TIME_ID, PUNC_LEVEL_ID,
+	READING_PUNC_ID, CURSOR_TIME_ID, SAY_CONTROL_ID,
+	SAY_WORD_CTL_ID, NO_INTERRUPT_ID, KEY_ECHO_ID,
+	CUR_PHONETIC_ID, V_LAST_VAR_ID, NB_ID
+};
+
+static struct var_t spk_vars[NB_ID] = {
 	/* bell must be first to set high limit */
-	{BELL_POS, .u.n = {NULL, 0, 0, 0, 0, 0, NULL} },
-	{SPELL_DELAY, .u.n = {NULL, 0, 0, 4, 0, 0, NULL} },
-	{ATTRIB_BLEEP, .u.n = {NULL, 1, 0, 3, 0, 0, NULL} },
-	{BLEEPS, .u.n = {NULL, 3, 0, 3, 0, 0, NULL} },
-	{BLEEP_TIME, .u.n = {NULL, 30, 1, 200, 0, 0, NULL} },
-	{PUNC_LEVEL, .u.n = {NULL, 1, 0, 4, 0, 0, NULL} },
-	{READING_PUNC, .u.n = {NULL, 1, 0, 4, 0, 0, NULL} },
-	{CURSOR_TIME, .u.n = {NULL, 120, 50, 600, 0, 0, NULL} },
-	{SAY_CONTROL, TOGGLE_0},
-	{SAY_WORD_CTL, TOGGLE_0},
-	{NO_INTERRUPT, TOGGLE_0},
-	{KEY_ECHO, .u.n = {NULL, 1, 0, 2, 0, 0, NULL} },
+	[BELL_POS_ID] = { BELL_POS, .u.n = {NULL, 0, 0, 0, 0, 0, NULL} },
+	[SPELL_DELAY_ID] = { SPELL_DELAY, .u.n = {NULL, 0, 0, 4, 0, 0, NULL} },
+	[ATTRIB_BLEEP_ID] = { ATTRIB_BLEEP, .u.n = {NULL, 1, 0, 3, 0, 0, NULL} },
+	[BLEEPS_ID] = { BLEEPS, .u.n = {NULL, 3, 0, 3, 0, 0, NULL} },
+	[BLEEP_TIME_ID] = { BLEEP_TIME, .u.n = {NULL, 30, 1, 200, 0, 0, NULL} },
+	[PUNC_LEVEL_ID] = { PUNC_LEVEL, .u.n = {NULL, 1, 0, 4, 0, 0, NULL} },
+	[READING_PUNC_ID] = { READING_PUNC, .u.n = {NULL, 1, 0, 4, 0, 0, NULL} },
+	[CURSOR_TIME_ID] = { CURSOR_TIME, .u.n = {NULL, 120, 50, 600, 0, 0, NULL} },
+	[SAY_CONTROL_ID] { SAY_CONTROL, TOGGLE_0},
+	[SAY_WORD_CTL_ID] = {SAY_WORD_CTL, TOGGLE_0},
+	[NO_INTERRUPT_ID] = { NO_INTERRUPT, TOGGLE_0},
+	[KEY_ECHO_ID] = { KEY_ECHO, .u.n = {NULL, 1, 0, 2, 0, 0, NULL} },
+	[CUR_PHONETIC_ID] = { CUR_PHONETIC, .u.n = {NULL, 0, 0, 1, 0, 0, NULL} },
 	V_LAST_VAR
 };
 
@@ -1365,31 +1374,30 @@ static void speakup_deallocate(struct vc_data *vc)
 	speakup_console[vc_num] = NULL;
 }
 
-static u_char is_cursor;
-static u_long old_cursor_pos, old_cursor_x, old_cursor_y;
-static int cursor_con;
-
-static void reset_highlight_buffers(struct vc_data *);
-
-static int read_all_key;
-
-static int in_keyboard_notifier;
-
-static void start_read_all_timer(struct vc_data *vc, int command);
-
-enum {
-	RA_NOTHING,
-	RA_NEXT_SENT,
-	RA_PREV_LINE,
-	RA_NEXT_LINE,
-	RA_PREV_SENT,
+enum read_all_command {
+	RA_NEXT_SENT = KVAL(K_DOWN)+1,
+	RA_PREV_LINE = KVAL(K_LEFT)+1,
+	RA_NEXT_LINE = KVAL(K_RIGHT)+1,
+	RA_PREV_SENT = KVAL(K_UP)+1,
 	RA_DOWN_ARROW,
 	RA_TIMER,
 	RA_FIND_NEXT_SENT,
 	RA_FIND_PREV_SENT,
 };
 
-static void kbd_fakekey2(struct vc_data *vc, int command)
+static u_char is_cursor;
+static u_long old_cursor_pos, old_cursor_x, old_cursor_y;
+static int cursor_con;
+
+static void reset_highlight_buffers(struct vc_data *);
+
+static enum read_all_command read_all_key;
+
+static int in_keyboard_notifier;
+
+static void start_read_all_timer(struct vc_data *vc, enum read_all_command command);
+
+static void kbd_fakekey2(struct vc_data *vc, enum read_all_command command)
 {
 	del_timer(&cursor_timer);
 	speakup_fake_down_arrow();
@@ -1426,7 +1434,7 @@ static void stop_read_all(struct vc_data *vc)
 	spk_do_flush();
 }
 
-static void start_read_all_timer(struct vc_data *vc, int command)
+static void start_read_all_timer(struct vc_data *vc, enum read_all_command command)
 {
 	struct var_t *cursor_timeout;
 
@@ -1437,7 +1445,7 @@ static void start_read_all_timer(struct vc_data *vc, int command)
 		  jiffies + msecs_to_jiffies(cursor_timeout->u.n.value));
 }
 
-static void handle_cursor_read_all(struct vc_data *vc, int command)
+static void handle_cursor_read_all(struct vc_data *vc, enum read_all_command command)
 {
 	int indcount, sentcount, rv, sn;
 
@@ -1714,8 +1722,12 @@ static void cursor_done(struct timer_list *unused)
 		speakup_win_say(vc);
 	else if (is_cursor == 1 || is_cursor == 4)
 		say_line_from_to(vc, 0, vc->vc_cols, 0);
-	else
-		say_char(vc);
+	else {
+		if (spk_cur_phonetic == 1)
+			say_phonetic_char(vc);
+		else
+			say_char(vc);
+	}
 	spk_keydown = 0;
 	is_cursor = 0;
 out:
@@ -1780,7 +1792,7 @@ static void speakup_con_update(struct vc_data *vc)
 {
 	unsigned long flags;
 
-	if (!speakup_console[vc->vc_num] || spk_parked)
+	if (!speakup_console[vc->vc_num] || spk_parked || !synth)
 		return;
 	if (!spin_trylock_irqsave(&speakup_info.spinlock, flags))
 		/* Speakup output, discard */
@@ -2454,6 +2466,34 @@ error_virtkeyboard:
 out:
 	return err;
 }
+
+module_param_named(bell_pos, spk_vars[BELL_POS_ID].u.n.default_val, int, 0444);
+module_param_named(spell_delay, spk_vars[SPELL_DELAY_ID].u.n.default_val, int, 0444);
+module_param_named(attrib_bleep, spk_vars[ATTRIB_BLEEP_ID].u.n.default_val, int, 0444);
+module_param_named(bleeps, spk_vars[BLEEPS_ID].u.n.default_val, int, 0444);
+module_param_named(bleep_time, spk_vars[BLEEP_TIME_ID].u.n.default_val, int, 0444);
+module_param_named(punc_level, spk_vars[PUNC_LEVEL_ID].u.n.default_val, int, 0444);
+module_param_named(reading_punc, spk_vars[READING_PUNC_ID].u.n.default_val, int, 0444);
+module_param_named(cursor_time, spk_vars[CURSOR_TIME_ID].u.n.default_val, int, 0444);
+module_param_named(say_control, spk_vars[SAY_CONTROL_ID].u.n.default_val, int, 0444);
+module_param_named(say_word_ctl, spk_vars[SAY_WORD_CTL_ID].u.n.default_val, int, 0444);
+module_param_named(no_interrupt, spk_vars[NO_INTERRUPT_ID].u.n.default_val, int, 0444);
+module_param_named(key_echo, spk_vars[KEY_ECHO_ID].u.n.default_val, int, 0444);
+module_param_named(cur_phonetic, spk_vars[CUR_PHONETIC_ID].u.n.default_val, int, 0444);
+
+MODULE_PARM_DESC(bell_pos, "This works much like a typewriter bell. If for example 72 is echoed to bell_pos, it will beep the PC speaker when typing on a line past character 72.");
+MODULE_PARM_DESC(spell_delay, "This controls how fast a word is spelled when speakup's spell word review command is pressed.");
+MODULE_PARM_DESC(attrib_bleep, "Beeps the PC speaker when there is an attribute change such as background color when using speakup review commands. One = on, zero = off.");
+MODULE_PARM_DESC(bleeps, "This controls whether one hears beeps through the PC speaker when using speakup review commands.");
+MODULE_PARM_DESC(bleep_time, "This controls the duration of the PC speaker beeps speakup produces.");
+MODULE_PARM_DESC(punc_level, "Controls the level of punctuation spoken as the screen is displayed, not reviewed.");
+MODULE_PARM_DESC(reading_punc, "It controls the level of punctuation when reviewing the screen with speakup's screen review commands.");
+MODULE_PARM_DESC(cursor_time, "This controls cursor delay when using arrow keys.");
+MODULE_PARM_DESC(say_control, "This controls if speakup speaks shift, alt and control when those keys are pressed or not.");
+MODULE_PARM_DESC(say_word_ctl, "Sets the say_word_ctl on load.");
+MODULE_PARM_DESC(no_interrupt, "Controls if typing interrupts output from speakup.");
+MODULE_PARM_DESC(key_echo, "Controls if speakup speaks keys when they are typed. One = on zero = off or don't echo keys.");
+MODULE_PARM_DESC(cur_phonetic, "Controls if speakup speaks letters phonetically during navigation. One = on zero = off or don't speak phonetically.");
 
 module_init(speakup_init);
 module_exit(speakup_exit);

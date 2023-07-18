@@ -18,8 +18,6 @@
 
 /* the 32 bit compat definitions with int argument */
 #define REISERFS_IOC32_UNPACK		_IOW(0xCD, 1, int)
-#define REISERFS_IOC32_GETFLAGS		FS_IOC32_GETFLAGS
-#define REISERFS_IOC32_SETFLAGS		FS_IOC32_SETFLAGS
 #define REISERFS_IOC32_GETVERSION	FS_IOC32_GETVERSION
 #define REISERFS_IOC32_SETVERSION	FS_IOC32_SETVERSION
 
@@ -3102,11 +3100,13 @@ static inline void reiserfs_update_sd(struct reiserfs_transaction_handle *th,
 }
 
 void sd_attrs_to_i_attrs(__u16 sd_attrs, struct inode *inode);
-int reiserfs_setattr(struct dentry *dentry, struct iattr *attr);
+int reiserfs_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
+		     struct iattr *attr);
 
 int __reiserfs_write_begin(struct page *page, unsigned from, unsigned len);
 
 /* namei.c */
+void reiserfs_init_priv_inode(struct inode *inode);
 void set_de_name_and_namelen(struct reiserfs_dir_entry *de);
 int search_by_entry_key(struct super_block *sb, const struct cpu_key *key,
 			struct treepath *path, struct reiserfs_dir_entry *de);
@@ -3176,6 +3176,7 @@ void reiserfs_unmap_buffer(struct buffer_head *);
 
 /* file.c */
 extern const struct inode_operations reiserfs_file_inode_operations;
+extern const struct inode_operations reiserfs_priv_file_inode_operations;
 extern const struct file_operations reiserfs_file_operations;
 extern const struct address_space_operations reiserfs_address_space_operations;
 
@@ -3407,7 +3408,10 @@ __u32 r5_hash(const signed char *msg, int len);
 #define SPARE_SPACE 500
 
 /* prototypes from ioctl.c */
+int reiserfs_fileattr_get(struct dentry *dentry, struct fileattr *fa);
+int reiserfs_fileattr_set(struct mnt_idmap *idmap,
+			  struct dentry *dentry, struct fileattr *fa);
 long reiserfs_ioctl(struct file *filp, unsigned int cmd, unsigned long arg);
 long reiserfs_compat_ioctl(struct file *filp,
 		   unsigned int cmd, unsigned long arg);
-int reiserfs_unpack(struct inode *inode, struct file *filp);
+int reiserfs_unpack(struct inode *inode);

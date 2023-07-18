@@ -21,7 +21,7 @@ struct nft_bitmap_elem {
  * the element state in the current and the future generation.
  *
  * An element can be in three states. The generation cursor is represented using
- * the ^ character, note that this cursor shifts on every succesful transaction.
+ * the ^ character, note that this cursor shifts on every successful transaction.
  * If no transaction is going on, we observe all elements are in the following
  * state:
  *
@@ -39,7 +39,7 @@ struct nft_bitmap_elem {
  * 10 = this element is active in the current generation and it becomes inactive
  * ^    in the next one. This happens when the element is deactivated but commit
  *      path has not yet been executed yet, so removal is still pending. On
- *      transation abortion, the next generation bit is reset to go back to
+ *      transaction abortion, the next generation bit is reset to go back to
  *      restore its previous state.
  */
 struct nft_bitmap {
@@ -73,8 +73,9 @@ nft_bitmap_active(const u8 *bitmap, u32 idx, u32 off, u8 genmask)
 	return (bitmap[idx] & (0x3 << off)) & (genmask << off);
 }
 
-static bool nft_bitmap_lookup(const struct net *net, const struct nft_set *set,
-			      const u32 *key, const struct nft_set_ext **ext)
+INDIRECT_CALLABLE_SCOPE
+bool nft_bitmap_lookup(const struct net *net, const struct nft_set *set,
+		       const u32 *key, const struct nft_set_ext **ext)
 {
 	const struct nft_bitmap *priv = nft_set_priv(set);
 	u8 genmask = nft_genmask_cur(net);
@@ -270,13 +271,14 @@ static int nft_bitmap_init(const struct nft_set *set,
 	return 0;
 }
 
-static void nft_bitmap_destroy(const struct nft_set *set)
+static void nft_bitmap_destroy(const struct nft_ctx *ctx,
+			       const struct nft_set *set)
 {
 	struct nft_bitmap *priv = nft_set_priv(set);
 	struct nft_bitmap_elem *be, *n;
 
 	list_for_each_entry_safe(be, n, &priv->list, head)
-		nft_set_elem_destroy(set, be, true);
+		nf_tables_set_elem_destroy(ctx, set, be);
 }
 
 static bool nft_bitmap_estimate(const struct nft_set_desc *desc, u32 features,

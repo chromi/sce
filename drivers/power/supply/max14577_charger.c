@@ -261,7 +261,7 @@ static int max14577_init_constant_voltage(struct max14577_charger *chg,
 static int max14577_init_eoc(struct max14577_charger *chg,
 		unsigned int uamp)
 {
-	unsigned int current_bits = 0xf;
+	unsigned int current_bits;
 	u8 reg_data;
 
 	switch (chg->max14577->dev_type) {
@@ -532,7 +532,7 @@ static ssize_t show_fast_charge_timer(struct device *dev,
 		break;
 	}
 
-	return scnprintf(buf, PAGE_SIZE, "%u\n", val);
+	return sysfs_emit(buf, "%u\n", val);
 }
 
 static ssize_t store_fast_charge_timer(struct device *dev,

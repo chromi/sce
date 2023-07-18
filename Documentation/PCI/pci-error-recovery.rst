@@ -83,6 +83,7 @@ This structure has the form::
 		int (*mmio_enabled)(struct pci_dev *dev);
 		int (*slot_reset)(struct pci_dev *dev);
 		void (*resume)(struct pci_dev *dev);
+		void (*cor_error_detected)(struct pci_dev *dev);
 	};
 
 The possible channel states are::
@@ -295,7 +296,7 @@ and let the driver restart normal I/O processing.
 A driver can still return a critical failure for this function if
 it can't get the device operational after reset.  If the platform
 previously tried a soft reset, it might now try a hard reset (power
-cycle) and then call slot_reset() again.  It the device still can't
+cycle) and then call slot_reset() again.  If the device still can't
 be recovered, there is nothing more that can be done;  the platform
 will typically report a "permanent failure" in such a case.  The
 device will be considered "dead" in this case.
@@ -417,10 +418,15 @@ That is, the recovery API only requires that:
    - drivers/next/e100.c
    - drivers/net/e1000
    - drivers/net/e1000e
-   - drivers/net/ixgb
    - drivers/net/ixgbe
    - drivers/net/cxgb3
    - drivers/net/s2io.c
+
+   The cor_error_detected() callback is invoked in handle_error_source() when
+   the error severity is "correctable". The callback is optional and allows
+   additional logging to be done if desired. See example:
+
+   - drivers/cxl/pci.c
 
 The End
 -------

@@ -32,6 +32,7 @@
 
 #include <crypto/b128ops.h>
 #include <crypto/chacha.h>
+#include <crypto/internal/cipher.h>
 #include <crypto/internal/hash.h>
 #include <crypto/internal/poly1305.h>
 #include <crypto/internal/skcipher.h>
@@ -307,10 +308,9 @@ static int adiantum_finish(struct skcipher_request *req)
 	return 0;
 }
 
-static void adiantum_streamcipher_done(struct crypto_async_request *areq,
-				       int err)
+static void adiantum_streamcipher_done(void *data, int err)
 {
-	struct skcipher_request *req = areq->data;
+	struct skcipher_request *req = data;
 
 	if (!err)
 		err = adiantum_finish(req);
@@ -616,3 +616,4 @@ MODULE_DESCRIPTION("Adiantum length-preserving encryption mode");
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Eric Biggers <ebiggers@google.com>");
 MODULE_ALIAS_CRYPTO("adiantum");
+MODULE_IMPORT_NS(CRYPTO_INTERNAL);

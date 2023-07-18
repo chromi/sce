@@ -120,7 +120,9 @@ The details of these operations are:
 
   .. code-block:: c
 
-     nr_sg = dma_map_sg(chan->device->dev, sgl, sg_len);
+     struct device *dma_dev = dmaengine_get_dma_device(chan);
+
+     nr_sg = dma_map_sg(dma_dev, sgl, sg_len);
 	if (nr_sg == 0)
 		/* error */
 
@@ -173,7 +175,7 @@ The details of these operations are:
     driver can ask for the pointer, maximum size and the currently used size of
     the metadata and can directly update or read it.
 
-    Becasue the DMA driver manages the memory area containing the metadata,
+    Because the DMA driver manages the memory area containing the metadata,
     clients must make sure that they do not try to access or get the pointer
     after their transfer completion callback has run for the descriptor.
     If no completion callback has been defined for the transfer, then the

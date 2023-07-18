@@ -38,7 +38,7 @@ sections.
 RCU-preempt Expedited Grace Periods
 ===================================
 
-``CONFIG_PREEMPT=y`` kernels implement RCU-preempt.
+``CONFIG_PREEMPTION=y`` kernels implement RCU-preempt.
 The overall flow of the handling of a given CPU by an RCU-preempt
 expedited grace period is shown in the following diagram:
 
@@ -112,7 +112,7 @@ things.
 RCU-sched Expedited Grace Periods
 ---------------------------------
 
-``CONFIG_PREEMPT=n`` kernels implement RCU-sched. The overall flow of
+``CONFIG_PREEMPTION=n`` kernels implement RCU-sched. The overall flow of
 the handling of a given CPU by an RCU-sched expedited grace period is
 shown in the following diagram:
 
@@ -277,7 +277,7 @@ the following access functions:
 
 Again, only one request in a given batch need actually carry out a
 grace-period operation, which means there must be an efficient way to
-identify which of many concurrent reqeusts will initiate the grace
+identify which of many concurrent requests will initiate the grace
 period, and that there be an efficient way for the remaining requests to
 wait for that grace period to complete. However, that is the topic of
 the next section.
@@ -405,8 +405,8 @@ Use of Workqueues
 In earlier implementations, the task requesting the expedited grace
 period also drove it to completion. This straightforward approach had
 the disadvantage of needing to account for POSIX signals sent to user
-tasks, so more recent implemementations use the Linux kernel's
-`workqueues <https://www.kernel.org/doc/Documentation/core-api/workqueue.rst>`__.
+tasks, so more recent implementations use the Linux kernel's
+workqueues (see Documentation/core-api/workqueue.rst).
 
 The requesting task still does counter snapshotting and funnel-lock
 processing, but the task reaching the top of the funnel lock does a
@@ -465,7 +465,7 @@ corresponding disadvantage that workqueues cannot be used until they are
 initialized, which does not happen until some time after the scheduler
 spawns the first task. Given that there are parts of the kernel that
 really do want to execute grace periods during this mid-boot “dead
-zone”, expedited grace periods must do something else during thie time.
+zone”, expedited grace periods must do something else during this time.
 
 What they do is to fall back to the old practice of requiring that the
 requesting task drive the expedited grace period, as was the case before

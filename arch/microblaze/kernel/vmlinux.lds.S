@@ -36,7 +36,6 @@ SECTIONS {
 		EXIT_TEXT
 		EXIT_CALL
 		SCHED_TEXT
-		CPUIDLE_TEXT
 		LOCK_TEXT
 		KPROBES_TEXT
 		IRQENTRY_TEXT
@@ -45,7 +44,7 @@ SECTIONS {
 		_etext = . ;
 	}
 
-	. = ALIGN (4) ;
+	. = ALIGN (8) ;
 	__fdt_blob : AT(ADDR(__fdt_blob) - LOAD_OFFSET) {
 		_fdt_start = . ;		/* place for fdt blob */
 		*(__fdt_blob) ;			/* Any link-placed DTB */

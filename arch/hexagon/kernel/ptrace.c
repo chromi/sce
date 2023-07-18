@@ -35,7 +35,7 @@ void user_disable_single_step(struct task_struct *child)
 
 static int genregs_get(struct task_struct *target,
 		   const struct user_regset *regset,
-		   srtuct membuf to)
+		   struct membuf to)
 {
 	struct pt_regs *regs = task_pt_regs(target);
 
@@ -54,7 +54,7 @@ static int genregs_get(struct task_struct *target,
 	membuf_store(&to, regs->m0);
 	membuf_store(&to, regs->m1);
 	membuf_store(&to, regs->usr);
-	membuf_store(&to, regs->p3_0);
+	membuf_store(&to, regs->preds);
 	membuf_store(&to, regs->gp);
 	membuf_store(&to, regs->ugp);
 	membuf_store(&to, pt_elr(regs)); // pc
@@ -115,10 +115,9 @@ static int genregs_set(struct task_struct *target,
 
 	/* Ignore the rest, if needed */
 	if (!ret)
-		ret = user_regset_copyin_ignore(&pos, &count, &kbuf, &ubuf,
-					offsetof(struct user_regs_struct, pad1), -1);
-
-	if (ret)
+		user_regset_copyin_ignore(&pos, &count, &kbuf, &ubuf,
+			offsetof(struct user_regs_struct, pad1), -1);
+	else
 		return ret;
 
 	/*

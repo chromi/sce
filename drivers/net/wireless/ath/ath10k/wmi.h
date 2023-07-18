@@ -2066,7 +2066,9 @@ struct wmi_channel {
 	union {
 		__le32 reginfo1;
 		struct {
+			/* note: power unit is 1 dBm */
 			u8 antenna_max;
+			/* note: power unit is 0.5 dBm */
 			u8 max_tx_power;
 		} __packed;
 	} __packed;
@@ -2086,6 +2088,7 @@ struct wmi_channel_arg {
 	u32 min_power;
 	u32 max_power;
 	u32 max_reg_power;
+	/* note: power unit is 1 dBm */
 	u32 max_antenna_gain;
 	u32 reg_class_id;
 	enum wmi_phy_mode mode;
@@ -3060,6 +3063,8 @@ struct host_memory_chunk {
 	__le32 size;
 } __packed;
 
+#define WMI_IRAM_RECOVERY_HOST_MEM_REQ_ID 8
+
 struct wmi_host_mem_chunks {
 	__le32 count;
 	/* some fw revisions require at least 1 chunk regardless of count */
@@ -3165,7 +3170,7 @@ struct wmi_start_scan_common {
 	/* dwell time in msec on passive channels */
 	__le32 dwell_time_passive;
 	/*
-	 * min time in msec on the BSS channel,only valid if atleast one
+	 * min time in msec on the BSS channel,only valid if at least one
 	 * VDEV is active
 	 */
 	__le32 min_rest_time;
@@ -3191,7 +3196,7 @@ struct wmi_start_scan_common {
 	 * and bssid_list
 	 */
 	__le32 repeat_probe_time;
-	/* time in msec between 2 consequetive probe requests with in a set. */
+	/* time in msec between 2 consecutive probe requests with in a set. */
 	__le32 probe_spacing_time;
 	/*
 	 * data inactivity time in msec on bss channel that will be used by
@@ -3473,7 +3478,9 @@ struct wmi_phyerr_event {
 	__le32 num_phyerrs;
 	__le32 tsf_l32;
 	__le32 tsf_u32;
-	struct wmi_phyerr phyerrs[];
+
+	/* array of struct wmi_phyerr */
+	u8 phyerrs[];
 } __packed;
 
 struct wmi_10_4_phyerr_event {
@@ -3832,7 +3839,7 @@ enum wmi_pdev_param {
 	WMI_PDEV_PARAM_BEACON_TX_MODE,
 	/*
 	 * Resource manager off chan mode .
-	 * 0: turn off off chan mode. 1: turn on offchan mode
+	 * 0: turn off offchan mode. 1: turn on offchan mode
 	 */
 	WMI_PDEV_PARAM_RESMGR_OFFCHAN_MODE,
 	/*
@@ -3936,7 +3943,7 @@ enum wmi_10x_pdev_param {
 	WMI_10X_PDEV_PARAM_BEACON_TX_MODE,
 	/*
 	 * Resource manager off chan mode .
-	 * 0: turn off off chan mode. 1: turn on offchan mode
+	 * 0: turn off offchan mode. 1: turn on offchan mode
 	 */
 	WMI_10X_PDEV_PARAM_RESMGR_OFFCHAN_MODE,
 	/*
@@ -4369,8 +4376,8 @@ struct wmi_pdev_stats_tx {
 	/* Num PPDUs cleaned up in TX abort */
 	__le32 tx_abort;
 
-	/* Num MPDUs requed by SW */
-	__le32 mpdus_requed;
+	/* Num MPDUs requeued by SW */
+	__le32 mpdus_requeued;
 
 	/* excessive retries */
 	__le32 tx_ko;
@@ -4390,7 +4397,7 @@ struct wmi_pdev_stats_tx {
 	/* wal pdev continuous xretry */
 	__le32 pdev_cont_xretry;
 
-	/* wal pdev continous xretry */
+	/* wal pdev continuous xretry */
 	__le32 pdev_tx_timeout;
 
 	/* wal pdev resets  */
@@ -4442,8 +4449,8 @@ struct wmi_10_4_pdev_stats_tx {
 	/* Num PPDUs cleaned up in TX abort */
 	__le32 tx_abort;
 
-	/* Num MPDUs requed by SW */
-	__le32 mpdus_requed;
+	/* Num MPDUs requeued by SW */
+	__le32 mpdus_requeued;
 
 	/* excessive retries */
 	__le32 tx_ko;
@@ -5233,7 +5240,7 @@ enum wmi_vdev_param {
 	 * scheduler.
 	 */
 	WMI_VDEV_OC_SCHEDULER_AIR_TIME_LIMIT,
-	/* enable/dsiable WDS for this VDEV  */
+	/* enable/disable WDS for this VDEV  */
 	WMI_VDEV_PARAM_WDS,
 	/* ATIM Window */
 	WMI_VDEV_PARAM_ATIM_WINDOW,
@@ -5365,7 +5372,7 @@ enum wmi_10x_vdev_param {
 	 * scheduler.
 	 */
 	WMI_10X_VDEV_OC_SCHEDULER_AIR_TIME_LIMIT,
-	/* enable/dsiable WDS for this VDEV  */
+	/* enable/disable WDS for this VDEV  */
 	WMI_10X_VDEV_PARAM_WDS,
 	/* ATIM Window */
 	WMI_10X_VDEV_PARAM_ATIM_WINDOW,
@@ -5897,7 +5904,7 @@ enum wmi_sta_ps_param_tx_wake_threshold {
 enum wmi_sta_ps_param_pspoll_count {
 	WMI_STA_PS_PSPOLL_COUNT_NO_MAX = 0,
 	/*
-	 * Values greater than 0 indicate the maximum numer of PS-Poll frames
+	 * Values greater than 0 indicate the maximum number of PS-Poll frames
 	 * FW will send before waking up.
 	 */
 
@@ -6917,6 +6924,7 @@ struct wmi_svc_rdy_ev_arg {
 };
 
 struct wmi_svc_avail_ev_arg {
+	bool service_map_ext_valid;
 	__le32 service_map_ext_len;
 	const __le32 *service_map_ext;
 };
@@ -6939,7 +6947,7 @@ struct wmi_echo_ev_arg {
 };
 
 struct wmi_pdev_temperature_event {
-	/* temperature value in Celcius degree */
+	/* temperature value in Celsius degree */
 	__le32 temperature;
 } __packed;
 
@@ -7415,7 +7423,6 @@ int ath10k_wmi_wait_for_unified_ready(struct ath10k *ar);
 struct sk_buff *ath10k_wmi_alloc_skb(struct ath10k *ar, u32 len);
 int ath10k_wmi_connect(struct ath10k *ar);
 
-struct sk_buff *ath10k_wmi_alloc_skb(struct ath10k *ar, u32 len);
 int ath10k_wmi_cmd_send(struct ath10k *ar, struct sk_buff *skb, u32 cmd_id);
 int ath10k_wmi_cmd_send_nowait(struct ath10k *ar, struct sk_buff *skb,
 			       u32 cmd_id);

@@ -14,6 +14,11 @@
 #include "reg.h"
 #include "debug.h"
 #include "bf.h"
+#include "regd.h"
+
+static const s8 lna_gain_table_0[8] = {22, 8, -6, -22, -31, -40, -46, -52};
+static const s8 lna_gain_table_1[16] = {10, 6, 2, -2, -6, -10, -14, -17,
+					-20, -24, -28, -31, -34, -37, -40, -44};
 
 static void rtw8821ce_efuse_parsing(struct rtw_efuse *efuse,
 				    struct rtw8821c_efuse *map)
@@ -21,15 +26,35 @@ static void rtw8821ce_efuse_parsing(struct rtw_efuse *efuse,
 	ether_addr_copy(efuse->addr, map->e.mac_addr);
 }
 
+static void rtw8821cu_efuse_parsing(struct rtw_efuse *efuse,
+				    struct rtw8821c_efuse *map)
+{
+	ether_addr_copy(efuse->addr, map->u.mac_addr);
+}
+
+static void rtw8821cs_efuse_parsing(struct rtw_efuse *efuse,
+				    struct rtw8821c_efuse *map)
+{
+	ether_addr_copy(efuse->addr, map->s.mac_addr);
+}
+
+enum rtw8821ce_rf_set {
+	SWITCH_TO_BTG,
+	SWITCH_TO_WLG,
+	SWITCH_TO_WLA,
+	SWITCH_TO_BT,
+};
+
 static int rtw8821c_read_efuse(struct rtw_dev *rtwdev, u8 *log_map)
 {
+	struct rtw_hal *hal = &rtwdev->hal;
 	struct rtw_efuse *efuse = &rtwdev->efuse;
 	struct rtw8821c_efuse *map;
 	int i;
 
 	map = (struct rtw8821c_efuse *)log_map;
 
-	efuse->rfe_option = map->rfe_option;
+	efuse->rfe_option = map->rfe_option & 0x1f;
 	efuse->rf_board_option = map->rf_board_option;
 	efuse->crystal_cap = map->xtal_k;
 	efuse->pa_type_2g = map->pa_type;
@@ -46,12 +71,34 @@ static int rtw8821c_read_efuse(struct rtw_dev *rtwdev, u8 *log_map)
 	efuse->tx_bb_swing_setting_2g = map->tx_bb_swing_setting_2g;
 	efuse->tx_bb_swing_setting_5g = map->tx_bb_swing_setting_5g;
 
+	hal->pkg_type = map->rfe_option & BIT(5) ? 1 : 0;
+
+	switch (efuse->rfe_option) {
+	case 0x2:
+	case 0x4:
+	case 0x7:
+	case 0xa:
+	case 0xc:
+	case 0xf:
+		hal->rfe_btg = true;
+		break;
+	}
+
 	for (i = 0; i < 4; i++)
 		efuse->txpwr_idx_table[i] = map->txpwr_idx_table[i];
+
+	if (rtwdev->efuse.rfe_option == 2 || rtwdev->efuse.rfe_option == 4)
+		efuse->txpwr_idx_table[0].pwr_idx_2g = map->txpwr_idx_table[1].pwr_idx_2g;
 
 	switch (rtw_hci_type(rtwdev)) {
 	case RTW_HCI_TYPE_PCIE:
 		rtw8821ce_efuse_parsing(efuse, map);
+		break;
+	case RTW_HCI_TYPE_USB:
+		rtw8821cu_efuse_parsing(efuse, map);
+		break;
+	case RTW_HCI_TYPE_SDIO:
+		rtw8821cs_efuse_parsing(efuse, map);
 		break;
 	default:
 		/* unsupported now */
@@ -110,6 +157,7 @@ static void rtw8821c_phy_bf_init(struct rtw_dev *rtwdev)
 
 static void rtw8821c_phy_set_param(struct rtw_dev *rtwdev)
 {
+	struct rtw_hal *hal = &rtwdev->hal;
 	u8 crystal_cap, val;
 
 	/* power on BB/RF domain */
@@ -144,9 +192,9 @@ static void rtw8821c_phy_set_param(struct rtw_dev *rtwdev)
 
 	/* post init after header files config */
 	rtw_write32_set(rtwdev, REG_RXPSEL, BIT_RX_PSEL_RST);
-	rtwdev->chip->ch_param[0] = rtw_read32_mask(rtwdev, REG_TXSF2, MASKDWORD);
-	rtwdev->chip->ch_param[1] = rtw_read32_mask(rtwdev, REG_TXSF6, MASKDWORD);
-	rtwdev->chip->ch_param[2] = rtw_read32_mask(rtwdev, REG_TXFILTER, MASKDWORD);
+	hal->ch_param[0] = rtw_read32_mask(rtwdev, REG_TXSF2, MASKDWORD);
+	hal->ch_param[1] = rtw_read32_mask(rtwdev, REG_TXSF6, MASKDWORD);
+	hal->ch_param[2] = rtw_read32_mask(rtwdev, REG_TXFILTER, MASKDWORD);
 
 	rtw_phy_init(rtwdev);
 	rtwdev->dm_info.cck_pd_default = rtw_read8(rtwdev, REG_CSRATIO) & 0x1f;
@@ -208,7 +256,8 @@ static int rtw8821c_mac_init(struct rtw_dev *rtwdev)
 	rtw_write8(rtwdev, REG_TCR + 1, WLAN_TX_FUNC_CFG1);
 	rtw_write8(rtwdev, REG_ACKTO_CCK, 0x40);
 	rtw_write8_set(rtwdev, REG_WMAC_TRXPTCL_CTL_H, BIT(1));
-	rtw_write8_set(rtwdev, REG_SND_PTCL_CTRL, BIT(6));
+	rtw_write8_set(rtwdev, REG_SND_PTCL_CTRL,
+		       BIT_DIS_CHK_VHTSIGB_CRC);
 	rtw_write32(rtwdev, REG_WMAC_OPTION_FUNCTION + 8, WLAN_MAC_OPT_FUNC2);
 	rtw_write8(rtwdev, REG_WMAC_OPTION_FUNCTION + 4, WLAN_MAC_OPT_NORM_FUNC1);
 
@@ -224,8 +273,43 @@ static void rtw8821c_cfg_ldo25(struct rtw_dev *rtwdev, bool enable)
 	rtw_write8(rtwdev, REG_LDO_EFUSE_CTRL + 3, ldo_pwr);
 }
 
+static void rtw8821c_switch_rf_set(struct rtw_dev *rtwdev, u8 rf_set)
+{
+	u32 reg;
+
+	rtw_write32_set(rtwdev, REG_DMEM_CTRL, BIT_WL_RST);
+	rtw_write32_set(rtwdev, REG_SYS_CTRL, BIT_FEN_EN);
+
+	reg = rtw_read32(rtwdev, REG_RFECTL);
+	switch (rf_set) {
+	case SWITCH_TO_BTG:
+		reg |= B_BTG_SWITCH;
+		reg &= ~(B_CTRL_SWITCH | B_WL_SWITCH | B_WLG_SWITCH |
+			 B_WLA_SWITCH);
+		rtw_write32_mask(rtwdev, REG_ENRXCCA, MASKBYTE2, BTG_CCA);
+		rtw_write32_mask(rtwdev, REG_ENTXCCK, MASKLWORD, BTG_LNA);
+		break;
+	case SWITCH_TO_WLG:
+		reg |= B_WL_SWITCH | B_WLG_SWITCH;
+		reg &= ~(B_BTG_SWITCH | B_CTRL_SWITCH | B_WLA_SWITCH);
+		rtw_write32_mask(rtwdev, REG_ENRXCCA, MASKBYTE2, WLG_CCA);
+		rtw_write32_mask(rtwdev, REG_ENTXCCK, MASKLWORD, WLG_LNA);
+		break;
+	case SWITCH_TO_WLA:
+		reg |= B_WL_SWITCH | B_WLA_SWITCH;
+		reg &= ~(B_BTG_SWITCH | B_CTRL_SWITCH | B_WLG_SWITCH);
+		break;
+	case SWITCH_TO_BT:
+	default:
+		break;
+	}
+
+	rtw_write32(rtwdev, REG_RFECTL, reg);
+}
+
 static void rtw8821c_set_channel_rf(struct rtw_dev *rtwdev, u8 channel, u8 bw)
 {
+	struct rtw_hal *hal = &rtwdev->hal;
 	u32 rf_reg18;
 
 	rf_reg18 = rtw_read_rf(rtwdev, RF_PATH_A, 0x18, RFREG_MASK);
@@ -257,9 +341,14 @@ static void rtw8821c_set_channel_rf(struct rtw_dev *rtwdev, u8 channel, u8 bw)
 	}
 
 	if (channel <= 14) {
+		if (hal->rfe_btg)
+			rtw8821c_switch_rf_set(rtwdev, SWITCH_TO_BTG);
+		else
+			rtw8821c_switch_rf_set(rtwdev, SWITCH_TO_WLG);
 		rtw_write_rf(rtwdev, RF_PATH_A, RF_LUTDBG, BIT(6), 0x1);
 		rtw_write_rf(rtwdev, RF_PATH_A, 0x64, 0xf, 0xf);
 	} else {
+		rtw8821c_switch_rf_set(rtwdev, SWITCH_TO_WLA);
 		rtw_write_rf(rtwdev, RF_PATH_A, RF_LUTDBG, BIT(6), 0x0);
 	}
 
@@ -295,6 +384,7 @@ static void rtw8821c_set_channel_rxdfir(struct rtw_dev *rtwdev, u8 bw)
 static void rtw8821c_set_channel_bb(struct rtw_dev *rtwdev, u8 channel, u8 bw,
 				    u8 primary_ch_idx)
 {
+	struct rtw_hal *hal = &rtwdev->hal;
 	u32 val32;
 
 	if (channel <= 14) {
@@ -311,11 +401,11 @@ static void rtw8821c_set_channel_bb(struct rtw_dev *rtwdev, u8 channel, u8 bw,
 			rtw_write32_mask(rtwdev, REG_TXFILTER, MASKDWORD, 0x00003667);
 		} else {
 			rtw_write32_mask(rtwdev, REG_TXSF2, MASKDWORD,
-					 rtwdev->chip->ch_param[0]);
+					 hal->ch_param[0]);
 			rtw_write32_mask(rtwdev, REG_TXSF6, MASKLWORD,
-					 rtwdev->chip->ch_param[1] & MASKLWORD);
+					 hal->ch_param[1] & MASKLWORD);
 			rtw_write32_mask(rtwdev, REG_TXFILTER, MASKDWORD,
-					 rtwdev->chip->ch_param[2]);
+					 hal->ch_param[2]);
 		}
 	} else if (channel > 35) {
 		rtw_write32_mask(rtwdev, REG_ENTXCCK, BIT(18), 0x1);
@@ -426,22 +516,57 @@ static void rtw8821c_set_channel(struct rtw_dev *rtwdev, u8 channel, u8 bw,
 	rtw8821c_set_channel_rxdfir(rtwdev, bw);
 }
 
+static s8 get_cck_rx_pwr(struct rtw_dev *rtwdev, u8 lna_idx, u8 vga_idx)
+{
+	struct rtw_efuse *efuse = &rtwdev->efuse;
+	const s8 *lna_gain_table;
+	int lna_gain_table_size;
+	s8 rx_pwr_all = 0;
+	s8 lna_gain = 0;
+
+	if (efuse->rfe_option == 0) {
+		lna_gain_table = lna_gain_table_0;
+		lna_gain_table_size = ARRAY_SIZE(lna_gain_table_0);
+	} else {
+		lna_gain_table = lna_gain_table_1;
+		lna_gain_table_size = ARRAY_SIZE(lna_gain_table_1);
+	}
+
+	if (lna_idx >= lna_gain_table_size) {
+		rtw_warn(rtwdev, "incorrect lna index (%d)\n", lna_idx);
+		return -120;
+	}
+
+	lna_gain = lna_gain_table[lna_idx];
+	rx_pwr_all = lna_gain - 2 * vga_idx;
+
+	return rx_pwr_all;
+}
+
 static void query_phy_status_page0(struct rtw_dev *rtwdev, u8 *phy_status,
 				   struct rtw_rx_pkt_stat *pkt_stat)
 {
-	s8 min_rx_power = -120;
-	u8 pwdb = GET_PHY_STAT_P0_PWDB(phy_status);
+	struct rtw_dm_info *dm_info = &rtwdev->dm_info;
+	s8 rx_power;
+	u8 lna_idx = 0;
+	u8 vga_idx = 0;
 
-	pkt_stat->rx_power[RF_PATH_A] = pwdb - 100;
+	vga_idx = GET_PHY_STAT_P0_VGA(phy_status);
+	lna_idx = FIELD_PREP(BIT_LNA_H_MASK, GET_PHY_STAT_P0_LNA_H(phy_status)) |
+		  FIELD_PREP(BIT_LNA_L_MASK, GET_PHY_STAT_P0_LNA_L(phy_status));
+	rx_power = get_cck_rx_pwr(rtwdev, lna_idx, vga_idx);
+
+	pkt_stat->rx_power[RF_PATH_A] = rx_power;
 	pkt_stat->rssi = rtw_phy_rf_power_2_rssi(pkt_stat->rx_power, 1);
+	dm_info->rssi[RF_PATH_A] = pkt_stat->rssi;
 	pkt_stat->bw = RTW_CHANNEL_WIDTH_20;
-	pkt_stat->signal_power = max(pkt_stat->rx_power[RF_PATH_A],
-				     min_rx_power);
+	pkt_stat->signal_power = rx_power;
 }
 
 static void query_phy_status_page1(struct rtw_dev *rtwdev, u8 *phy_status,
 				   struct rtw_rx_pkt_stat *pkt_stat)
 {
+	struct rtw_dm_info *dm_info = &rtwdev->dm_info;
 	u8 rxsc, bw;
 	s8 min_rx_power = -120;
 
@@ -461,6 +586,7 @@ static void query_phy_status_page1(struct rtw_dev *rtwdev, u8 *phy_status,
 
 	pkt_stat->rx_power[RF_PATH_A] = GET_PHY_STAT_P1_PWDB_A(phy_status) - 110;
 	pkt_stat->rssi = rtw_phy_rf_power_2_rssi(pkt_stat->rx_power, 1);
+	dm_info->rssi[RF_PATH_A] = pkt_stat->rssi;
 	pkt_stat->bw = bw;
 	pkt_stat->signal_power = max(pkt_stat->rx_power[RF_PATH_A],
 				     min_rx_power);
@@ -499,7 +625,8 @@ static void rtw8821c_query_rx_desc(struct rtw_dev *rtwdev, u8 *rx_desc,
 	pkt_stat->phy_status = GET_RX_DESC_PHYST(rx_desc);
 	pkt_stat->icv_err = GET_RX_DESC_ICV_ERR(rx_desc);
 	pkt_stat->crc_err = GET_RX_DESC_CRC32(rx_desc);
-	pkt_stat->decrypted = !GET_RX_DESC_SWDEC(rx_desc);
+	pkt_stat->decrypted = !GET_RX_DESC_SWDEC(rx_desc) &&
+			      GET_RX_DESC_ENC_TYPE(rx_desc) != RX_DESC_ENC_NONE;
 	pkt_stat->is_c2h = GET_RX_DESC_C2H(rx_desc);
 	pkt_stat->pkt_len = GET_RX_DESC_PKT_LEN(rx_desc);
 	pkt_stat->drv_info_sz = GET_RX_DESC_DRV_INFO_SIZE(rx_desc);
@@ -656,8 +783,7 @@ static void rtw8821c_coex_cfg_init(struct rtw_dev *rtwdev)
 	rtw_write8_set(rtwdev, REG_BCN_CTRL, BIT_EN_BCN_FUNCTION);
 
 	/* BT report packet sample rate */
-	rtw_write8_mask(rtwdev, REG_BT_TDMA_TIME, SAMPLE_RATE_MASK,
-			SAMPLE_RATE);
+	rtw_write8_mask(rtwdev, REG_BT_TDMA_TIME, BIT_MASK_SAMPLE_RATE, 0x5);
 
 	/* enable BT counter statistics */
 	rtw_write8(rtwdev, REG_BT_STAT_CTRL, BT_CNT_ENABLE);
@@ -691,6 +817,15 @@ static void rtw8821c_coex_cfg_ant_switch(struct rtw_dev *rtwdev, u8 ctrl_type,
 	if (switch_status == coex_dm->cur_switch_status)
 		return;
 
+	if (coex_rfe->wlg_at_btg) {
+		ctrl_type = COEX_SWITCH_CTRL_BY_BBSW;
+
+		if (coex_rfe->ant_switch_polarity)
+			pos_type = COEX_SWITCH_TO_WLA;
+		else
+			pos_type = COEX_SWITCH_TO_WLG_BT;
+	}
+
 	coex_dm->cur_switch_status = switch_status;
 
 	if (coex_rfe->ant_switch_diversity &&
@@ -720,8 +855,8 @@ static void rtw8821c_coex_cfg_ant_switch(struct rtw_dev *rtwdev, u8 ctrl_type,
 			regval = (!polarity_inverse ? 0x1 : 0x2);
 		}
 
-		rtw_write8_mask(rtwdev, REG_RFE_CTRL8, BIT_MASK_R_RFE_SEL_15,
-				regval);
+		rtw_write32_mask(rtwdev, REG_RFE_CTRL8, BIT_MASK_R_RFE_SEL_15,
+				 regval);
 		break;
 	case COEX_SWITCH_CTRL_BY_PTA:
 		rtw_write32_clr(rtwdev, REG_LED_CFG, BIT_DPDT_SEL_EN);
@@ -731,8 +866,8 @@ static void rtw8821c_coex_cfg_ant_switch(struct rtw_dev *rtwdev, u8 ctrl_type,
 				PTA_CTRL_PIN);
 
 		regval = (!polarity_inverse ? 0x2 : 0x1);
-		rtw_write8_mask(rtwdev, REG_RFE_CTRL8, BIT_MASK_R_RFE_SEL_15,
-				regval);
+		rtw_write32_mask(rtwdev, REG_RFE_CTRL8, BIT_MASK_R_RFE_SEL_15,
+				 regval);
 		break;
 	case COEX_SWITCH_CTRL_BY_ANTDIV:
 		rtw_write32_clr(rtwdev, REG_LED_CFG, BIT_DPDT_SEL_EN);
@@ -758,11 +893,11 @@ static void rtw8821c_coex_cfg_ant_switch(struct rtw_dev *rtwdev, u8 ctrl_type,
 	}
 
 	if (ctrl_type == COEX_SWITCH_CTRL_BY_BT) {
-		rtw_write32_clr(rtwdev, REG_CTRL_TYPE, BIT_CTRL_TYPE1);
-		rtw_write32_clr(rtwdev, REG_CTRL_TYPE, BIT_CTRL_TYPE2);
+		rtw_write8_clr(rtwdev, REG_CTRL_TYPE, BIT_CTRL_TYPE1);
+		rtw_write8_clr(rtwdev, REG_CTRL_TYPE, BIT_CTRL_TYPE2);
 	} else {
-		rtw_write32_set(rtwdev, REG_CTRL_TYPE, BIT_CTRL_TYPE1);
-		rtw_write32_set(rtwdev, REG_CTRL_TYPE, BIT_CTRL_TYPE2);
+		rtw_write8_set(rtwdev, REG_CTRL_TYPE, BIT_CTRL_TYPE1);
+		rtw_write8_set(rtwdev, REG_CTRL_TYPE, BIT_CTRL_TYPE2);
 	}
 }
 
@@ -911,7 +1046,7 @@ static void rtw8821c_pwrtrack_set(struct rtw_dev *rtwdev)
 	s8 pwr_idx_offset_lower;
 	u8 channel = rtwdev->hal.current_channel;
 	u8 band_width = rtwdev->hal.current_band_width;
-	u8 regd = rtwdev->regd.txpwr_regd;
+	u8 regd = rtw_regd_get(rtwdev);
 	u8 tx_rate = dm_info->tx_rate;
 	u8 max_pwr_idx = rtwdev->chip->max_power_index;
 
@@ -1021,23 +1156,35 @@ static void rtw8821c_phy_cck_pd_set(struct rtw_dev *rtwdev, u8 new_lvl)
 {
 	struct rtw_dm_info *dm_info = &rtwdev->dm_info;
 	u8 pd[CCK_PD_LV_MAX] = {3, 7, 13, 13, 13};
+	u8 cck_n_rx;
 
-	if (dm_info->min_rssi > 60) {
-		new_lvl = 4;
-		pd[4] = 0x1d;
-		goto set_cck_pd;
-	}
+	rtw_dbg(rtwdev, RTW_DBG_PHY, "lv: (%d) -> (%d)\n",
+		dm_info->cck_pd_lv[RTW_CHANNEL_WIDTH_20][RF_PATH_A], new_lvl);
 
 	if (dm_info->cck_pd_lv[RTW_CHANNEL_WIDTH_20][RF_PATH_A] == new_lvl)
 		return;
 
+	cck_n_rx = (rtw_read8_mask(rtwdev, REG_CCK0_FAREPORT, BIT_CCK0_2RX) &&
+		    rtw_read8_mask(rtwdev, REG_CCK0_FAREPORT, BIT_CCK0_MRC)) ? 2 : 1;
+	rtw_dbg(rtwdev, RTW_DBG_PHY,
+		"is_linked=%d, lv=%d, n_rx=%d, cs_ratio=0x%x, pd_th=0x%x, cck_fa_avg=%d\n",
+		rtw_is_assoc(rtwdev), new_lvl, cck_n_rx,
+		dm_info->cck_pd_default + new_lvl * 2,
+		pd[new_lvl], dm_info->cck_fa_avg);
+
 	dm_info->cck_fa_avg = CCK_FA_AVG_RESET;
 
-set_cck_pd:
 	dm_info->cck_pd_lv[RTW_CHANNEL_WIDTH_20][RF_PATH_A] = new_lvl;
 	rtw_write32_mask(rtwdev, REG_PWRTH, 0x3f0000, pd[new_lvl]);
 	rtw_write32_mask(rtwdev, REG_PWRTH2, 0x1f0000,
 			 dm_info->cck_pd_default + new_lvl * 2);
+}
+
+static void rtw8821c_fill_txdesc_checksum(struct rtw_dev *rtwdev,
+					  struct rtw_tx_pkt_info *pkt_info,
+					  u8 *txdesc)
+{
+	fill_txdesc_checksum_common(txdesc, 16);
 }
 
 static struct rtw_pwr_seq_cmd trans_carddis_to_cardemu_8821c[] = {
@@ -1410,6 +1557,9 @@ static const struct rtw_intf_phy_para_table phy_para_table_8821c = {
 
 static const struct rtw_rfe_def rtw8821c_rfe_defs[] = {
 	[0] = RTW_DEF_RFE(8821c, 0, 0),
+	[2] = RTW_DEF_RFE_EXT(8821c, 0, 0, 2),
+	[4] = RTW_DEF_RFE_EXT(8821c, 0, 0, 2),
+	[6] = RTW_DEF_RFE(8821c, 0, 0),
 };
 
 static struct rtw_hw_reg rtw8821c_dig[] = {
@@ -1484,6 +1634,7 @@ static struct rtw_chip_ops rtw8821c_ops = {
 	.config_bfee		= rtw8821c_bf_config_bfee,
 	.set_gid_table		= rtw_bf_set_gid_table,
 	.cfg_csi_rate		= rtw_bf_cfg_csi_rate,
+	.fill_txdesc_checksum	= rtw8821c_fill_txdesc_checksum,
 
 	.coex_set_init		= rtw8821c_coex_cfg_init,
 	.coex_set_ant_switch	= rtw8821c_coex_cfg_ant_switch,
@@ -1768,7 +1919,7 @@ static const struct rtw_reg_domain coex_info_hw_regs_8821c[] = {
 	{0x60A, MASKBYTE0, RTW_REG_DOMAIN_MAC8},
 };
 
-struct rtw_chip_info rtw8821c_hw_spec = {
+const struct rtw_chip_info rtw8821c_hw_spec = {
 	.ops = &rtw8821c_ops,
 	.id = RTW_CHIP_TYPE_8821C,
 	.fw_name = "rtw88/rtw8821c_fw.bin",
@@ -1782,12 +1933,13 @@ struct rtw_chip_info rtw8821c_hw_spec = {
 	.ptct_efuse_size = 96,
 	.txff_size = 65536,
 	.rxff_size = 16384,
+	.rsvd_drv_pg_num = 8,
 	.txgi_factor = 1,
 	.is_pwr_by_rate_dec = true,
 	.max_power_index = 0x3f,
 	.csi_buf_pg_num = 0,
 	.band = RTW_BAND_2G | RTW_BAND_5G,
-	.page_size = 128,
+	.page_size = TX_PAGE_SIZE,
 	.dig_min = 0x1c,
 	.ht_supported = true,
 	.vht_supported = true,
@@ -1814,11 +1966,15 @@ struct rtw_chip_info rtw8821c_hw_spec = {
 	.iqk_threshold = 8,
 	.bfer_su_max_num = 2,
 	.bfer_mu_max_num = 1,
+	.ampdu_density = IEEE80211_HT_MPDU_DENSITY_2,
+	.max_scan_ie_len = IEEE80211_MAX_DATA_LEN,
 
 	.coex_para_ver = 0x19092746,
 	.bt_desired_ver = 0x46,
 	.scbd_support = true,
 	.new_scbd10_def = false,
+	.ble_hid_profile_support = false,
+	.wl_mimo_ps_support = false,
 	.pstdma_type = COEX_PSTDMA_FORCE_LPSOFF,
 	.bt_rssi_type = COEX_BTRSSI_RATIO,
 	.ant_isolation = 15,

@@ -66,7 +66,7 @@ The wiki documentation always refers to the linux-next version of the script.
 
 For Semantic Patch Language(SmPL) grammar documentation refer to:
 
-http://coccinelle.lip6.fr/documentation.php
+https://coccinelle.gitlabpages.inria.fr/website/docs/main_grammar.html
 
 Using Coccinelle on the Linux kernel
 ------------------------------------
@@ -219,18 +219,25 @@ instance::
     cat cocci.err
 
 You can use SPFLAGS to add debugging flags; for instance you may want to
-add both --profile --show-trying to SPFLAGS when debugging. For example
+add both ``--profile --show-trying`` to SPFLAGS when debugging. For example
 you may want to use::
 
     rm -f err.log
     export COCCI=scripts/coccinelle/misc/irqf_oneshot.cocci
-    make coccicheck DEBUG_FILE="err.log" MODE=report SPFLAGS="--profile --show-trying" M=./drivers/mfd/arizona-irq.c
+    make coccicheck DEBUG_FILE="err.log" MODE=report SPFLAGS="--profile --show-trying" M=./drivers/mfd
 
 err.log will now have the profiling information, while stdout will
 provide some progress information as Coccinelle moves forward with
 work.
 
+NOTE:
+
 DEBUG_FILE support is only supported when using coccinelle >= 1.0.2.
+
+Currently, DEBUG_FILE support is only available to check folders, and
+not single files. This is because checking a single file requires spatch
+to be called twice leading to DEBUG_FILE being set both times to the same value,
+giving rise to an error.
 
 .cocciconfig support
 --------------------
@@ -241,7 +248,7 @@ variables for .cocciconfig is as follows:
 
 - Your current user's home directory is processed first
 - Your directory from which spatch is called is processed next
-- The directory provided with the --dir option is processed last, if used
+- The directory provided with the ``--dir`` option is processed last, if used
 
 Since coccicheck runs through make, it naturally runs from the kernel
 proper dir; as such the second rule above would be implied for picking up a
@@ -258,8 +265,8 @@ The kernel coccicheck script has::
     fi
 
 KBUILD_EXTMOD is set when an explicit target with M= is used. For both cases
-the spatch --dir argument is used, as such third rule applies when whether M=
-is used or not, and when M= is used the target directory can have its own
+the spatch ``--dir`` argument is used, as such third rule applies when whether
+M= is used or not, and when M= is used the target directory can have its own
 .cocciconfig file. When M= is not passed as an argument to coccicheck the
 target directory is the same as the directory from where spatch was called.
 

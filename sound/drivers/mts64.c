@@ -37,7 +37,6 @@ MODULE_PARM_DESC(enable, "Enable " CARD_NAME " soundcard.");
 MODULE_AUTHOR("Matthias Koenig <mk@phasorlab.de>");
 MODULE_DESCRIPTION("ESI Miditerminal 4140");
 MODULE_LICENSE("GPL");
-MODULE_SUPPORTED_DEVICE("{{ESI,Miditerminal 4140}}");
 
 /*********************************************************************
  * Chip specific
@@ -816,6 +815,9 @@ static void snd_mts64_interrupt(void *private)
 	u8 status, data;
 	struct snd_rawmidi_substream *substream;
 
+	if (!mts)
+		return;
+
 	spin_lock(&mts->lock);
 	ret = mts64_read(mts->pardev->port);
 	data = ret & 0x00ff;
@@ -951,7 +953,8 @@ static int snd_mts64_probe(struct platform_device *pdev)
 		goto free_pardev;
 	}
 
-	if ((err = snd_mts64_create(card, pardev, &mts)) < 0) {
+	err = snd_mts64_create(card, pardev, &mts);
+	if (err < 0) {
 		snd_printd("Cannot create main component\n");
 		goto release_pardev;
 	}
@@ -964,19 +967,22 @@ static int snd_mts64_probe(struct platform_device *pdev)
 		goto __err;
 	}
 	
-	if ((err = snd_mts64_rawmidi_create(card)) < 0) {
+	err = snd_mts64_rawmidi_create(card);
+	if (err < 0) {
 		snd_printd("Creating Rawmidi component failed\n");
 		goto __err;
 	}
 
 	/* init device */
-	if ((err = mts64_device_init(p)) < 0)
+	err = mts64_device_init(p);
+	if (err < 0)
 		goto __err;
 
 	platform_set_drvdata(pdev, card);
 
 	/* At this point card will be usable */
-	if ((err = snd_card_register(card)) < 0) {
+	err = snd_card_register(card);
+	if (err < 0) {
 		snd_printd("Cannot register card\n");
 		goto __err;
 	}
@@ -993,19 +999,17 @@ __err:
 	return err;
 }
 
-static int snd_mts64_remove(struct platform_device *pdev)
+static void snd_mts64_remove(struct platform_device *pdev)
 {
 	struct snd_card *card = platform_get_drvdata(pdev);
 
 	if (card)
 		snd_card_free(card);
-
-	return 0;
 }
 
 static struct platform_driver snd_mts64_driver = {
 	.probe  = snd_mts64_probe,
-	.remove = snd_mts64_remove,
+	.remove_new = snd_mts64_remove,
 	.driver = {
 		.name = PLATFORM_DRIVER,
 	}
@@ -1032,7 +1036,8 @@ static int __init snd_mts64_module_init(void)
 {
 	int err;
 
-	if ((err = platform_driver_register(&snd_mts64_driver)) < 0)
+	err = platform_driver_register(&snd_mts64_driver);
+	if (err < 0)
 		return err;
 
 	if (parport_register_driver(&mts64_parport_driver) != 0) {

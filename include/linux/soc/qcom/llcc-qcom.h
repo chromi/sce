@@ -16,6 +16,7 @@
 #define LLCC_AUDIO       6
 #define LLCC_MDMHPGRW    7
 #define LLCC_MDM         8
+#define LLCC_MODHW       9
 #define LLCC_CMPT        10
 #define LLCC_GPUHTW      11
 #define LLCC_GPU         12
@@ -26,9 +27,37 @@
 #define LLCC_MDMHPFX     20
 #define LLCC_MDMPNG      21
 #define LLCC_AUDHW       22
+#define LLCC_NPU         23
+#define LLCC_WLHW        24
+#define LLCC_PIMEM       25
+#define LLCC_DRE         26
+#define LLCC_CVP         28
+#define LLCC_MODPE       29
+#define LLCC_APTCM       30
+#define LLCC_WRCACHE     31
+#define LLCC_CVPFW       32
+#define LLCC_CPUSS1      33
+#define LLCC_CAMEXP0     34
+#define LLCC_CPUMTE      35
+#define LLCC_CPUHWT      36
+#define LLCC_MDMCLAD2    37
+#define LLCC_CAMEXP1     38
+#define LLCC_CMPTHCP     39
+#define LLCC_LCPDARE     40
+#define LLCC_AENPU       45
+#define LLCC_ISLAND1     46
+#define LLCC_ISLAND2     47
+#define LLCC_ISLAND3     48
+#define LLCC_ISLAND4     49
+#define LLCC_CAMEXP2	 50
+#define LLCC_CAMEXP3	 51
+#define LLCC_CAMEXP4	 52
+#define LLCC_DISP_WB	 53
+#define LLCC_DISP_1	 54
+#define LLCC_VIDVSP	 64
 
 /**
- * llcc_slice_desc - Cache slice descriptor
+ * struct llcc_slice_desc - Cache slice descriptor
  * @slice_id: llcc slice id
  * @slice_size: Size allocated for the llcc slice
  */
@@ -38,11 +67,8 @@ struct llcc_slice_desc {
 };
 
 /**
- * llcc_edac_reg_data - llcc edac registers data for each error type
+ * struct llcc_edac_reg_data - llcc edac registers data for each error type
  * @name: Name of the error
- * @synd_reg: Syndrome register address
- * @count_status_reg: Status register address to read the error count
- * @ways_status_reg: Status register address to read the error ways
  * @reg_cnt: Number of registers
  * @count_mask: Mask value to get the error count
  * @ways_mask: Mask value to get the error ways
@@ -51,9 +77,6 @@ struct llcc_slice_desc {
  */
 struct llcc_edac_reg_data {
 	char *name;
-	u64 synd_reg;
-	u64 count_status_reg;
-	u64 ways_status_reg;
 	u32 reg_cnt;
 	u32 count_mask;
 	u32 ways_mask;
@@ -61,30 +84,60 @@ struct llcc_edac_reg_data {
 	u8  ways_shift;
 };
 
+struct llcc_edac_reg_offset {
+	/* LLCC TRP registers */
+	u32 trp_ecc_error_status0;
+	u32 trp_ecc_error_status1;
+	u32 trp_ecc_sb_err_syn0;
+	u32 trp_ecc_db_err_syn0;
+	u32 trp_ecc_error_cntr_clear;
+	u32 trp_interrupt_0_status;
+	u32 trp_interrupt_0_clear;
+	u32 trp_interrupt_0_enable;
+
+	/* LLCC Common registers */
+	u32 cmn_status0;
+	u32 cmn_interrupt_0_enable;
+	u32 cmn_interrupt_2_enable;
+
+	/* LLCC DRP registers */
+	u32 drp_ecc_error_cfg;
+	u32 drp_ecc_error_cntr_clear;
+	u32 drp_interrupt_status;
+	u32 drp_interrupt_clear;
+	u32 drp_interrupt_enable;
+	u32 drp_ecc_error_status0;
+	u32 drp_ecc_error_status1;
+	u32 drp_ecc_sb_err_syn0;
+	u32 drp_ecc_db_err_syn0;
+};
+
 /**
- * llcc_drv_data - Data associated with the llcc driver
- * @regmap: regmap associated with the llcc device
+ * struct llcc_drv_data - Data associated with the llcc driver
+ * @regmaps: regmaps associated with the llcc device
  * @bcast_regmap: regmap associated with llcc broadcast offset
  * @cfg: pointer to the data structure for slice configuration
+ * @edac_reg_offset: Offset of the LLCC EDAC registers
  * @lock: mutex associated with each slice
  * @cfg_size: size of the config data table
  * @max_slices: max slices as read from device tree
  * @num_banks: Number of llcc banks
  * @bitmap: Bit map to track the active slice ids
- * @offsets: Pointer to the bank offsets array
  * @ecc_irq: interrupt for llcc cache error detection and reporting
+ * @version: Indicates the LLCC version
  */
 struct llcc_drv_data {
-	struct regmap *regmap;
+	struct regmap **regmaps;
 	struct regmap *bcast_regmap;
 	const struct llcc_slice_config *cfg;
+	const struct llcc_edac_reg_offset *edac_reg_offset;
 	struct mutex lock;
 	u32 cfg_size;
 	u32 max_slices;
 	u32 num_banks;
 	unsigned long *bitmap;
-	u32 *offsets;
 	int ecc_irq;
+	u32 version;
 };
 
 #if IS_ENABLED(CONFIG_QCOM_LLCC)

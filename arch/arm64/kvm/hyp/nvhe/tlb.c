@@ -8,13 +8,38 @@
 #include <asm/kvm_mmu.h>
 #include <asm/tlbflush.h>
 
+#include <nvhe/mem_protect.h>
+
 struct tlb_inv_context {
 	u64		tcr;
 };
 
 static void __tlb_switch_to_guest(struct kvm_s2_mmu *mmu,
-				  struct tlb_inv_context *cxt)
+				  struct tlb_inv_context *cxt,
+				  bool nsh)
 {
+	/*
+	 * We have two requirements:
+	 *
+	 * - ensure that the page table updates are visible to all
+	 *   CPUs, for which a dsb(DOMAIN-st) is what we need, DOMAIN
+	 *   being either ish or nsh, depending on the invalidation
+	 *   type.
+	 *
+	 * - complete any speculative page table walk started before
+	 *   we trapped to EL2 so that we can mess with the MM
+	 *   registers out of context, for which dsb(nsh) is enough
+	 *
+	 * The composition of these two barriers is a dsb(DOMAIN), and
+	 * the 'nsh' parameter tracks the distinction between
+	 * Inner-Shareable and Non-Shareable, as specified by the
+	 * callers.
+	 */
+	if (nsh)
+		dsb(nsh);
+	else
+		dsb(ish);
+
 	if (cpus_have_final_cap(ARM64_WORKAROUND_SPECULATIVE_AT)) {
 		u64 val;
 
@@ -32,18 +57,18 @@ static void __tlb_switch_to_guest(struct kvm_s2_mmu *mmu,
 	}
 
 	/*
-	 * __load_guest_stage2() includes an ISB only when the AT
+	 * __load_stage2() includes an ISB only when the AT
 	 * workaround is applied. Take care of the opposite condition,
 	 * ensuring that we always have an ISB, but not two ISBs back
 	 * to back.
 	 */
-	__load_guest_stage2(mmu);
+	__load_stage2(mmu, kern_hyp_va(mmu->arch));
 	asm(ALTERNATIVE("isb", "nop", ARM64_WORKAROUND_SPECULATIVE_AT));
 }
 
 static void __tlb_switch_to_host(struct tlb_inv_context *cxt)
 {
-	write_sysreg(0, vttbr_el2);
+	__load_host_stage2();
 
 	if (cpus_have_final_cap(ARM64_WORKAROUND_SPECULATIVE_AT)) {
 		/* Ensure write of the host VMID */
@@ -58,10 +83,8 @@ void __kvm_tlb_flush_vmid_ipa(struct kvm_s2_mmu *mmu,
 {
 	struct tlb_inv_context cxt;
 
-	dsb(ishst);
-
 	/* Switch to requested VMID */
-	__tlb_switch_to_guest(mmu, &cxt);
+	__tlb_switch_to_guest(mmu, &cxt, false);
 
 	/*
 	 * We could do so much better if we had the VA as well.
@@ -102,7 +125,7 @@ void __kvm_tlb_flush_vmid_ipa(struct kvm_s2_mmu *mmu,
 	 * you should be running with VHE enabled.
 	 */
 	if (icache_is_vpipt())
-		__flush_icache_all();
+		icache_inval_all_pou();
 
 	__tlb_switch_to_host(&cxt);
 }
@@ -111,10 +134,8 @@ void __kvm_tlb_flush_vmid(struct kvm_s2_mmu *mmu)
 {
 	struct tlb_inv_context cxt;
 
-	dsb(ishst);
-
 	/* Switch to requested VMID */
-	__tlb_switch_to_guest(mmu, &cxt);
+	__tlb_switch_to_guest(mmu, &cxt, false);
 
 	__tlbi(vmalls12e1is);
 	dsb(ish);
@@ -123,14 +144,15 @@ void __kvm_tlb_flush_vmid(struct kvm_s2_mmu *mmu)
 	__tlb_switch_to_host(&cxt);
 }
 
-void __kvm_tlb_flush_local_vmid(struct kvm_s2_mmu *mmu)
+void __kvm_flush_cpu_context(struct kvm_s2_mmu *mmu)
 {
 	struct tlb_inv_context cxt;
 
 	/* Switch to requested VMID */
-	__tlb_switch_to_guest(mmu, &cxt);
+	__tlb_switch_to_guest(mmu, &cxt, false);
 
 	__tlbi(vmalle1);
+	asm volatile("ic iallu");
 	dsb(nsh);
 	isb();
 
@@ -139,7 +161,8 @@ void __kvm_tlb_flush_local_vmid(struct kvm_s2_mmu *mmu)
 
 void __kvm_flush_vm_context(void)
 {
-	dsb(ishst);
+	/* Same remark as in __tlb_switch_to_guest() */
+	dsb(ish);
 	__tlbi(alle1is);
 
 	/*

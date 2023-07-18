@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-/* -*- mode: c; c-basic-offset: 8; -*-
- *
- * vim: noexpandtab sw=8 ts=8 sts=0:
+/*
  *
  * Copyright (C) 2004 Oracle.  All rights reserved.
  *
@@ -48,6 +46,7 @@
 #include <linux/net.h>
 #include <linux/export.h>
 #include <net/tcp.h>
+#include <trace/events/sock.h>
 
 #include <linux/uaccess.h>
 
@@ -587,6 +586,8 @@ static void o2net_data_ready(struct sock *sk)
 	void (*ready)(struct sock *sk);
 	struct o2net_sock_container *sc;
 
+	trace_sk_data_ready(sk);
+
 	read_lock_bh(&sk->sk_callback_lock);
 	sc = sk->sk_user_data;
 	if (sc) {
@@ -902,7 +903,7 @@ static int o2net_recv_tcp_msg(struct socket *sock, void *data, size_t len)
 {
 	struct kvec vec = { .iov_len = len, .iov_base = data, };
 	struct msghdr msg = { .msg_flags = MSG_DONTWAIT, };
-	iov_iter_kvec(&msg.msg_iter, READ, &vec, 1, len);
+	iov_iter_kvec(&msg.msg_iter, ITER_DEST, &vec, 1, len);
 	return sock_recvmsg(sock, &msg, MSG_DONTWAIT);
 }
 
@@ -992,14 +993,12 @@ static int o2net_tx_can_proceed(struct o2net_node *nn,
 }
 
 /* Get a map of all nodes to which this node is currently connected to */
-void o2net_fill_node_map(unsigned long *map, unsigned bytes)
+void o2net_fill_node_map(unsigned long *map, unsigned int bits)
 {
 	struct o2net_sock_container *sc;
 	int node, ret;
 
-	BUG_ON(bytes < (BITS_TO_LONGS(O2NM_MAX_NODES) * sizeof(unsigned long)));
-
-	memset(map, 0, bytes);
+	bitmap_zero(map, bits);
 	for (node = 0; node < O2NM_MAX_NODES; ++node) {
 		if (!o2net_tx_can_proceed(o2net_nn_from_num(node), &sc, &ret))
 			continue;
@@ -1198,7 +1197,6 @@ static int o2net_process_message(struct o2net_sock_container *sc,
 			msglog(hdr, "bad magic\n");
 			ret = -EINVAL;
 			goto out;
-			break;
 	}
 
 	/* find a handler for it */
@@ -1607,6 +1605,7 @@ static void o2net_start_connect(struct work_struct *work)
 	sc->sc_sock = sock; /* freed by sc_kref_release */
 
 	sock->sk->sk_allocation = GFP_ATOMIC;
+	sock->sk->sk_use_task_frag = false;
 
 	myaddr.sin_family = AF_INET;
 	myaddr.sin_addr.s_addr = mynode->nd_ipv4_address;
@@ -1934,6 +1933,8 @@ static void o2net_accept_many(struct work_struct *work)
 static void o2net_listen_data_ready(struct sock *sk)
 {
 	void (*ready)(struct sock *sk);
+
+	trace_sk_data_ready(sk);
 
 	read_lock_bh(&sk->sk_callback_lock);
 	ready = sk->sk_user_data;

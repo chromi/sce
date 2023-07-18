@@ -7,6 +7,8 @@
 
 #include "pmc.h"
 
+static DEFINE_SPINLOCK(mck_lock);
+
 static const struct clk_master_characteristics mck_characteristics = {
 	.output = { .min = 0, .max = 166000000 },
 	.divisors = { 1, 2, 4, 3 },
@@ -38,22 +40,28 @@ static const struct clk_pcr_layout sama5d3_pcr_layout = {
 static const struct {
 	char *n;
 	char *p;
+	unsigned long flags;
 	u8 id;
 } sama5d3_systemck[] = {
-	{ .n = "ddrck", .p = "masterck", .id = 2 },
-	{ .n = "lcdck", .p = "masterck", .id = 3 },
-	{ .n = "smdck", .p = "smdclk",   .id = 4 },
-	{ .n = "uhpck", .p = "usbck",    .id = 6 },
-	{ .n = "udpck", .p = "usbck",    .id = 7 },
-	{ .n = "pck0",  .p = "prog0",    .id = 8 },
-	{ .n = "pck1",  .p = "prog1",    .id = 9 },
-	{ .n = "pck2",  .p = "prog2",    .id = 10 },
+	/*
+	 * ddrck feeds DDR controller and is enabled by bootloader thus we need
+	 * to keep it enabled in case there is no Linux consumer for it.
+	 */
+	{ .n = "ddrck", .p = "masterck_div", .id = 2, .flags = CLK_IS_CRITICAL },
+	{ .n = "lcdck", .p = "masterck_div", .id = 3 },
+	{ .n = "smdck", .p = "smdclk",       .id = 4 },
+	{ .n = "uhpck", .p = "usbck",        .id = 6 },
+	{ .n = "udpck", .p = "usbck",        .id = 7 },
+	{ .n = "pck0",  .p = "prog0",        .id = 8 },
+	{ .n = "pck1",  .p = "prog1",        .id = 9 },
+	{ .n = "pck2",  .p = "prog2",        .id = 10 },
 };
 
 static const struct {
 	char *n;
 	u8 id;
 	struct clk_range r;
+	unsigned long flags;
 } sama5d3_periphck[] = {
 	{ .n = "dbgu_clk", .id = 2, },
 	{ .n = "hsmc_clk", .id = 5, },
@@ -97,7 +105,11 @@ static const struct {
 	{ .n = "tdes_clk", .id = 44, },
 	{ .n = "trng_clk", .id = 45, },
 	{ .n = "fuse_clk", .id = 48, },
-	{ .n = "mpddr_clk", .id = 49, },
+	/*
+	 * mpddr_clk feeds DDR controller and is enabled by bootloader thus we
+	 * need to keep it enabled in case there is no Linux consumer for it.
+	 */
+	{ .n = "mpddr_clk", .id = 49, .flags = CLK_IS_CRITICAL },
 };
 
 static void __init sama5d3_pmc_setup(struct device_node *np)
@@ -170,9 +182,18 @@ static void __init sama5d3_pmc_setup(struct device_node *np)
 	parent_names[1] = "mainck";
 	parent_names[2] = "plladivck";
 	parent_names[3] = "utmick";
-	hw = at91_clk_register_master(regmap, "masterck", 4, parent_names,
-				      &at91sam9x5_master_layout,
-				      &mck_characteristics);
+	hw = at91_clk_register_master_pres(regmap, "masterck_pres", 4,
+					   parent_names,
+					   &at91sam9x5_master_layout,
+					   &mck_characteristics, &mck_lock);
+	if (IS_ERR(hw))
+		goto err_free;
+
+	hw = at91_clk_register_master_div(regmap, "masterck_div",
+					  "masterck_pres",
+					  &at91sam9x5_master_layout,
+					  &mck_characteristics, &mck_lock,
+					  CLK_SET_RATE_GATE, 0);
 	if (IS_ERR(hw))
 		goto err_free;
 
@@ -192,7 +213,7 @@ static void __init sama5d3_pmc_setup(struct device_node *np)
 	parent_names[1] = "mainck";
 	parent_names[2] = "plladivck";
 	parent_names[3] = "utmick";
-	parent_names[4] = "masterck";
+	parent_names[4] = "masterck_div";
 	for (i = 0; i < 3; i++) {
 		char name[6];
 
@@ -211,7 +232,8 @@ static void __init sama5d3_pmc_setup(struct device_node *np)
 	for (i = 0; i < ARRAY_SIZE(sama5d3_systemck); i++) {
 		hw = at91_clk_register_system(regmap, sama5d3_systemck[i].n,
 					      sama5d3_systemck[i].p,
-					      sama5d3_systemck[i].id);
+					      sama5d3_systemck[i].id,
+					      sama5d3_systemck[i].flags);
 		if (IS_ERR(hw))
 			goto err_free;
 
@@ -222,10 +244,11 @@ static void __init sama5d3_pmc_setup(struct device_node *np)
 		hw = at91_clk_register_sam9x5_peripheral(regmap, &pmc_pcr_lock,
 							 &sama5d3_pcr_layout,
 							 sama5d3_periphck[i].n,
-							 "masterck",
+							 "masterck_div",
 							 sama5d3_periphck[i].id,
 							 &sama5d3_periphck[i].r,
-							 INT_MIN);
+							 INT_MIN,
+							 sama5d3_periphck[i].flags);
 		if (IS_ERR(hw))
 			goto err_free;
 
@@ -243,4 +266,4 @@ err_free:
  * The TCB is used as the clocksource so its clock is needed early. This means
  * this can't be a platform driver.
  */
-CLK_OF_DECLARE_DRIVER(sama5d3_pmc, "atmel,sama5d3-pmc", sama5d3_pmc_setup);
+CLK_OF_DECLARE(sama5d3_pmc, "atmel,sama5d3-pmc", sama5d3_pmc_setup);

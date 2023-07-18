@@ -12,6 +12,7 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/pm_runtime.h>
 #include <dt-bindings/sound/sc7180-lpass.h>
 #include <sound/pcm.h>
 #include <sound/soc.h>
@@ -20,7 +21,7 @@
 #include "lpass.h"
 
 static struct snd_soc_dai_driver sc7180_lpass_cpu_dai_driver[] = {
-	[MI2S_PRIMARY] = {
+	{
 		.id = MI2S_PRIMARY,
 		.name = "Primary MI2S",
 		.playback = {
@@ -34,7 +35,8 @@ static struct snd_soc_dai_driver sc7180_lpass_cpu_dai_driver[] = {
 		},
 		.capture = {
 			.stream_name = "Primary Capture",
-			.formats = SNDRV_PCM_FMTBIT_S16,
+			.formats = SNDRV_PCM_FMTBIT_S16 |
+				SNDRV_PCM_FMTBIT_S32,
 			.rates = SNDRV_PCM_RATE_48000,
 			.rate_min	= 48000,
 			.rate_max	= 48000,
@@ -43,9 +45,7 @@ static struct snd_soc_dai_driver sc7180_lpass_cpu_dai_driver[] = {
 		},
 		.probe	= &asoc_qcom_lpass_cpu_dai_probe,
 		.ops    = &asoc_qcom_lpass_cpu_dai_ops,
-	},
-
-	[MI2S_SECONDARY] = {
+	}, {
 		.id = MI2S_SECONDARY,
 		.name = "Secondary MI2S",
 		.playback = {
@@ -59,8 +59,8 @@ static struct snd_soc_dai_driver sc7180_lpass_cpu_dai_driver[] = {
 		},
 		.probe	= &asoc_qcom_lpass_cpu_dai_probe,
 		.ops    = &asoc_qcom_lpass_cpu_dai_ops,
-	},
-	[LPASS_DP_RX] = {
+		.pcm_new = lpass_cpu_pcm_new,
+	}, {
 		.id = LPASS_DP_RX,
 		.name = "Hdmi",
 		.playback = {
@@ -96,8 +96,8 @@ static int sc7180_lpass_alloc_dma_channel(struct lpass_data *drvdata,
 			chan = find_first_zero_bit(&drvdata->dma_ch_bit_map,
 						v->rdma_channels);
 
-		if (chan >= v->rdma_channels)
-			return -EBUSY;
+			if (chan >= v->rdma_channels)
+				return -EBUSY;
 		} else {
 			chan = find_next_zero_bit(&drvdata->dma_ch_bit_map,
 					v->wrdma_channel_start +
@@ -132,6 +132,9 @@ static int sc7180_lpass_init(struct platform_device *pdev)
 
 	drvdata->clks = devm_kcalloc(dev, variant->num_clks,
 				     sizeof(*drvdata->clks), GFP_KERNEL);
+	if (!drvdata->clks)
+		return -ENOMEM;
+
 	drvdata->num_clks = variant->num_clks;
 
 	for (i = 0; i < drvdata->num_clks; i++)
@@ -157,9 +160,27 @@ static int sc7180_lpass_exit(struct platform_device *pdev)
 	struct lpass_data *drvdata = platform_get_drvdata(pdev);
 
 	clk_bulk_disable_unprepare(drvdata->num_clks, drvdata->clks);
-
 	return 0;
 }
+
+static int __maybe_unused sc7180_lpass_dev_resume(struct device *dev)
+{
+	struct lpass_data *drvdata = dev_get_drvdata(dev);
+
+	return clk_bulk_prepare_enable(drvdata->num_clks, drvdata->clks);
+}
+
+static int __maybe_unused sc7180_lpass_dev_suspend(struct device *dev)
+{
+	struct lpass_data *drvdata = dev_get_drvdata(dev);
+
+	clk_bulk_disable_unprepare(drvdata->num_clks, drvdata->clks);
+	return 0;
+}
+
+static const struct dev_pm_ops sc7180_lpass_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(sc7180_lpass_dev_suspend, sc7180_lpass_dev_resume)
+};
 
 static struct lpass_variant sc7180_data = {
 	.i2sctrl_reg_base	= 0x1000,
@@ -284,7 +305,7 @@ static struct lpass_variant sc7180_data = {
 	.free_dma_channel	= sc7180_lpass_free_dma_channel,
 };
 
-static const struct of_device_id sc7180_lpass_cpu_device_id[] = {
+static const struct of_device_id sc7180_lpass_cpu_device_id[] __maybe_unused = {
 	{.compatible = "qcom,sc7180-lpass-cpu", .data = &sc7180_data},
 	{}
 };
@@ -294,9 +315,11 @@ static struct platform_driver sc7180_lpass_cpu_platform_driver = {
 	.driver = {
 		.name = "sc7180-lpass-cpu",
 		.of_match_table = of_match_ptr(sc7180_lpass_cpu_device_id),
+		.pm = &sc7180_lpass_pm_ops,
 	},
 	.probe = asoc_qcom_lpass_cpu_platform_probe,
 	.remove = asoc_qcom_lpass_cpu_platform_remove,
+	.shutdown = asoc_qcom_lpass_cpu_platform_shutdown,
 };
 
 module_platform_driver(sc7180_lpass_cpu_platform_driver);

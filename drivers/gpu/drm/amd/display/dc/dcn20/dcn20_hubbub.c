@@ -153,13 +153,12 @@ bool hubbub2_dcc_support_pixel_format(
 	case SURFACE_PIXEL_FORMAT_GRPH_BGR101111_FIX:
 	case SURFACE_PIXEL_FORMAT_GRPH_RGB111110_FLOAT:
 	case SURFACE_PIXEL_FORMAT_GRPH_BGR101111_FLOAT:
-#if defined(CONFIG_DRM_AMD_DC_DCN3_0)
 	case SURFACE_PIXEL_FORMAT_GRPH_RGBE:
 	case SURFACE_PIXEL_FORMAT_GRPH_RGBE_ALPHA:
-#endif
 		*bytes_per_element = 4;
 		return true;
 	case SURFACE_PIXEL_FORMAT_GRPH_ARGB16161616:
+	case SURFACE_PIXEL_FORMAT_GRPH_ABGR16161616:
 	case SURFACE_PIXEL_FORMAT_GRPH_ARGB16161616F:
 	case SURFACE_PIXEL_FORMAT_GRPH_ABGR16161616F:
 		*bytes_per_element = 8;
@@ -343,11 +342,9 @@ static enum dcn_hubbub_page_table_block_size page_table_block_size_to_hw(unsigne
 	case 65536:
 		block_size = DCN_PAGE_TABLE_BLOCK_SIZE_64KB;
 		break;
-#if defined(CONFIG_DRM_AMD_DC_DCN3_0)
 	case 32768:
 		block_size = DCN_PAGE_TABLE_BLOCK_SIZE_32KB;
 		break;
-#endif
 	default:
 		ASSERT(false);
 		block_size = page_table_block_size;
@@ -503,7 +500,7 @@ void hubbub2_wm_read_state(struct hubbub *hubbub,
 		s->sr_enter = REG_READ(DCHUBBUB_ARB_ALLOW_SR_ENTER_WATERMARK_A);
 		s->sr_exit = REG_READ(DCHUBBUB_ARB_ALLOW_SR_EXIT_WATERMARK_A);
 	}
-	s->dram_clk_chanage = REG_READ(DCHUBBUB_ARB_ALLOW_DRAM_CLK_CHANGE_WATERMARK_A);
+	s->dram_clk_change = REG_READ(DCHUBBUB_ARB_ALLOW_DRAM_CLK_CHANGE_WATERMARK_A);
 
 	s = &wm->sets[1];
 	s->wm_set = 1;
@@ -514,7 +511,7 @@ void hubbub2_wm_read_state(struct hubbub *hubbub,
 		s->sr_enter = REG_READ(DCHUBBUB_ARB_ALLOW_SR_ENTER_WATERMARK_B);
 		s->sr_exit = REG_READ(DCHUBBUB_ARB_ALLOW_SR_EXIT_WATERMARK_B);
 	}
-	s->dram_clk_chanage = REG_READ(DCHUBBUB_ARB_ALLOW_DRAM_CLK_CHANGE_WATERMARK_B);
+	s->dram_clk_change = REG_READ(DCHUBBUB_ARB_ALLOW_DRAM_CLK_CHANGE_WATERMARK_B);
 
 	s = &wm->sets[2];
 	s->wm_set = 2;
@@ -525,7 +522,7 @@ void hubbub2_wm_read_state(struct hubbub *hubbub,
 		s->sr_enter = REG_READ(DCHUBBUB_ARB_ALLOW_SR_ENTER_WATERMARK_C);
 		s->sr_exit = REG_READ(DCHUBBUB_ARB_ALLOW_SR_EXIT_WATERMARK_C);
 	}
-	s->dram_clk_chanage = REG_READ(DCHUBBUB_ARB_ALLOW_DRAM_CLK_CHANGE_WATERMARK_C);
+	s->dram_clk_change = REG_READ(DCHUBBUB_ARB_ALLOW_DRAM_CLK_CHANGE_WATERMARK_C);
 
 	s = &wm->sets[3];
 	s->wm_set = 3;
@@ -536,7 +533,7 @@ void hubbub2_wm_read_state(struct hubbub *hubbub,
 		s->sr_enter = REG_READ(DCHUBBUB_ARB_ALLOW_SR_ENTER_WATERMARK_D);
 		s->sr_exit = REG_READ(DCHUBBUB_ARB_ALLOW_SR_EXIT_WATERMARK_D);
 	}
-	s->dram_clk_chanage = REG_READ(DCHUBBUB_ARB_ALLOW_DRAM_CLK_CHANGE_WATERMARK_D);
+	s->dram_clk_change = REG_READ(DCHUBBUB_ARB_ALLOW_DRAM_CLK_CHANGE_WATERMARK_D);
 }
 
 void hubbub2_get_dchub_ref_freq(struct hubbub *hubbub,
@@ -608,6 +605,26 @@ static bool hubbub2_program_watermarks(
 	return wm_pending;
 }
 
+void hubbub2_read_state(struct hubbub *hubbub, struct dcn_hubbub_state *hubbub_state)
+{
+	struct dcn20_hubbub *hubbub1 = TO_DCN20_HUBBUB(hubbub);
+
+	if (REG(DCN_VM_FAULT_ADDR_MSB))
+		hubbub_state->vm_fault_addr_msb = REG_READ(DCN_VM_FAULT_ADDR_MSB);
+
+	if (REG(DCN_VM_FAULT_ADDR_LSB))
+		hubbub_state->vm_fault_addr_msb = REG_READ(DCN_VM_FAULT_ADDR_LSB);
+
+	if (REG(DCN_VM_FAULT_CNTL))
+		REG_GET(DCN_VM_FAULT_CNTL, DCN_VM_ERROR_STATUS_MODE, &hubbub_state->vm_error_mode);
+
+	if (REG(DCN_VM_FAULT_STATUS)) {
+		 REG_GET(DCN_VM_FAULT_STATUS, DCN_VM_ERROR_STATUS, &hubbub_state->vm_error_status);
+		 REG_GET(DCN_VM_FAULT_STATUS, DCN_VM_ERROR_VMID, &hubbub_state->vm_error_vmid);
+		 REG_GET(DCN_VM_FAULT_STATUS, DCN_VM_ERROR_PIPE, &hubbub_state->vm_error_pipe);
+	}
+}
+
 static const struct hubbub_funcs hubbub2_funcs = {
 	.update_dchub = hubbub2_update_dchub,
 	.init_dchub_sys_ctx = hubbub2_init_dchub_sys_ctx,
@@ -620,6 +637,7 @@ static const struct hubbub_funcs hubbub2_funcs = {
 	.program_watermarks = hubbub2_program_watermarks,
 	.is_allow_self_refresh_enabled = hubbub1_is_allow_self_refresh_enabled,
 	.allow_self_refresh_control = hubbub1_allow_self_refresh_control,
+	.hubbub_read_state = hubbub2_read_state,
 };
 
 void hubbub2_construct(struct dcn20_hubbub *hubbub,

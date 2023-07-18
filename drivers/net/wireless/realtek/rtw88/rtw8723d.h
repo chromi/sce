@@ -41,6 +41,14 @@ struct rtw8723de_efuse {
 	u8 sub_device_id[2];
 };
 
+struct rtw8723du_efuse {
+	u8 res4[48];                    /* 0xd0 */
+	u8 vender_id[2];                /* 0x100 */
+	u8 product_id[2];               /* 0x102 */
+	u8 usb_option;                  /* 0x104 */
+	u8 mac_addr[ETH_ALEN];          /* 0x107 */
+};
+
 struct rtw8723d_efuse {
 	__le16 rtl_id;
 	u8 rsvd[2];
@@ -69,8 +77,13 @@ struct rtw8723d_efuse {
 	u8 rfe_option;
 	u8 country_code[2];
 	u8 res[3];
-	struct rtw8723de_efuse e;
+	union {
+		struct rtw8723de_efuse e;
+		struct rtw8723du_efuse u;
+	};
 };
+
+extern const struct rtw_chip_info rtw8723d_hw_spec;
 
 /* phy status page0 */
 #define GET_PHY_STAT_P0_PWDB(phy_stat)                                         \
@@ -163,6 +176,7 @@ static inline s32 iqk_mult(s32 x, s32 y, s32 *ext)
 #define REG_CCK0_SYS		0x0a00
 #define BIT_CCK_SIDE_BAND	BIT(4)
 #define REG_CCK_ANT_SEL_11N	0x0a04
+#define REG_PWRTH		0x0a08
 #define REG_CCK_FA_RST_11N	0x0a2c
 #define BIT_MASK_CCK_CNT_KEEP	BIT(12)
 #define BIT_MASK_CCK_CNT_EN	BIT(13)
@@ -175,6 +189,8 @@ static inline s32 iqk_mult(s32 x, s32 y, s32 *ext)
 #define REG_CCK_CCA_CNT_11N	0x0a60
 #define BIT_MASK_CCK_FA_MSB	GENMASK(7, 0)
 #define BIT_MASK_CCK_FA_LSB	GENMASK(15, 8)
+#define REG_PWRTH2		0x0aa8
+#define REG_CSRATIO		0x0aaa
 #define REG_OFDM_FA_HOLDC_11N	0x0c00
 #define BIT_MASK_OFDM_FA_KEEP	BIT(31)
 #define REG_BB_RX_PATH_11N	0x0c04

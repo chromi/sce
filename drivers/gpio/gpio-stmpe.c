@@ -234,6 +234,7 @@ static void stmpe_gpio_irq_mask(struct irq_data *d)
 	int mask = BIT(offset % 8);
 
 	stmpe_gpio->regs[REG_IE][regoffset] &= ~mask;
+	gpiochip_disable_irq(gc, offset);
 }
 
 static void stmpe_gpio_irq_unmask(struct irq_data *d)
@@ -244,6 +245,7 @@ static void stmpe_gpio_irq_unmask(struct irq_data *d)
 	int regoffset = offset / 8;
 	int mask = BIT(offset % 8);
 
+	gpiochip_enable_irq(gc, offset);
 	stmpe_gpio->regs[REG_IE][regoffset] |= mask;
 }
 
@@ -357,13 +359,15 @@ static void stmpe_dbg_show(struct seq_file *s, struct gpio_chip *gc)
 	}
 }
 
-static struct irq_chip stmpe_gpio_irq_chip = {
+static const struct irq_chip stmpe_gpio_irq_chip = {
 	.name			= "stmpe-gpio",
 	.irq_bus_lock		= stmpe_gpio_irq_lock,
 	.irq_bus_sync_unlock	= stmpe_gpio_irq_sync_unlock,
 	.irq_mask		= stmpe_gpio_irq_mask,
 	.irq_unmask		= stmpe_gpio_irq_unmask,
 	.irq_set_type		= stmpe_gpio_irq_set_type,
+	.flags			= IRQCHIP_IMMUTABLE,
+	GPIOCHIP_IRQ_RESOURCE_HELPERS,
 };
 
 #define MAX_GPIOS 24
@@ -449,6 +453,11 @@ static void stmpe_init_irq_valid_mask(struct gpio_chip *gc,
 	}
 }
 
+static void stmpe_gpio_disable(void *stmpe)
+{
+	stmpe_disable(stmpe, STMPE_BLOCK_GPIO);
+}
+
 static int stmpe_gpio_probe(struct platform_device *pdev)
 {
 	struct stmpe *stmpe = dev_get_drvdata(pdev->dev.parent);
@@ -461,7 +470,7 @@ static int stmpe_gpio_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	stmpe_gpio = kzalloc(sizeof(*stmpe_gpio), GFP_KERNEL);
+	stmpe_gpio = devm_kzalloc(&pdev->dev, sizeof(*stmpe_gpio), GFP_KERNEL);
 	if (!stmpe_gpio)
 		return -ENOMEM;
 
@@ -472,17 +481,7 @@ static int stmpe_gpio_probe(struct platform_device *pdev)
 	stmpe_gpio->chip = template_chip;
 	stmpe_gpio->chip.ngpio = stmpe->num_gpios;
 	stmpe_gpio->chip.parent = &pdev->dev;
-	stmpe_gpio->chip.of_node = np;
 	stmpe_gpio->chip.base = -1;
-	/*
-	 * REVISIT: this makes sure the valid mask gets allocated and
-	 * filled in when adding the gpio_chip, but the rest of the
-	 * gpio_irqchip is still filled in using the old method
-	 * in gpiochip_irqchip_add_nested() so clean this up once we
-	 * get the gpio_irqchip to initialize while adding the
-	 * gpio_chip also for threaded irqchips.
-	 */
-	stmpe_gpio->chip.irq.init_valid_mask = stmpe_init_irq_valid_mask;
 
 	if (IS_ENABLED(CONFIG_DEBUG_FS))
                 stmpe_gpio->chip.dbg_show = stmpe_dbg_show;
@@ -498,7 +497,11 @@ static int stmpe_gpio_probe(struct platform_device *pdev)
 
 	ret = stmpe_enable(stmpe, STMPE_BLOCK_GPIO);
 	if (ret)
-		goto out_free;
+		return ret;
+
+	ret = devm_add_action_or_reset(&pdev->dev, stmpe_gpio_disable, stmpe);
+	if (ret)
+		return ret;
 
 	if (irq > 0) {
 		struct gpio_irq_chip *girq;
@@ -508,11 +511,11 @@ static int stmpe_gpio_probe(struct platform_device *pdev)
 				"stmpe-gpio", stmpe_gpio);
 		if (ret) {
 			dev_err(&pdev->dev, "unable to get irq: %d\n", ret);
-			goto out_disable;
+			return ret;
 		}
 
 		girq = &stmpe_gpio->chip.irq;
-		girq->chip = &stmpe_gpio_irq_chip;
+		gpio_irq_chip_set_chip(girq, &stmpe_gpio_irq_chip);
 		/* This will let us handle the parent IRQ in the driver */
 		girq->parent_handler = NULL;
 		girq->num_parents = 0;
@@ -520,24 +523,10 @@ static int stmpe_gpio_probe(struct platform_device *pdev)
 		girq->default_type = IRQ_TYPE_NONE;
 		girq->handler = handle_simple_irq;
 		girq->threaded = true;
+		girq->init_valid_mask = stmpe_init_irq_valid_mask;
 	}
 
-	ret = gpiochip_add_data(&stmpe_gpio->chip, stmpe_gpio);
-	if (ret) {
-		dev_err(&pdev->dev, "unable to add gpiochip: %d\n", ret);
-		goto out_disable;
-	}
-
-	platform_set_drvdata(pdev, stmpe_gpio);
-
-	return 0;
-
-out_disable:
-	stmpe_disable(stmpe, STMPE_BLOCK_GPIO);
-	gpiochip_remove(&stmpe_gpio->chip);
-out_free:
-	kfree(stmpe_gpio);
-	return ret;
+	return devm_gpiochip_add_data(&pdev->dev, &stmpe_gpio->chip, stmpe_gpio);
 }
 
 static struct platform_driver stmpe_gpio_driver = {

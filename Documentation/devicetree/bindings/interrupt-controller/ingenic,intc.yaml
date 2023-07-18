@@ -4,7 +4,7 @@
 $id: http://devicetree.org/schemas/interrupt-controller/ingenic,intc.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: Ingenic SoCs interrupt controller devicetree bindings
+title: Ingenic SoCs interrupt controller
 
 maintainers:
   - Paul Cercueil <paul@crapouillou.net>
@@ -23,6 +23,7 @@ properties:
           - enum:
               - ingenic,jz4775-intc
               - ingenic,jz4770-intc
+              - ingenic,jz4760b-intc
           - const: ingenic,jz4760-intc
       - items:
           - const: ingenic,x1000-intc

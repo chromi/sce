@@ -7,6 +7,7 @@
 
 #include <linux/err.h>
 #include <linux/pm_runtime.h>
+#include <linux/sysfs.h>
 
 #include <linux/mmc/host.h>
 #include <linux/mmc/card.h>
@@ -40,9 +41,9 @@ static ssize_t info##num##_show(struct device *dev, struct device_attribute *att
 												\
 	if (num > card->num_info)								\
 		return -ENODATA;								\
-	if (!card->info[num-1][0])								\
+	if (!card->info[num - 1][0])								\
 		return 0;									\
-	return sprintf(buf, "%s\n", card->info[num-1]);						\
+	return sysfs_emit(buf, "%s\n", card->info[num - 1]);					\
 }												\
 static DEVICE_ATTR_RO(info##num)
 
@@ -225,6 +226,20 @@ static int sdio_read_cccr(struct mmc_card *card, u32 ocr)
 				card->sw_caps.sd3_drv_type |= SD_DRIVER_TYPE_C;
 			if (data & SDIO_DRIVE_SDTD)
 				card->sw_caps.sd3_drv_type |= SD_DRIVER_TYPE_D;
+
+			ret = mmc_io_rw_direct(card, 0, 0, SDIO_CCCR_INTERRUPT_EXT, 0, &data);
+			if (ret)
+				goto out;
+
+			if (data & SDIO_INTERRUPT_EXT_SAI) {
+				data |= SDIO_INTERRUPT_EXT_EAI;
+				ret = mmc_io_rw_direct(card, 1, 0, SDIO_CCCR_INTERRUPT_EXT,
+						       data, NULL);
+				if (ret)
+					goto out;
+
+				card->cccr.enable_async_irq = 1;
+			}
 		}
 
 		/* if no uhs mode ensure we check for high speed */
@@ -334,7 +349,7 @@ static int sdio_disable_4bit_bus(struct mmc_card *card)
 {
 	int err;
 
-	if (card->type == MMC_TYPE_SDIO)
+	if (mmc_card_sdio(card))
 		goto out;
 
 	if (!(card->host->caps & MMC_CAP_4_BIT_DATA))
@@ -359,7 +374,7 @@ static int sdio_enable_4bit_bus(struct mmc_card *card)
 	err = sdio_enable_wide(card);
 	if (err <= 0)
 		return err;
-	if (card->type == MMC_TYPE_SDIO)
+	if (mmc_card_sdio(card))
 		goto out;
 
 	if (card->scr.bus_widths & SD_SCR_BUS_WIDTH_4) {
@@ -414,7 +429,7 @@ static int sdio_enable_hs(struct mmc_card *card)
 	int ret;
 
 	ret = mmc_sdio_switch_hs(card, true);
-	if (ret <= 0 || card->type == MMC_TYPE_SDIO)
+	if (ret <= 0 || mmc_card_sdio(card))
 		return ret;
 
 	ret = mmc_sd_switch_hs(card);
@@ -440,7 +455,7 @@ static unsigned mmc_sdio_get_max_clock(struct mmc_card *card)
 		max_dtr = card->cis.max_dtr;
 	}
 
-	if (card->type == MMC_TYPE_SD_COMBO)
+	if (mmc_card_sd_combo(card))
 		max_dtr = min(max_dtr, mmc_sd_get_max_clock(card));
 
 	return max_dtr;
@@ -688,7 +703,7 @@ try_again:
 	    mmc_sd_get_cid(host, ocr & rocr, card->raw_cid, NULL) == 0) {
 		card->type = MMC_TYPE_SD_COMBO;
 
-		if (oldcard && (oldcard->type != MMC_TYPE_SD_COMBO ||
+		if (oldcard && (!mmc_card_sd_combo(oldcard) ||
 		    memcmp(card->raw_cid, oldcard->raw_cid, sizeof(card->raw_cid)) != 0)) {
 			err = -ENOENT;
 			goto mismatch;
@@ -696,7 +711,7 @@ try_again:
 	} else {
 		card->type = MMC_TYPE_SDIO;
 
-		if (oldcard && oldcard->type != MMC_TYPE_SDIO) {
+		if (oldcard && !mmc_card_sdio(oldcard)) {
 			err = -ENOENT;
 			goto mismatch;
 		}
@@ -707,6 +722,9 @@ try_again:
 	 */
 	if (host->ops->init_card)
 		host->ops->init_card(host, card);
+	mmc_fixup_device(card, sdio_card_init_methods);
+
+	card->ocr = ocr_card;
 
 	/*
 	 * If the host and card support UHS-I mode request the card
@@ -750,8 +768,8 @@ try_again:
 	/*
 	 * Read CSD, before selecting the card
 	 */
-	if (!oldcard && card->type == MMC_TYPE_SD_COMBO) {
-		err = mmc_sd_get_csd(host, card);
+	if (!oldcard && mmc_card_sd_combo(card)) {
+		err = mmc_sd_get_csd(card);
 		if (err)
 			goto remove;
 
@@ -820,10 +838,10 @@ try_again:
 			goto mismatch;
 		}
 	}
-	card->ocr = ocr_card;
+
 	mmc_fixup_device(card, sdio_fixup_methods);
 
-	if (card->type == MMC_TYPE_SD_COMBO) {
+	if (mmc_card_sd_combo(card)) {
 		err = mmc_sd_setup_card(host, card, oldcard != NULL);
 		/* handle as SDIO-only card if memory init failed */
 		if (err) {
@@ -937,11 +955,9 @@ static void mmc_sdio_detect(struct mmc_host *host)
 
 	/* Make sure card is powered before detecting it */
 	if (host->caps & MMC_CAP_POWER_OFF_CARD) {
-		err = pm_runtime_get_sync(&host->card->dev);
-		if (err < 0) {
-			pm_runtime_put_noidle(&host->card->dev);
+		err = pm_runtime_resume_and_get(&host->card->dev);
+		if (err < 0)
 			goto out;
-		}
 	}
 
 	mmc_claim_host(host);
@@ -985,21 +1001,37 @@ out:
  */
 static int mmc_sdio_pre_suspend(struct mmc_host *host)
 {
-	int i, err = 0;
+	int i;
 
 	for (i = 0; i < host->card->sdio_funcs; i++) {
 		struct sdio_func *func = host->card->sdio_func[i];
 		if (func && sdio_func_present(func) && func->dev.driver) {
 			const struct dev_pm_ops *pmops = func->dev.driver->pm;
-			if (!pmops || !pmops->suspend || !pmops->resume) {
+			if (!pmops || !pmops->suspend || !pmops->resume)
 				/* force removal of entire card in that case */
-				err = -ENOSYS;
-				break;
-			}
+				goto remove;
 		}
 	}
 
-	return err;
+	return 0;
+
+remove:
+	if (!mmc_card_is_removable(host)) {
+		dev_warn(mmc_dev(host),
+			 "missing suspend/resume ops for non-removable SDIO card\n");
+		/* Don't remove a non-removable card - we can't re-detect it. */
+		return 0;
+	}
+
+	/* Remove the SDIO card and let it be re-detected later on. */
+	mmc_sdio_remove(host);
+	mmc_claim_host(host);
+	mmc_detach_bus(host);
+	mmc_power_off(host);
+	mmc_release_host(host);
+	host->pm_flags = 0;
+
+	return 0;
 }
 
 /*
@@ -1011,7 +1043,7 @@ static int mmc_sdio_suspend(struct mmc_host *host)
 
 	/* Prevent processing of SDIO IRQs in suspended state. */
 	mmc_card_set_suspended(host->card);
-	cancel_delayed_work_sync(&host->sdio_irq_work);
+	cancel_work_sync(&host->sdio_irq_work);
 
 	mmc_claim_host(host);
 
@@ -1071,7 +1103,7 @@ static int mmc_sdio_resume(struct mmc_host *host)
 		if (!(host->caps2 & MMC_CAP2_SDIO_IRQ_NOTHREAD))
 			wake_up_process(host->sdio_irq_thread);
 		else if (host->caps & MMC_CAP_SDIO_IRQ)
-			queue_delayed_work(system_wq, &host->sdio_irq_work, 0);
+			schedule_work(&host->sdio_irq_work);
 	}
 
 out:

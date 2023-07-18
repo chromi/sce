@@ -13,6 +13,7 @@
 #define _ASM_X86_KVM_X86_EMULATE_H
 
 #include <asm/desc_defs.h>
+#include "fpu.h"
 
 struct x86_emulate_ctxt;
 enum x86_intercept;
@@ -88,6 +89,7 @@ struct x86_instruction_info {
 #define X86EMUL_INTERCEPTED     6 /* Intercepted by nested VMCB/VMCS */
 
 struct x86_emulate_ops {
+	void (*vm_bugged)(struct x86_emulate_ctxt *ctxt);
 	/*
 	 * read_gpr: read a general purpose register (rax - r15)
 	 *
@@ -113,16 +115,6 @@ struct x86_emulate_ops {
 			unsigned long addr, void *val,
 			unsigned int bytes,
 			struct x86_exception *fault, bool system);
-
-	/*
-	 * read_phys: Read bytes of standard (non-emulated/special) memory.
-	 *            Used for descriptor reading.
-	 *  @addr:  [IN ] Physical address from which to read.
-	 *  @val:   [OUT] Value read from memory.
-	 *  @bytes: [IN ] Number of bytes to read from memory.
-	 */
-	int (*read_phys)(struct x86_emulate_ctxt *ctxt, unsigned long addr,
-			void *val, unsigned int bytes);
 
 	/*
 	 * write_std: Write bytes of standard (non-emulated/special) memory.
@@ -205,11 +197,10 @@ struct x86_emulate_ops {
 	ulong (*get_cr)(struct x86_emulate_ctxt *ctxt, int cr);
 	int (*set_cr)(struct x86_emulate_ctxt *ctxt, int cr, ulong val);
 	int (*cpl)(struct x86_emulate_ctxt *ctxt);
-	int (*get_dr)(struct x86_emulate_ctxt *ctxt, int dr, ulong *dest);
+	void (*get_dr)(struct x86_emulate_ctxt *ctxt, int dr, ulong *dest);
 	int (*set_dr)(struct x86_emulate_ctxt *ctxt, int dr, ulong value);
-	u64 (*get_smbase)(struct x86_emulate_ctxt *ctxt);
-	void (*set_smbase)(struct x86_emulate_ctxt *ctxt, u64 smbase);
-	int (*set_msr)(struct x86_emulate_ctxt *ctxt, u32 msr_index, u64 data);
+	int (*set_msr_with_filter)(struct x86_emulate_ctxt *ctxt, u32 msr_index, u64 data);
+	int (*get_msr_with_filter)(struct x86_emulate_ctxt *ctxt, u32 msr_index, u64 *pdata);
 	int (*get_msr)(struct x86_emulate_ctxt *ctxt, u32 msr_index, u64 *pdata);
 	int (*check_pmc)(struct x86_emulate_ctxt *ctxt, u32 pmc);
 	int (*read_pmc)(struct x86_emulate_ctxt *ctxt, u32 pmc, u64 *pdata);
@@ -225,18 +216,16 @@ struct x86_emulate_ops {
 	bool (*guest_has_long_mode)(struct x86_emulate_ctxt *ctxt);
 	bool (*guest_has_movbe)(struct x86_emulate_ctxt *ctxt);
 	bool (*guest_has_fxsr)(struct x86_emulate_ctxt *ctxt);
+	bool (*guest_has_rdpid)(struct x86_emulate_ctxt *ctxt);
 
 	void (*set_nmi_mask)(struct x86_emulate_ctxt *ctxt, bool masked);
 
-	unsigned (*get_hflags)(struct x86_emulate_ctxt *ctxt);
-	void (*set_hflags)(struct x86_emulate_ctxt *ctxt, unsigned hflags);
-	int (*pre_leave_smm)(struct x86_emulate_ctxt *ctxt,
-			     const char *smstate);
-	void (*post_leave_smm)(struct x86_emulate_ctxt *ctxt);
+	bool (*is_smm)(struct x86_emulate_ctxt *ctxt);
+	bool (*is_guest_mode)(struct x86_emulate_ctxt *ctxt);
+	int (*leave_smm)(struct x86_emulate_ctxt *ctxt);
+	void (*triple_fault)(struct x86_emulate_ctxt *ctxt);
 	int (*set_xcr)(struct x86_emulate_ctxt *ctxt, u32 index, u64 xcr);
 };
-
-typedef u32 __attribute__((vector_size(16))) sse128_t;
 
 /* Type, address-of, and value of an instruction's operand. */
 struct operand {
@@ -287,11 +276,6 @@ enum x86emul_mode {
 	X86EMUL_MODE_PROT64,	/* 64-bit (long) mode.    */
 };
 
-/* These match some of the HF_* flags defined in kvm_host.h  */
-#define X86EMUL_GUEST_MASK           (1 << 5) /* VCPU is in guest-mode */
-#define X86EMUL_SMM_MASK             (1 << 6)
-#define X86EMUL_SMM_INSIDE_NMI_MASK  (1 << 7)
-
 /*
  * fastop functions are declared as taking a never-defined fastop parameter,
  * so they can't be called from C directly.
@@ -299,6 +283,18 @@ enum x86emul_mode {
 struct fastop;
 
 typedef void (*fastop_t)(struct fastop *);
+
+/*
+ * The emulator's _regs array tracks only the GPRs, i.e. excludes RIP.  RIP is
+ * tracked/accessed via _eip, and except for RIP relative addressing, which
+ * also uses _eip, RIP cannot be a register operand nor can it be an operand in
+ * a ModRM or SIB byte.
+ */
+#ifdef CONFIG_X86_64
+#define NR_EMULATOR_GPRS	16
+#else
+#define NR_EMULATOR_GPRS	8
+#endif
 
 struct x86_emulate_ctxt {
 	void *vcpu;
@@ -314,7 +310,6 @@ struct x86_emulate_ctxt {
 	int interruptibility;
 
 	bool perm_ok; /* do not check permissions if true */
-	bool ud;	/* inject an #UD if host doesn't support insn */
 	bool tf;	/* TF value before instruction (after for syscall/sysret) */
 
 	bool have_exception;
@@ -339,19 +334,15 @@ struct x86_emulate_ctxt {
 		fastop_t fop;
 	};
 	int (*check_perm)(struct x86_emulate_ctxt *ctxt);
-	/*
-	 * The following six fields are cleared together,
-	 * the rest are initialized unconditionally in x86_decode_insn
-	 * or elsewhere
-	 */
+
 	bool rip_relative;
 	u8 rex_prefix;
 	u8 lock_prefix;
 	u8 rep_prefix;
 	/* bitmaps of registers in _regs[] that can be read */
-	u32 regs_valid;
+	u16 regs_valid;
 	/* bitmaps of registers in _regs[] that have been written */
-	u32 regs_dirty;
+	u16 regs_dirty;
 	/* modrm */
 	u8 modrm;
 	u8 modrm_mod;
@@ -367,12 +358,22 @@ struct x86_emulate_ctxt {
 	struct operand src2;
 	struct operand dst;
 	struct operand memop;
-	unsigned long _regs[NR_VCPU_REGS];
+	unsigned long _regs[NR_EMULATOR_GPRS];
 	struct operand *memopp;
 	struct fetch_cache fetch;
 	struct read_cache io_read;
 	struct read_cache mem_read;
+	bool is_branch;
 };
+
+#define KVM_EMULATOR_BUG_ON(cond, ctxt)		\
+({						\
+	int __ret = (cond);			\
+						\
+	if (WARN_ON_ONCE(__ret))		\
+		ctxt->ops->vm_bugged(ctxt);	\
+	unlikely(__ret);			\
+})
 
 /* Repeat String Operation Prefix */
 #define REPE_PREFIX	0xf3
@@ -468,6 +469,7 @@ enum x86_intercept {
 	x86_intercept_clgi,
 	x86_intercept_skinit,
 	x86_intercept_rdtscp,
+	x86_intercept_rdpid,
 	x86_intercept_icebp,
 	x86_intercept_wbinvd,
 	x86_intercept_monitor,
@@ -490,7 +492,7 @@ enum x86_intercept {
 #define X86EMUL_MODE_HOST X86EMUL_MODE_PROT64
 #endif
 
-int x86_decode_insn(struct x86_emulate_ctxt *ctxt, void *insn, int insn_len);
+int x86_decode_insn(struct x86_emulate_ctxt *ctxt, void *insn, int insn_len, int emulation_type);
 bool x86_page_table_writing_insn(struct x86_emulate_ctxt *ctxt);
 #define EMULATION_FAILED -1
 #define EMULATION_OK 0
@@ -505,5 +507,36 @@ int emulate_int_real(struct x86_emulate_ctxt *ctxt, int irq);
 void emulator_invalidate_register_cache(struct x86_emulate_ctxt *ctxt);
 void emulator_writeback_register_cache(struct x86_emulate_ctxt *ctxt);
 bool emulator_can_use_gpa(struct x86_emulate_ctxt *ctxt);
+
+static inline ulong reg_read(struct x86_emulate_ctxt *ctxt, unsigned nr)
+{
+	if (KVM_EMULATOR_BUG_ON(nr >= NR_EMULATOR_GPRS, ctxt))
+		nr &= NR_EMULATOR_GPRS - 1;
+
+	if (!(ctxt->regs_valid & (1 << nr))) {
+		ctxt->regs_valid |= 1 << nr;
+		ctxt->_regs[nr] = ctxt->ops->read_gpr(ctxt, nr);
+	}
+	return ctxt->_regs[nr];
+}
+
+static inline ulong *reg_write(struct x86_emulate_ctxt *ctxt, unsigned nr)
+{
+	if (KVM_EMULATOR_BUG_ON(nr >= NR_EMULATOR_GPRS, ctxt))
+		nr &= NR_EMULATOR_GPRS - 1;
+
+	BUILD_BUG_ON(sizeof(ctxt->regs_dirty) * BITS_PER_BYTE < NR_EMULATOR_GPRS);
+	BUILD_BUG_ON(sizeof(ctxt->regs_valid) * BITS_PER_BYTE < NR_EMULATOR_GPRS);
+
+	ctxt->regs_valid |= 1 << nr;
+	ctxt->regs_dirty |= 1 << nr;
+	return &ctxt->_regs[nr];
+}
+
+static inline ulong *reg_rmw(struct x86_emulate_ctxt *ctxt, unsigned nr)
+{
+	reg_read(ctxt, nr);
+	return reg_write(ctxt, nr);
+}
 
 #endif /* _ASM_X86_KVM_X86_EMULATE_H */

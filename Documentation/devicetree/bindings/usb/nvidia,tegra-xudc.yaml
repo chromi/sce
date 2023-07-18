@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: (GPL-2.0 OR BSD-2-Clause)
 %YAML 1.2
 ---
-$id: "http://devicetree.org/schemas/usb/nvidia,tegra-xudc.yaml#"
-$schema: "http://devicetree.org/meta-schemas/core.yaml#"
+$id: http://devicetree.org/schemas/usb/nvidia,tegra-xudc.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: Device tree binding for NVIDIA Tegra XUSB device mode controller (XUDC)
+title: NVIDIA Tegra XUSB device mode controller (XUDC)
 
 description:
   The Tegra XUDC controller supports both USB 2.0 HighSpeed/FullSpeed and
@@ -22,10 +22,10 @@ properties:
           - nvidia,tegra210-xudc # For Tegra210
           - nvidia,tegra186-xudc # For Tegra186
           - nvidia,tegra194-xudc # For Tegra194
+          - nvidia,tegra234-xudc # For Tegra234
 
   reg:
     minItems: 2
-    maxItems: 3
     items:
       - description: XUSB device controller registers
       - description: XUSB device PCI Config registers
@@ -33,7 +33,6 @@ properties:
 
   reg-names:
     minItems: 2
-    maxItems: 3
     items:
       - const: base
       - const: fpci
@@ -45,7 +44,6 @@ properties:
 
   clocks:
     minItems: 4
-    maxItems: 5
     items:
       - description: Clock to enable core XUSB dev clock.
       - description: Clock to enable XUSB super speed clock.
@@ -55,13 +53,25 @@ properties:
 
   clock-names:
     minItems: 4
-    maxItems: 5
     items:
       - const: dev
       - const: ss
       - const: ss_src
       - const: fs_src
       - const: hs_src
+
+  interconnects:
+    items:
+      - description: memory read client
+      - description: memory write client
+
+  interconnect-names:
+    items:
+      - const: dma-mem # read
+      - const: write
+
+  iommus:
+    maxItems: 1
 
   power-domains:
     items:
@@ -74,7 +84,7 @@ properties:
       - const: ss
 
   nvidia,xusb-padctl:
-    $ref: /schemas/types.yaml#/definitions/phandle-array
+    $ref: /schemas/types.yaml#/definitions/phandle
     description:
       phandle to the XUSB pad controller that is used to configure the USB pads
       used by the XUDC controller.
@@ -102,6 +112,8 @@ properties:
 
   hvdd-usb-supply:
     description: USB controller power supply. Must supply 3.3 V.
+
+  dma-coherent: true
 
 required:
   - compatible
@@ -144,6 +156,7 @@ allOf:
             enum:
               - nvidia,tegra186-xudc
               - nvidia,tegra194-xudc
+              - nvidia,tegra234-xudc
     then:
       properties:
         reg:
@@ -154,6 +167,17 @@ allOf:
           maxItems: 4
         clock-names:
           maxItems: 4
+
+  - if:
+      properties:
+        compatible:
+          contains:
+            enum:
+              - nvidia,tegra194-xudc
+              - nvidia,tegra234-xudc
+    then:
+      required:
+        - dma-coherent
 
 additionalProperties: false
 

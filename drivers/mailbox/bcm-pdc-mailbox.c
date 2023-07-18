@@ -1577,7 +1577,6 @@ static int pdc_probe(struct platform_device *pdev)
 	pdcs->pdc_reg_vbase = devm_ioremap_resource(&pdev->dev, pdc_regs);
 	if (IS_ERR(pdcs->pdc_reg_vbase)) {
 		err = PTR_ERR(pdcs->pdc_reg_vbase);
-		dev_err(&pdev->dev, "Failed to map registers: %d\n", err);
 		goto cleanup_ring_pool;
 	}
 
@@ -1636,7 +1635,7 @@ static struct platform_driver pdc_mbox_driver = {
 	.remove = pdc_remove,
 	.driver = {
 		   .name = "brcm-iproc-pdc-mbox",
-		   .of_match_table = of_match_ptr(pdc_mbox_of_match),
+		   .of_match_table = pdc_mbox_of_match,
 		   },
 };
 module_platform_driver(pdc_mbox_driver);

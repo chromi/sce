@@ -24,7 +24,7 @@ The dm-zoned implementation is simple and minimizes system overhead (CPU
 and memory usage as well as storage capacity loss). For a 10TB
 host-managed disk with 256 MB zones, dm-zoned memory usage per disk
 instance is at most 4.5 MB and as little as 5 zones will be used
-internally for storing metadata and performaing reclaim operations.
+internally for storing metadata and performing reclaim operations.
 
 dm-zoned target devices are formatted and checked using the dmzadm
 utility available at:
@@ -46,7 +46,7 @@ just like conventional zones.
 The zones of the device(s) are separated into 2 types:
 
 1) Metadata zones: these are conventional zones used to store metadata.
-Metadata zones are not reported as useable capacity to the user.
+Metadata zones are not reported as usable capacity to the user.
 
 2) Data zones: all remaining zones, the vast majority of which will be
 sequential zones used exclusively to store user data. The conventional
@@ -102,7 +102,7 @@ the buffer zone assigned. If the accessed chunk has no mapping, or the
 accessed blocks are invalid, the read buffer is zeroed and the read
 operation terminated.
 
-After some time, the limited number of convnetional zones available may
+After some time, the limited number of conventional zones available may
 be exhausted (all used to map chunks or buffer sequential zones) and
 unaligned writes to unbuffered chunks become impossible. To avoid this
 situation, a reclaim process regularly scans used conventional zones and
@@ -158,7 +158,7 @@ Ex::
 	dmzadm --format /dev/sdxx /dev/sdyy
 
 
-Fomatted device(s) can be started with the dmzadm utility, too.:
+Formatted device(s) can be started with the dmzadm utility, too.:
 
 Ex::
 

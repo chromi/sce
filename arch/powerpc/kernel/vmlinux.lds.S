@@ -8,6 +8,23 @@
 #define BSS_FIRST_SECTIONS *(.bss.prominit)
 #define EMITS_PT_NOTE
 #define RO_EXCEPTION_TABLE_ALIGN	0
+#define RUNTIME_DISCARD_EXIT
+
+#define SOFT_MASK_TABLE(align)						\
+	. = ALIGN(align);						\
+	__soft_mask_table : AT(ADDR(__soft_mask_table) - LOAD_OFFSET) {	\
+		__start___soft_mask_table = .;				\
+		KEEP(*(__soft_mask_table))				\
+		__stop___soft_mask_table = .;				\
+	}
+
+#define RESTART_TABLE(align)						\
+	. = ALIGN(align);						\
+	__restart_table : AT(ADDR(__restart_table) - LOAD_OFFSET) {	\
+		__start___restart_table = .;				\
+		KEEP(*(__restart_table))				\
+		__stop___restart_table = .;				\
+	}
 
 #include <asm/page.h>
 #include <asm-generic/vmlinux.lds.h>
@@ -15,6 +32,10 @@
 #include <asm/thread_info.h>
 
 #define STRICT_ALIGN_SIZE	(1 << CONFIG_DATA_SHIFT)
+
+#if STRICT_ALIGN_SIZE < PAGE_SIZE
+#error "CONFIG_DATA_SHIFT must be >= PAGE_SHIFT"
+#endif
 
 ENTRY(_stext)
 
@@ -51,7 +72,7 @@ SECTIONS
 	.head.text : AT(ADDR(.head.text) - LOAD_OFFSET) {
 #ifdef CONFIG_PPC64
 		KEEP(*(.head.text.first_256B));
-#ifdef CONFIG_PPC_BOOK3E
+#ifdef CONFIG_PPC_BOOK3E_64
 #else
 		KEEP(*(.head.text.real_vectors));
 		*(.head.text.real_trampolines);
@@ -85,13 +106,12 @@ SECTIONS
 		ALIGN_FUNCTION();
 #endif
 		/* careful! __ftr_alt_* sections need to be close to .text */
-		*(.text.hot TEXT_MAIN .text.fixup .text.unlikely .fixup __ftr_alt_* .ref.text);
+		*(.text.hot .text.hot.* TEXT_MAIN .text.fixup .text.unlikely .text.unlikely.* .fixup __ftr_alt_* .ref.text);
 #ifdef CONFIG_PPC64
 		*(.tramp.ftrace.text);
 #endif
 		NOINSTR_TEXT
 		SCHED_TEXT
-		CPUIDLE_TEXT
 		LOCK_TEXT
 		KPROBES_TEXT
 		IRQENTRY_TEXT
@@ -104,16 +124,9 @@ SECTIONS
 		 * included with the main text sections, so put it by itself.
 		 */
 		*(.sfpr);
+		*(.text.asan.* .text.tsan.*)
 		MEM_KEEP(init.text)
 		MEM_KEEP(exit.text)
-
-#ifdef CONFIG_PPC32
-		*(.got1)
-		__got2_start = .;
-		*(.got2)
-		__got2_end = .;
-#endif /* CONFIG_PPC32 */
-
 	} :text
 
 	. = ALIGN(PAGE_SIZE);
@@ -123,7 +136,64 @@ SECTIONS
 	/* Read-only data */
 	RO_DATA(PAGE_SIZE)
 
-#ifdef CONFIG_PPC64
+#ifdef CONFIG_PPC32
+	.sdata2 : AT(ADDR(.sdata2) - LOAD_OFFSET) {
+		*(.sdata2)
+	}
+#endif
+
+	.data.rel.ro : AT(ADDR(.data.rel.ro) - LOAD_OFFSET) {
+		*(.data.rel.ro .data.rel.ro.*)
+	}
+
+	.branch_lt : AT(ADDR(.branch_lt) - LOAD_OFFSET) {
+		*(.branch_lt)
+	}
+
+#ifdef CONFIG_PPC32
+	.got1 : AT(ADDR(.got1) - LOAD_OFFSET) {
+		*(.got1)
+	}
+	.got2 : AT(ADDR(.got2) - LOAD_OFFSET) {
+		__got2_start = .;
+		*(.got2)
+		__got2_end = .;
+	}
+	.got : AT(ADDR(.got) - LOAD_OFFSET) {
+		*(.got)
+		*(.got.plt)
+	}
+	.plt : AT(ADDR(.plt) - LOAD_OFFSET) {
+		/* XXX: is .plt (and .got.plt) required? */
+		*(.plt)
+	}
+
+#else /* CONFIG_PPC32 */
+#ifndef CONFIG_PPC_KERNEL_PCREL
+	.toc1 : AT(ADDR(.toc1) - LOAD_OFFSET) {
+		*(.toc1)
+	}
+#endif
+
+	.got : AT(ADDR(.got) - LOAD_OFFSET) ALIGN(256) {
+#ifdef CONFIG_PPC_KERNEL_PCREL
+		*(.got)
+#else
+		*(.got .toc)
+#endif
+	}
+
+	SOFT_MASK_TABLE(8)
+	RESTART_TABLE(8)
+
+#ifdef CONFIG_PPC64_ELF_ABI_V1
+	.opd : AT(ADDR(.opd) - LOAD_OFFSET) {
+		__start_opd = .;
+		KEEP(*(.opd))
+		__end_opd = .;
+	}
+#endif
+
 	. = ALIGN(8);
 	__stf_entry_barrier_fixup : AT(ADDR(__stf_entry_barrier_fixup) - LOAD_OFFSET) {
 		__start___stf_entry_barrier_fixup = .;
@@ -146,6 +216,13 @@ SECTIONS
 	}
 
 	. = ALIGN(8);
+	__scv_entry_flush_fixup : AT(ADDR(__scv_entry_flush_fixup) - LOAD_OFFSET) {
+		__start___scv_entry_flush_fixup = .;
+		*(__scv_entry_flush_fixup)
+		__stop___scv_entry_flush_fixup = .;
+	}
+
+	. = ALIGN(8);
 	__stf_exit_barrier_fixup : AT(ADDR(__stf_exit_barrier_fixup) - LOAD_OFFSET) {
 		__start___stf_exit_barrier_fixup = .;
 		*(__stf_exit_barrier_fixup)
@@ -158,7 +235,7 @@ SECTIONS
 		*(__rfi_flush_fixup)
 		__stop___rfi_flush_fixup = .;
 	}
-#endif /* CONFIG_PPC64 */
+#endif /* CONFIG_PPC32 */
 
 #ifdef CONFIG_PPC_BARRIER_NOSPEC
 	. = ALIGN(8);
@@ -169,7 +246,7 @@ SECTIONS
 	}
 #endif /* CONFIG_PPC_BARRIER_NOSPEC */
 
-#ifdef CONFIG_PPC_FSL_BOOK3E
+#ifdef CONFIG_PPC_E500
 	. = ALIGN(8);
 	__spec_btb_flush_fixup : AT(ADDR(__spec_btb_flush_fixup) - LOAD_OFFSET) {
 		__start__btb_flush_fixup = .;
@@ -178,15 +255,26 @@ SECTIONS
 	}
 #endif
 
+	/*
+	 * Various code relies on __init_begin being at the strict RWX boundary.
+	 */
+	. = ALIGN(STRICT_ALIGN_SIZE);
+	__srwx_boundary = .;
+	__end_rodata = .;
+	__init_begin = .;
+
 /*
  * Init sections discarded at runtime
  */
-	. = ALIGN(STRICT_ALIGN_SIZE);
-	__init_begin = .;
-	. = ALIGN(PAGE_SIZE);
 	.init.text : AT(ADDR(.init.text) - LOAD_OFFSET) {
 		_sinittext = .;
 		INIT_TEXT
+
+		/*
+		 *.init.text might be RO so we must ensure this section ends on
+		 * a page boundary.
+		 */
+		. = ALIGN(PAGE_SIZE);
 		_einittext = .;
 #ifdef CONFIG_PPC64
 		*(.tramp.ftrace.init);
@@ -200,21 +288,9 @@ SECTIONS
 		EXIT_TEXT
 	}
 
-	.init.data : AT(ADDR(.init.data) - LOAD_OFFSET) {
-		INIT_DATA
-	}
+	. = ALIGN(PAGE_SIZE);
 
-	.init.setup : AT(ADDR(.init.setup) - LOAD_OFFSET) {
-		INIT_SETUP(16)
-	}
-
-	.initcall.init : AT(ADDR(.initcall.init) - LOAD_OFFSET) {
-		INIT_CALLS
-	}
-
-	.con_initcall.init : AT(ADDR(.con_initcall.init) - LOAD_OFFSET) {
-		CON_INITCALL
-	}
+	INIT_DATA_SECTION(16)
 
 	. = ALIGN(8);
 	__ftr_fixup : AT(ADDR(__ftr_fixup) - LOAD_OFFSET) {
@@ -242,9 +318,6 @@ SECTIONS
 		__stop___fw_ftr_fixup = .;
 	}
 #endif
-	.init.ramfs : AT(ADDR(.init.ramfs) - LOAD_OFFSET) {
-		INIT_RAM_FS
-	}
 
 	PERCPU_SECTION(L1_CACHE_BYTES)
 
@@ -258,9 +331,7 @@ SECTIONS
 	. = ALIGN(8);
 	.dynsym : AT(ADDR(.dynsym) - LOAD_OFFSET)
 	{
-#ifdef CONFIG_PPC32
 		__dynamic_symtab = .;
-#endif
 		*(.dynsym)
 	}
 	.dynstr : AT(ADDR(.dynstr) - LOAD_OFFSET) { *(.dynstr) }
@@ -296,46 +367,13 @@ SECTIONS
 	. = ALIGN(PAGE_SIZE);
 	_sdata = .;
 
+	.data : AT(ADDR(.data) - LOAD_OFFSET) {
+		DATA_DATA
+		*(.data.rel*)
 #ifdef CONFIG_PPC32
-	.data : AT(ADDR(.data) - LOAD_OFFSET) {
-		DATA_DATA
-#ifdef CONFIG_UBSAN
-		*(.data..Lubsan_data*)
-		*(.data..Lubsan_type*)
-#endif
-		*(.data.rel*)
 		*(SDATA_MAIN)
-		*(.sdata2)
-		*(.got.plt) *(.got)
-		*(.plt)
-		*(.branch_lt)
-	}
-#else
-	.data : AT(ADDR(.data) - LOAD_OFFSET) {
-		DATA_DATA
-		*(.data.rel*)
-		*(.toc1)
-		*(.branch_lt)
-	}
-
-	.opd : AT(ADDR(.opd) - LOAD_OFFSET) {
-		__start_opd = .;
-		KEEP(*(.opd))
-		__end_opd = .;
-	}
-
-	. = ALIGN(256);
-	.got : AT(ADDR(.got) - LOAD_OFFSET) {
-		__toc_start = .;
-#ifndef CONFIG_RELOCATABLE
-		__prom_init_toc_start = .;
-		arch/powerpc/kernel/prom_init.o*(.toc .got)
-		__prom_init_toc_end = .;
 #endif
-		*(.got)
-		*(.toc)
 	}
-#endif
 
 	/* The initial task and kernel stack */
 	INIT_TASK_DATA_SECTION(THREAD_ALIGN)
@@ -373,16 +411,18 @@ SECTIONS
 	_end = . ;
 	PROVIDE32 (end = .);
 
-	STABS_DEBUG
 	DWARF_DEBUG
 	ELF_DETAILS
 
 	DISCARDS
 	/DISCARD/ : {
 		*(*.EMB.apuinfo)
-		*(.glink .iplt .plt .rela* .comment)
+		*(.glink .iplt .plt)
 		*(.gnu.version*)
 		*(.gnu.attributes)
 		*(.eh_frame)
+#ifndef CONFIG_RELOCATABLE
+		*(.rela*)
+#endif
 	}
 }

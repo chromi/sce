@@ -711,7 +711,7 @@ static int tegra210_emc_cd_set_state(struct thermal_cooling_device *cd,
 	return 0;
 }
 
-static struct thermal_cooling_device_ops tegra210_emc_cd_ops = {
+static const struct thermal_cooling_device_ops tegra210_emc_cd_ops = {
 	.get_max_state = tegra210_emc_cd_max_state,
 	.get_cur_state = tegra210_emc_cd_get_state,
 	.set_cur_state = tegra210_emc_cd_set_state,
@@ -1621,20 +1621,7 @@ static int tegra210_emc_debug_available_rates_show(struct seq_file *s,
 
 	return 0;
 }
-
-static int tegra210_emc_debug_available_rates_open(struct inode *inode,
-						   struct file *file)
-{
-	return single_open(file, tegra210_emc_debug_available_rates_show,
-			   inode->i_private);
-}
-
-static const struct file_operations tegra210_emc_debug_available_rates_fops = {
-	.open = tegra210_emc_debug_available_rates_open,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.release = single_release,
-};
+DEFINE_SHOW_ATTRIBUTE(tegra210_emc_debug_available_rates);
 
 static int tegra210_emc_debug_min_rate_get(void *data, u64 *rate)
 {
@@ -1662,7 +1649,7 @@ static int tegra210_emc_debug_min_rate_set(void *data, u64 rate)
 	return 0;
 }
 
-DEFINE_SIMPLE_ATTRIBUTE(tegra210_emc_debug_min_rate_fops,
+DEFINE_DEBUGFS_ATTRIBUTE(tegra210_emc_debug_min_rate_fops,
 			tegra210_emc_debug_min_rate_get,
 			tegra210_emc_debug_min_rate_set, "%llu\n");
 
@@ -1692,7 +1679,7 @@ static int tegra210_emc_debug_max_rate_set(void *data, u64 rate)
 	return 0;
 }
 
-DEFINE_SIMPLE_ATTRIBUTE(tegra210_emc_debug_max_rate_fops,
+DEFINE_DEBUGFS_ATTRIBUTE(tegra210_emc_debug_max_rate_fops,
 			tegra210_emc_debug_max_rate_get,
 			tegra210_emc_debug_max_rate_set, "%llu\n");
 
@@ -1723,7 +1710,7 @@ static int tegra210_emc_debug_temperature_set(void *data, u64 temperature)
 	return 0;
 }
 
-DEFINE_SIMPLE_ATTRIBUTE(tegra210_emc_debug_temperature_fops,
+DEFINE_DEBUGFS_ATTRIBUTE(tegra210_emc_debug_temperature_fops,
 			tegra210_emc_debug_temperature_get,
 			tegra210_emc_debug_temperature_set, "%llu\n");
 
@@ -1759,10 +1746,6 @@ static void tegra210_emc_debugfs_init(struct tegra210_emc *emc)
 	}
 
 	emc->debugfs.root = debugfs_create_dir("emc", NULL);
-	if (!emc->debugfs.root) {
-		dev_err(dev, "failed to create debugfs directory\n");
-		return;
-	}
 
 	debugfs_create_file("available_rates", 0444, emc->debugfs.root, emc,
 			    &tegra210_emc_debug_available_rates_fops);
@@ -1828,7 +1811,6 @@ static int tegra210_emc_probe(struct platform_device *pdev)
 {
 	struct thermal_cooling_device *cd;
 	unsigned long current_rate;
-	struct platform_device *mc;
 	struct tegra210_emc *emc;
 	struct device_node *np;
 	unsigned int i;
@@ -1846,35 +1828,19 @@ static int tegra210_emc_probe(struct platform_device *pdev)
 	spin_lock_init(&emc->lock);
 	emc->dev = &pdev->dev;
 
-	np = of_parse_phandle(pdev->dev.of_node, "nvidia,memory-controller", 0);
-	if (!np) {
-		dev_err(&pdev->dev, "could not get memory controller\n");
-		return -ENOENT;
-	}
-
-	mc = of_find_device_by_node(np);
-	of_node_put(np);
-	if (!mc)
-		return -ENOENT;
-
-	emc->mc = platform_get_drvdata(mc);
-	if (!emc->mc) {
-		put_device(&mc->dev);
-		return -EPROBE_DEFER;
-	}
+	emc->mc = devm_tegra_memory_controller_get(&pdev->dev);
+	if (IS_ERR(emc->mc))
+		return PTR_ERR(emc->mc);
 
 	emc->regs = devm_platform_ioremap_resource(pdev, 0);
-	if (IS_ERR(emc->regs)) {
-		err = PTR_ERR(emc->regs);
-		goto put_mc;
-	}
+	if (IS_ERR(emc->regs))
+		return PTR_ERR(emc->regs);
 
 	for (i = 0; i < 2; i++) {
 		emc->channel[i] = devm_platform_ioremap_resource(pdev, 1 + i);
-		if (IS_ERR(emc->channel[i])) {
-			err = PTR_ERR(emc->channel[i]);
-			goto put_mc;
-		}
+		if (IS_ERR(emc->channel[i]))
+			return PTR_ERR(emc->channel[i]);
+
 	}
 
 	tegra210_emc_detect(emc);
@@ -1884,7 +1850,7 @@ static int tegra210_emc_probe(struct platform_device *pdev)
 	err = of_reserved_mem_device_init_by_name(emc->dev, np, "nominal");
 	if (err < 0) {
 		dev_err(emc->dev, "failed to get nominal EMC table: %d\n", err);
-		goto put_mc;
+		return err;
 	}
 
 	err = of_reserved_mem_device_init_by_name(emc->dev, np, "derated");
@@ -2015,8 +1981,7 @@ detach:
 	tegra210_clk_emc_detach(emc->clk);
 release:
 	of_reserved_mem_device_release(emc->dev);
-put_mc:
-	put_device(emc->mc->dev);
+
 	return err;
 }
 
@@ -2027,7 +1992,6 @@ static int tegra210_emc_remove(struct platform_device *pdev)
 	debugfs_remove_recursive(emc->debugfs.root);
 	tegra210_clk_emc_detach(emc->clk);
 	of_reserved_mem_device_release(emc->dev);
-	put_device(emc->mc->dev);
 
 	return 0;
 }

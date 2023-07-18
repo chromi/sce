@@ -54,9 +54,11 @@ struct mlx5i_priv {
 	struct rdma_netdev rn; /* keep this first */
 	u32 qpn;
 	bool   sub_interface;
+	u32    num_sub_interfaces;
 	u32    qkey;
 	u16    pkey_index;
 	struct mlx5i_pkey_qpn_ht *qpn_htbl;
+	struct net_device *parent_dev;
 	char  *mlx5e_priv[];
 };
 
@@ -87,10 +89,7 @@ void mlx5i_dev_cleanup(struct net_device *dev);
 int mlx5i_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd);
 
 /* Parent profile functions */
-int mlx5i_init(struct mlx5_core_dev *mdev,
-	       struct net_device *netdev,
-	       const struct mlx5e_profile *profile,
-	       void *ppriv);
+int mlx5i_init(struct mlx5_core_dev *mdev, struct net_device *netdev);
 void mlx5i_cleanup(struct mlx5e_priv *priv);
 
 int mlx5i_update_nic_rx(struct mlx5e_priv *priv);
@@ -119,6 +118,10 @@ struct mlx5i_tx_wqe {
 void mlx5i_sq_xmit(struct mlx5e_txqsq *sq, struct sk_buff *skb,
 		   struct mlx5_av *av, u32 dqpn, u32 dqkey, bool xmit_more);
 void mlx5i_get_stats(struct net_device *dev, struct rtnl_link_stats64 *stats);
+
+/* Reference management for child to parent interfaces. */
+struct net_device *mlx5i_parent_get(struct net_device *netdev);
+void mlx5i_parent_put(struct net_device *netdev);
 
 #endif /* CONFIG_MLX5_CORE_IPOIB */
 #endif /* __MLX5E_IPOB_H__ */

@@ -90,6 +90,7 @@ int efx_nic_init_interrupt(struct efx_nic *efx)
 				  efx->pci_dev->irq);
 			goto fail1;
 		}
+		efx->irqs_hooked = true;
 		return 0;
 	}
 
@@ -464,7 +465,7 @@ size_t efx_nic_describe_stats(const struct efx_hw_stat_desc *desc, size_t count,
 	for_each_set_bit(index, mask, count) {
 		if (desc[index].name) {
 			if (names) {
-				strlcpy(names, desc[index].name,
+				strscpy(names, desc[index].name,
 					ETH_GSTRING_LEN);
 				names += ETH_GSTRING_LEN;
 			}

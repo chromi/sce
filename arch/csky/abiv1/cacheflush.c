@@ -4,12 +4,14 @@
 #include <linux/kernel.h>
 #include <linux/mm.h>
 #include <linux/fs.h>
+#include <linux/pagemap.h>
 #include <linux/syscalls.h>
 #include <linux/spinlock.h>
 #include <asm/page.h>
 #include <asm/cache.h>
 #include <asm/cacheflush.h>
 #include <asm/cachectl.h>
+#include <asm/tlbflush.h>
 
 #define PG_dcache_clean		PG_arch_1
 
@@ -39,6 +41,8 @@ void update_mmu_cache(struct vm_area_struct *vma, unsigned long addr,
 	unsigned long pfn = pte_pfn(*ptep);
 	struct page *page;
 
+	flush_tlb_page(vma, addr);
+
 	if (!pfn_valid(pfn))
 		return;
 
@@ -54,17 +58,6 @@ void update_mmu_cache(struct vm_area_struct *vma, unsigned long addr,
 			icache_inv_all();
 	}
 }
-
-void flush_kernel_dcache_page(struct page *page)
-{
-	struct address_space *mapping;
-
-	mapping = page_mapping_file(page);
-
-	if (!mapping || mapping_mapped(mapping))
-		dcache_wbinv_all();
-}
-EXPORT_SYMBOL(flush_kernel_dcache_page);
 
 void flush_cache_range(struct vm_area_struct *vma, unsigned long start,
 	unsigned long end)

@@ -210,7 +210,9 @@ static void jpeg_v1_0_decode_ring_insert_end(struct amdgpu_ring *ring)
  * jpeg_v1_0_decode_ring_emit_fence - emit an fence & trap command
  *
  * @ring: amdgpu_ring pointer
- * @fence: fence to emit
+ * @addr: address
+ * @seq: sequence number
+ * @flags: fence related flags
  *
  * Write a fence and a trap command to the ring.
  */
@@ -282,7 +284,9 @@ static void jpeg_v1_0_decode_ring_emit_fence(struct amdgpu_ring *ring, u64 addr,
  * jpeg_v1_0_decode_ring_emit_ib - execute indirect buffer
  *
  * @ring: amdgpu_ring pointer
+ * @job: job to retrieve vmid from
  * @ib: indirect buffer to execute
+ * @flags: unused
  *
  * Write ring commands to execute the indirect buffer.
  */
@@ -372,7 +376,7 @@ static void jpeg_v1_0_decode_ring_emit_reg_wait(struct amdgpu_ring *ring,
 static void jpeg_v1_0_decode_ring_emit_vm_flush(struct amdgpu_ring *ring,
 		unsigned vmid, uint64_t pd_addr)
 {
-	struct amdgpu_vmhub *hub = &ring->adev->vmhub[ring->funcs->vmhub];
+	struct amdgpu_vmhub *hub = &ring->adev->vmhub[ring->vm_hub];
 	uint32_t data0, data1, mask;
 
 	pd_addr = amdgpu_gmc_emit_flush_gpu_tlb(ring, vmid, pd_addr);
@@ -481,9 +485,10 @@ int jpeg_v1_0_sw_init(void *handle)
 		return r;
 
 	ring = &adev->jpeg.inst->ring_dec;
+	ring->vm_hub = AMDGPU_MMHUB_0;
 	sprintf(ring->name, "jpeg_dec");
 	r = amdgpu_ring_init(adev, ring, 512, &adev->jpeg.inst->irq,
-			     0, AMDGPU_RING_PRIO_DEFAULT);
+			     0, AMDGPU_RING_PRIO_DEFAULT, NULL);
 	if (r)
 		return r;
 
@@ -511,6 +516,7 @@ void jpeg_v1_0_sw_fini(void *handle)
  * jpeg_v1_0_start - start JPEG block
  *
  * @adev: amdgpu_device pointer
+ * @mode: SPG or DPG mode
  *
  * Setup and start the JPEG block
  */
@@ -543,7 +549,6 @@ static const struct amdgpu_ring_funcs jpeg_v1_0_decode_ring_vm_funcs = {
 	.nop = PACKET0(0x81ff, 0),
 	.support_64bit_ptrs = false,
 	.no_user_fence = true,
-	.vmhub = AMDGPU_MMHUB_0,
 	.extra_dw = 64,
 	.get_rptr = jpeg_v1_0_decode_ring_get_rptr,
 	.get_wptr = jpeg_v1_0_decode_ring_get_wptr,

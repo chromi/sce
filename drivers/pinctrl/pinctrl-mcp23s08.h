@@ -36,13 +36,13 @@ struct mcp23s08 {
 	struct mutex		lock;
 
 	struct gpio_chip	chip;
-	struct irq_chip		irq_chip;
 
 	struct regmap		*regmap;
 	struct device		*dev;
 
 	struct pinctrl_dev	*pctldev;
 	struct pinctrl_desc	pinctrl_desc;
+	struct gpio_desc        *reset_gpio;
 };
 
 extern const struct regmap_config mcp23x08_regmap;

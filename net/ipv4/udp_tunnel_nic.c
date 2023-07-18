@@ -624,6 +624,8 @@ __udp_tunnel_nic_dump_write(struct net_device *dev, unsigned int table,
 			continue;
 
 		nest = nla_nest_start(skb, ETHTOOL_A_TUNNEL_UDP_TABLE_ENTRY);
+		if (!nest)
+			return -EMSGSIZE;
 
 		if (nla_put_be16(skb, ETHTOOL_A_TUNNEL_UDP_ENTRY_PORT,
 				 utn->entries[table][j].port) ||
@@ -846,7 +848,7 @@ udp_tunnel_nic_unregister(struct net_device *dev, struct udp_tunnel_nic *utn)
 		list_for_each_entry(node, &info->shared->devices, list)
 			if (node->dev == dev)
 				break;
-		if (node->dev != dev)
+		if (list_entry_is_head(node, &info->shared->devices, list))
 			return;
 
 		list_del(&node->list);
@@ -935,7 +937,7 @@ static int __init udp_tunnel_nic_init_module(void)
 {
 	int err;
 
-	udp_tunnel_nic_workqueue = alloc_workqueue("udp_tunnel_nic", 0, 0);
+	udp_tunnel_nic_workqueue = alloc_ordered_workqueue("udp_tunnel_nic", 0);
 	if (!udp_tunnel_nic_workqueue)
 		return -ENOMEM;
 
