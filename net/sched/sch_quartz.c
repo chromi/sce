@@ -6,22 +6,22 @@
  *
  * Quartz is an AQM that aims for low queueing delay with good utilization by
  * marking SCE such that the queue periodically and briefly returns to idle. It
- * does this by marking SCE in proportion to the queueing delay, accumulated
- * across the queue busy time. The marking ramp is modulated according to the
- * target busy time, thus automatically adapting to the carried load, and
- * hovering around a suitable operating point.
+ * does this by marking SCE in proportion to the queue sojourn time,
+ * accumulated across the queue busy time. The marking ramp is modulated
+ * according to a target busy time, thus automatically adapting to the
+ * carried load.
  *
  * Parameters:
  *
- *   target       the target busy time before returning to idle
- *   interval     the period between ramp updates
- *   floor        number of packets in queue at which it's considered busy
- *   delay_limit  delay time at which all packets are marked CE or dropped
- *   limit        hard limit, in packets
- *   split_gso    if true, split GSO aggregated packets
+ *   target         the target busy time before returning to idle
+ *   interval       the period between ramp updates
+ *   floor          number of packets in queue at which it's considered busy
+ *   sojourn_limit  delay time at which all packets are marked CE or dropped
+ *   limit          hard limit, in packets
+ *   split_gso      if true, split GSO aggregated packets
  *
  * TODO
- * - research better CE strategy than fixed delay limit
+ * - only calculate sojourn once
  */
 
 #include <net/pkt_sched.h>
@@ -29,18 +29,18 @@
 #include <net/inet_ecn.h>
 
 /* AQM defaults (temporary until config code is in place) */
-#define DEFAULT_TARGET 10 * NSEC_PER_MSEC
-#define DEFAULT_INTERVAL 100 * NSEC_PER_MSEC
+#define DEFAULT_TARGET (10 * NSEC_PER_MSEC)
+#define DEFAULT_INTERVAL (100 * NSEC_PER_MSEC)
 #define DEFAULT_FLOOR 0
-#define DEFAULT_DELAY_LIMIT 50 * NSEC_PER_MSEC
+#define DEFAULT_SOJOURN_LIMIT (50 * NSEC_PER_MSEC)
 #define DEFAULT_LIMIT 1000
 #define DEFAULT_SPLIT_GSO false
 
 /* hard defines */
 #define RAMP_SHIFT 8 /* 8-10 for SCE, 26 for CE */
-#define MARK_MAX U64_MAX >> RAMP_SHIFT
+#define MARK_MAX U64_MAX
 #define RAMP_MIN 0
-#define RAMP_MAX 2 * (64 - RAMP_SHIFT)
+#define RAMP_MAX (2 * (64 - RAMP_SHIFT))
 #define RAMP_INFINITE U8_MAX
 
 #define SCE_DSCP_RTT_FAIR 3
@@ -57,12 +57,33 @@ struct quartz_params {
 	u32	target;
 	u32	interval;
 	u32	floor;
-	u32	delay_limit;
+	u32	sojourn_limit;
 	bool	split_gso;
 };
 
+struct marker {
+	u64	mark;
+	u8	ramp;
+	u8	ramp_min;
+	u8	ramp_max;
+	bool	ramp_zero;
+	bool	ramp_infinite;
+};
+
+// marker gets:
+// increment_ramp
+// decrement_ramp
+// mark_add(ktime_t busy, ktime_t sojourn)
+// random_mark
+// ktime_to_mark can be private
+// set_mark can be private, if it exists
+// set_ramp can be private, if it exists
+
 struct quartz_sched_data {
 	struct quartz_params params;
+
+	struct marker ce;
+	struct marker sce;
 
 	u8	ramp;
 	u8	ramp_max;
@@ -78,9 +99,11 @@ struct quartz_skb_cb {
 	ktime_t	enqueue_time;
 };
 
-typedef s32 (*enqueuer_t)(struct sk_buff *, struct Qdisc *, struct sk_buff **);
+typedef bool (*mark_func)(void);
 
-/**
+typedef s32 (*enqueue_func)(struct sk_buff *, struct Qdisc *, struct sk_buff **);
+
+/*
  * utility functions
  */
 
@@ -88,7 +111,7 @@ static s32 split_gso(struct sk_buff *skb,
 		     struct Qdisc *sch,
 		     struct sk_buff **to_free,
 		     int len,
-		     enqueuer_t enqueue)
+		     enqueue_func enqueue)
 {
 	struct sk_buff *segs, *nskb;
 	netdev_features_t features = netif_skb_features(skb);
@@ -130,9 +153,9 @@ static void set_enqueue_time(struct sk_buff *skb, ktime_t t)
 	quartz_cb(skb)->enqueue_time = t;
 }
 
-static s64 since_enqueue_ns(struct sk_buff *skb, ktime_t now)
+static ktime_t sojourn(struct sk_buff *skb, ktime_t now)
 {
-	return ktime_to_ns(ktime_sub(now, enqueue_time(skb)));
+	return ktime_sub(now, enqueue_time(skb));
 }
 
 static u8 dscp(struct sk_buff *skb)
@@ -179,7 +202,7 @@ static void print_qlen_bar(int len)
 #endif
 }
 
-/**
+/*
  * quartz_sched_data related functions
  */
 
@@ -231,12 +254,12 @@ static void decrement_ramp(struct quartz_sched_data *q)
 		set_ramp(q, q->ramp - 1);
 }
 
-static bool delay_limit_exceeded(struct quartz_sched_data *q,
-				 struct sk_buff *skb,
-				 ktime_t now)
+static bool sojourn_over_limit(struct quartz_sched_data *q,
+			       struct sk_buff *skb,
+			       ktime_t now)
 {
-	u32 l = q->params.delay_limit;
-	return l && since_enqueue_ns(skb, now) > l ? true : false;
+	u32 l = q->params.sojourn_limit;
+	return l && ktime_to_ns(sojourn(skb, now)) > l ? true : false;
 }
 
 static u64 random_mark(struct quartz_sched_data *q)
@@ -281,14 +304,15 @@ static void on_busy_dequeue(struct quartz_sched_data *q,
 			    ktime_t now)
 {
 	ktime_t b;
-	u64 m;
+	u64 m, i;
 
 	if (ktime_after(now, q->interval_end))
 		on_interval_end(q, now);
 
 	b = ktime_sub(now, q->busy_prior);
-	m = q->mark + (ktime_to_mark(q, b) * since_enqueue_ns(skb, now));
-	set_mark(q, m > MARK_MAX ? MARK_MAX : m);
+	i = ktime_to_mark(q, b) * ktime_to_ns(sojourn(skb, now));
+	m = (i >= (MARK_MAX - q->mark) ? MARK_MAX : q->mark + i);
+	set_mark(q, m);
 
 	q->busy_prior = now;
 }
@@ -310,7 +334,7 @@ static void on_idle(struct quartz_sched_data *q, ktime_t now)
 #endif
 }
 
-/**
+/*
  * qdisc implementation functions
  */
 
@@ -374,7 +398,7 @@ static struct sk_buff* quartz_dequeue(struct Qdisc *sch)
 
 	print_qlen_bar(len1);
 
-	if (delay_limit_exceeded(q, skb, now) && !INET_ECN_set_ce(skb) && len1) {
+	if (sojourn_over_limit(q, skb, now) && !INET_ECN_set_ce(skb) && len1) {
 		qdisc_tree_reduce_backlog(sch, 1, qdisc_pkt_len(skb));
 		qdisc_qstats_drop(sch);
 		kfree_skb(skb);
@@ -396,7 +420,7 @@ static int quartz_init(struct Qdisc *sch,
 	q->params.target = DEFAULT_TARGET;
 	q->params.interval = DEFAULT_INTERVAL;
 	q->params.floor = DEFAULT_FLOOR;
-	q->params.delay_limit = DEFAULT_DELAY_LIMIT;
+	q->params.sojourn_limit = DEFAULT_SOJOURN_LIMIT;
 	q->params.split_gso = DEFAULT_SPLIT_GSO;
 	q->ramp_max = RAMP_MAX;
 	set_ramp(q, RAMP_MIN);
