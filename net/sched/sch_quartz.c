@@ -43,6 +43,10 @@
 #define RAMP_MAX 2 * (64 - RAMP_SHIFT)
 #define RAMP_INFINITE U8_MAX
 
+#define SCE_DSCP_RTT_FAIR 3
+#define SCE_DSCP_MAX_MIN_FAIR 7
+#define SCE_DSCP_POWER_FAIR 11
+
 /* Debugging */
 //#define PRINT_EVENTS
 //#define PRINT_QLEN_BAR
@@ -129,6 +133,39 @@ static void set_enqueue_time(struct sk_buff *skb, ktime_t t)
 static s64 since_enqueue_ns(struct sk_buff *skb, ktime_t now)
 {
 	return ktime_to_ns(ktime_sub(now, enqueue_time(skb)));
+}
+
+static u8 dscp(struct sk_buff *skb)
+{
+	int l = skb_network_offset(skb);
+
+	switch (skb_protocol(skb, true)) {
+	case htons(ETH_P_IP):
+		l += sizeof(struct iphdr);
+		if (!pskb_may_pull(skb, l))
+			return 0;
+		return ipv4_get_dsfield(ip_hdr(skb)) >> 2;
+
+	case htons(ETH_P_IPV6):
+		l += sizeof(struct ipv6hdr);
+		if (!pskb_may_pull(skb, l))
+			return 0;
+		return ipv6_get_dsfield(ipv6_hdr(skb)) >> 2;
+
+	default:
+		return 0;
+	};
+}
+
+static bool is_sce_dscp(u8 dscp)
+{
+	switch (dscp) {
+	case SCE_DSCP_RTT_FAIR:
+	case SCE_DSCP_MAX_MIN_FAIR:
+	case SCE_DSCP_POWER_FAIR:
+		return true;
+	}
+	return false;
 }
 
 static void print_qlen_bar(int len)
@@ -329,7 +366,8 @@ static struct sk_buff* quartz_dequeue(struct Qdisc *sch)
 	if (len1 >= p->floor)
 		on_busy_dequeue(q, skb, now);
 
-	mark_sce_random(q, skb);
+	if (is_sce_dscp(dscp(skb)))
+		mark_sce_random(q, skb);
 
 	if (len1 == p->floor)
 		on_idle(q, now);
