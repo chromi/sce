@@ -146,7 +146,7 @@ static struct lfq_skb_cb *lfq_cb(const struct sk_buff *skb)
 
 static u8 lfq_get_dscp(struct sk_buff *skb)
 {
-	switch (tc_skb_protocol(skb)) {
+	switch (skb_protocol(skb, true)) {
 	case htons(ETH_P_IP):
 		return ipv4_get_dsfield(ip_hdr(skb)) >> 2;
 	case htons(ETH_P_IPV6):
