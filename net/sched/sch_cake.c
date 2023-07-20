@@ -2352,8 +2352,7 @@ static int cake_config_besteffort(struct Qdisc *sch)
 	cake_set_rate(b, rate, mtu,
 		      us_to_ns(q->target), us_to_ns(q->interval),
 		      q->ramp_divisor);
-	b->tin_quantum_band = 65535;
-	b->tin_quantum_prio = 65535;
+	b->tin_quantum = 65535;
 
 	return 0;
 }
