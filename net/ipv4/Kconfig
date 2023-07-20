@@ -650,27 +650,27 @@ config TCP_CONG_DCTCP
 config TCP_CONG_DCTCP_SCE
 	tristate "DataCenter TCP (DCTCP) with SCE support"
 	default n
-	---help---
-	DCTCP-SCE leverages Some Congestion Experienced (SCE) in the network to
-	provide high-fidelity feedback to the end hosts.
+	help
+	  DCTCP-SCE leverages Some Congestion Experienced (SCE) in the network to
+	  provide high-fidelity feedback to the end hosts.
 
-	Whilst based on DCTCP (see above), it adds backwards compatibility with
-	standard RFC-3168 compliant and other TCP-friendly traffic.
+	  Whilst based on DCTCP (see above), it adds backwards compatibility with
+	  standard RFC-3168 compliant and other TCP-friendly traffic.
 
 config TCP_CONG_RENO_SCE
 	tristate "NewReno TCP with SCE support"
 	default n
-	---help---
-	NewReno-SCE leverages Some Congestion Experienced (SCE) in the network to
-	provide high-fidelity feedback to the end hosts, in a backwards compatible
-	manner.  If used with SCE-ignorant endpoints and/or middleboxes, this
-	should behave similarly to NewReno.
+	help
+	  NewReno-SCE leverages Some Congestion Experienced (SCE) in the network to
+	  provide high-fidelity feedback to the end hosts, in a backwards compatible
+	  manner.  If used with SCE-ignorant endpoints and/or middleboxes, this
+	  should behave similarly to NewReno.
 
 config TCP_CONG_CUBIC_SCE
 	tristate "CUBIC TCP with SCE support"
 	default n
-	---help---
-	This is CUBIC with support for Some Congestion Experienced (SCE) signals.
+	help
+	  This is CUBIC with support for Some Congestion Experienced (SCE) signals.
 
 config TCP_CONG_LINEAR
 	tristate "LINEAR TCP"
