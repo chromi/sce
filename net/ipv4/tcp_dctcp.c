@@ -115,7 +115,7 @@ __bpf_kfunc static u32 dctcp_ssthresh(struct sock *sk)
 
 __bpf_kfunc static void dctcp_update_alpha(struct sock *sk, u32 flags)
 {
-	struct tcp_sock *tp = tcp_sk(sk);
+	const struct tcp_sock *tp = tcp_sk(sk);
 	struct dctcp *ca = inet_csk_ca(sk);
 
 	/* Expired RTT */
@@ -157,7 +157,6 @@ __bpf_kfunc static void dctcp_update_alpha(struct sock *sk, u32 flags)
 		 */
 		WRITE_ONCE(ca->dctcp_alpha, alpha);
 		dctcp_reset(tp, ca);
-		tp->snd_cwnd = dctcp_ssthresh(sk);
 	}
 }
 
@@ -185,9 +184,6 @@ __bpf_kfunc static void dctcp_cwnd_event(struct sock *sk, enum tcp_ca_event ev)
 	struct dctcp *ca = inet_csk_ca(sk);
 
 	switch (ev) {
-	case CA_EVENT_LOSS:
-		dctcp_react_to_loss(sk);
-		break;
 	case CA_EVENT_ECN_IS_CE:
 	case CA_EVENT_ECN_NO_CE:
 		dctcp_ece_ack_update(sk, ev, &ca->prior_rcv_nxt, &ca->ce_state);
@@ -248,6 +244,7 @@ static struct tcp_congestion_ops dctcp __read_mostly = {
 	.ssthresh	= dctcp_ssthresh,
 	.cong_avoid	= tcp_reno_cong_avoid,
 	.undo_cwnd	= dctcp_cwnd_undo,
+	.set_state	= dctcp_state,
 	.get_info	= dctcp_get_info,
 	.flags		= TCP_CONG_NEEDS_ECN,
 	.owner		= THIS_MODULE,
