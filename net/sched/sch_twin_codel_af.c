@@ -582,7 +582,7 @@ static u8 cnq_get_diffserv(struct sk_buff *skb)
 {
 	int wlen = skb_network_offset(skb);
 
-	switch (tc_skb_protocol(skb)) {
+	switch (skb_protocol(skb, true)) {
 	case htons(ETH_P_IP):
 		wlen += sizeof(struct iphdr);
 		if (!pskb_may_pull(skb, wlen))
