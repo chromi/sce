@@ -367,20 +367,20 @@ static void bictcp_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 			acked--;
 			ca->ack_cnt += ca->mss / 5;
 			if (ca->ack_cnt >= ca->mss) {
-				tp->snd_cwnd = min(tp->snd_cwnd + 1, tp->snd_cwnd_clamp);
+				tcp_snd_cwnd_set(tp, min(tcp_snd_cwnd(tp) + 1, tp->snd_cwnd_clamp));
 				ca->ack_cnt -= ca->mss;
 			}
-		} while(acked && tp->snd_cwnd < tp->snd_ssthresh);
+		} while(acked && tcp_snd_cwnd(tp) < tp->snd_ssthresh);
 		if (!acked)
 			return;
 	}
 	ca->ack_cnt += acked * ca->mss;
-	bictcp_update(ca, tp->snd_cwnd, acked);
+	bictcp_update(ca, tcp_snd_cwnd(tp), acked);
 	tcp_cong_avoid_ai(tp, ca->cnt, acked);
 
-	while(ca->sqrt_cnt * ca->sqrt_cnt < tp->snd_cwnd)
+	while(ca->sqrt_cnt * ca->sqrt_cnt < tcp_snd_cwnd(tp))
 		ca->sqrt_cnt++;
-	while(ca->sqrt_cnt * ca->sqrt_cnt > tp->snd_cwnd)
+	while(ca->sqrt_cnt * ca->sqrt_cnt > tcp_snd_cwnd(tp))
 		ca->sqrt_cnt--;
 }
 
@@ -388,7 +388,7 @@ static void bictcp_drop_slow_start(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
-	tp->snd_ssthresh = max(2U, min(tp->snd_ssthresh, tp->snd_cwnd / 2));
+	tp->snd_ssthresh = max(2U, min(tp->snd_ssthresh, tcp_snd_cwnd(tp) / 2));
 }
 
 static u32 bictcp_recalc_ssthresh(struct sock *sk)
@@ -399,15 +399,15 @@ static u32 bictcp_recalc_ssthresh(struct sock *sk)
 	ca->epoch_start = 0;	/* end of epoch */
 
 	/* Wmax and fast convergence */
-	if (tp->snd_cwnd < ca->last_max_cwnd && fast_convergence)
-		ca->last_max_cwnd = (tp->snd_cwnd * (BICTCP_BETA_SCALE + beta))
+	if (tcp_snd_cwnd(tp) < ca->last_max_cwnd && fast_convergence)
+		ca->last_max_cwnd = (tcp_snd_cwnd(tp) * (BICTCP_BETA_SCALE + beta))
 			/ (2 * BICTCP_BETA_SCALE);
 	else
-		ca->last_max_cwnd = tp->snd_cwnd;
+		ca->last_max_cwnd = tcp_snd_cwnd(tp);
 
 	if(0 && ca->recent_sce)
-		return max(tp->snd_cwnd - (tp->snd_cwnd >> 3), 2U);
-	return max((tp->snd_cwnd * beta) / BICTCP_BETA_SCALE, 2U);
+		return max(tcp_snd_cwnd(tp) - (tcp_snd_cwnd(tp) >> 3), 2U);
+	return max((tcp_snd_cwnd(tp) * beta) / BICTCP_BETA_SCALE, 2U);
 }
 
 static void bictcp_state(struct sock *sk, u8 new_state)
@@ -438,8 +438,8 @@ static void hystart_update(struct sock *sk, u32 delay)
 					      LINUX_MIB_TCPHYSTARTTRAINDETECT);
 				NET_ADD_STATS(sock_net(sk),
 					      LINUX_MIB_TCPHYSTARTTRAINCWND,
-					      tp->snd_cwnd);
-				tp->snd_ssthresh = tp->snd_cwnd;
+					      tcp_snd_cwnd(tp));
+				tp->snd_ssthresh = tcp_snd_cwnd(tp);
 			}
 		}
 	}
@@ -459,8 +459,8 @@ static void hystart_update(struct sock *sk, u32 delay)
 					      LINUX_MIB_TCPHYSTARTDELAYDETECT);
 				NET_ADD_STATS(sock_net(sk),
 					      LINUX_MIB_TCPHYSTARTDELAYCWND,
-					      tp->snd_cwnd);
-				tp->snd_ssthresh = tp->snd_cwnd;
+					      tcp_snd_cwnd(tp));
+				tp->snd_ssthresh = tcp_snd_cwnd(tp);
 			}
 		}
 	}
@@ -493,7 +493,7 @@ static void bictcp_acked(struct sock *sk, const struct ack_sample *sample)
 
 	/* hystart triggers when cwnd is larger than some threshold */
 	if (hystart && tcp_in_slow_start(tp) &&
-	    tp->snd_cwnd >= hystart_low_window)
+	    tcp_snd_cwnd(tp) >= hystart_low_window)
 		hystart_update(sk, delay);
 }
 
@@ -504,7 +504,7 @@ static void bictcp_handle_ack(struct sock *sk, u32 flags)
 	struct bictcp *ca = inet_csk_ca(sk);
 	u32 acked_bytes = tp->snd_una - ca->prior_snd_una;
 	u32 mss = ca->mss = inet_csk(sk)->icsk_ack.rcv_mss;
-	s32 cnt_over = mss * tp->snd_cwnd;
+	s32 cnt_over = mss * tcp_snd_cwnd(tp);
 
 	if (acked_bytes == 0 && !(flags & CA_ACK_WIN_UPDATE))
 		acked_bytes = ca->mss;
@@ -519,7 +519,7 @@ static void bictcp_handle_ack(struct sock *sk, u32 flags)
 
 #if 1 // Simplify to just halting polynomial growth on ESCE
 			ca->epoch_start = 0;
-			ca->last_max_cwnd = tp->snd_cwnd;
+			ca->last_max_cwnd = tcp_snd_cwnd(tp);
 #else
 			u64 t = now - ca->epoch_start;
 
@@ -572,13 +572,13 @@ static void bictcp_handle_ack(struct sock *sk, u32 flags)
 			/* Also step down both the inflection point and the current cwnd. */
 			/* A full cwnd of ESCE nominally results in sqrt(cwnd) reduction. */
 			ca->ack_cnt   -= acked_bytes * ca->sqrt_cnt;
-			ca->recent_sce = tp->snd_cwnd + 1;
+			ca->recent_sce = tcp_snd_cwnd(tp) + 1;
 
 			while(ca->ack_cnt <= -cnt_over) {
 				ca->ack_cnt += cnt_over;
-				if(tp->snd_cwnd > 2) {
-					tp->snd_cwnd--;
-					if(ca->sqrt_cnt * ca->sqrt_cnt >= tp->snd_cwnd)
+				if(tcp_snd_cwnd(tp) > 2) {
+					tcp_snd_cwnd_set(tp, tcp_snd_cwnd(tp) - 1);
+					if(ca->sqrt_cnt * ca->sqrt_cnt >= tcp_snd_cwnd(tp))
 						ca->sqrt_cnt--;
 					ca->last_max_cwnd--;
 				}

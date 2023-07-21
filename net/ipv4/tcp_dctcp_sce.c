@@ -69,7 +69,7 @@ static void dctcp_handle_ack(struct sock *sk, u32 flags)
 	struct dctcp *ca = inet_csk_ca(sk);
 	u32 acked_bytes = tp->snd_una - ca->prior_snd_una;
 	u32 mss = inet_csk(sk)->icsk_ack.rcv_mss;
-	s32 cnt_over = mss * tp->snd_cwnd;
+	s32 cnt_over = mss * tcp_snd_cwnd(tp);
 
 	/* If ack did not advance snd_una, count dupack as MSS size.
 	 * If ack did update window, do not count it at all.
@@ -83,31 +83,31 @@ static void dctcp_handle_ack(struct sock *sk, u32 flags)
 			/* Respond to SCE feedback - DCTCP style:
 			 * Subtract half of SCE-acked bytes from the cwnd.
 			 */
-			u32 scaled_ack = acked_bytes * tp->snd_cwnd;
+			u32 scaled_ack = acked_bytes * tcp_snd_cwnd(tp);
 
 			ca->snd_cwnd_cnt -= scaled_ack / 2;
-			ca->loss_cwnd     = tp->snd_cwnd;
+			ca->loss_cwnd     = tcp_snd_cwnd(tp);
 			tp->snd_ssthresh  = dctcp_ssthresh(sk);
 
-			ca->recent_sce    = tp->snd_cwnd + 1;
+			ca->recent_sce    = tcp_snd_cwnd(tp) + 1;
 		} else if(!tcp_in_slow_start(tp) && tcp_is_cwnd_limited(sk)) {
 			/* Reno linear growth */
 			ca->snd_cwnd_cnt += acked_bytes;
-			ca->loss_cwnd = max(ca->loss_cwnd, tp->snd_cwnd);
+			ca->loss_cwnd = max(ca->loss_cwnd, tcp_snd_cwnd(tp));
 		}
 
 		/* underflow of counter -> shrink cwnd */
 		while(ca->snd_cwnd_cnt <= -cnt_over) {
 			ca->snd_cwnd_cnt += cnt_over;
-			if(tp->snd_cwnd > 2)
-				tp->snd_cwnd--;
+			if(tcp_snd_cwnd(tp) > 2)
+				tcp_snd_cwnd_set(tp, tcp_snd_cwnd(tp) - 1);
 		}
 
 		/* overflow of counter -> grow cwnd */
 		while(ca->snd_cwnd_cnt >= cnt_over) {
 			ca->snd_cwnd_cnt -= cnt_over;
-			if(tp->snd_cwnd < tp->snd_cwnd_clamp)
-				tp->snd_cwnd++;
+			if(tcp_snd_cwnd(tp) < tp->snd_cwnd_clamp)
+				tcp_snd_cwnd_set(tp, tcp_snd_cwnd(tp) + 1);
 		}
 
 		if(ca->recent_sce)
@@ -136,9 +136,9 @@ static void dctcp_react_to_loss(struct sock *sk, u32 logdiv)
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct dctcp    *ca = inet_csk_ca(sk);
 
-	ca->loss_cwnd    = tp->snd_cwnd;
+	ca->loss_cwnd    = tcp_snd_cwnd(tp);
 	ca->snd_cwnd_cnt = 0;
-	tp->snd_cwnd     = max(tp->snd_cwnd - max(tp->snd_cwnd >> logdiv, 1U), 2U);
+	tcp_snd_cwnd_set(tp, max(tcp_snd_cwnd(tp) - max(tcp_snd_cwnd(tp) >> logdiv, 1U), 2U));
 	tp->snd_ssthresh = ca->loss_cwnd >> 1;
 }
 
