@@ -783,9 +783,6 @@ static int cnq_change(struct Qdisc *sch, struct nlattr *opt,
 	struct nlattr *tb[TCA_CAKE_MAX + 1];
 	int err;
 
-	if (!opt)
-		return -EINVAL;
-
 	err = nla_parse_nested(tb, TCA_CAKE_MAX, opt, cnq_policy, extack);
 	if (err < 0)
 		return err;
