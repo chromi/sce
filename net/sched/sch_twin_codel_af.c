@@ -203,11 +203,13 @@ static ktime_t cobalt_control(ktime_t t, u64 interval, u32 isqrt)
 	return ktime_add_ns(t, reciprocal_scale(interval, isqrt));
 }
 
+/*
 static ktime_t cobalt_reflect(ktime_t now, ktime_t t, u64 interval, u32 isqrt)
 {
 	ktime_t then = ktime_sub(ktime_add(now, now), t);
 	return ktime_add_ns(then, reciprocal_scale(interval, isqrt));
 }
+*/
 
 static bool cobalt_queue_full(struct cobalt_vars *vars,
 			      struct cobalt_params *p,
@@ -425,7 +427,7 @@ static u32 cnq_overhead(struct cnq_sched_data *q, const struct sk_buff *skb)
 		return cnq_calc_overhead(q, len, off);
 
 	/* borrowed from qdisc_pkt_len_init() */
-	hdr_len = skb_transport_header(skb);
+	hdr_len = skb_transport_offset(skb);
 
 	/* + transport layer */
 	if (likely(shinfo->gso_type & (SKB_GSO_TCPV4 | SKB_GSO_TCPV6))) {

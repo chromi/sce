@@ -515,12 +515,12 @@ static void bictcp_handle_ack(struct sock *sk, u32 flags)
 			bictcp_drop_slow_start(sk);
 		} else if ((flags & (CA_ACK_ECE|CA_ACK_ESCE)) == CA_ACK_ESCE) {
 			/* We have a block of SCE feedback */
-			u32 now = tcp_jiffies32;
 
 #if 1 // Simplify to just halting polynomial growth on ESCE
 			ca->epoch_start = 0;
 			ca->last_max_cwnd = tcp_snd_cwnd(tp);
 #else
+			u32 now = tcp_jiffies32;
 			u64 t = now - ca->epoch_start;
 
 			/* Reduce gradient of CUBIC function */
