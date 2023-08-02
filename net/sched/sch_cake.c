@@ -2277,7 +2277,7 @@ static const struct nla_policy cake_policy[TCA_CAKE_MAX + 1] = {
 	[TCA_CAKE_SPLIT_GSO]	 = { .type = NLA_U32 },
 	[TCA_CAKE_FWMARK]	 = { .type = NLA_U32 },
 	[TCA_CAKE_FWMARK_STORE]	 = { .type = NLA_U32 },
-	[TCA_CAKE_SCE]		 = { .type = NLA_U32 },
+	[TCA_CAKE_SCE]		 = { .type = NLA_U16 },
 };
 
 static void cake_set_rate(struct cake_tin_data *b, u64 rate, u32 mtu,
@@ -2732,7 +2732,7 @@ static int cake_change(struct Qdisc *sch, struct nlattr *opt,
 	}
 
 	if (tb[TCA_CAKE_SCE]) {
-		WRITE_ONCE(q->ramp_divisor, nla_get_u32(tb[TCA_CAKE_SCE]));
+		WRITE_ONCE(q->ramp_divisor, nla_get_u16(tb[TCA_CAKE_SCE]));
 		if (!!q->ramp_divisor)
 			rate_flags |= CAKE_FLAG_SCE;
 		else
@@ -2904,7 +2904,7 @@ static int cake_dump(struct Qdisc *sch, struct sk_buff *skb)
 	if (nla_put_u32(skb, TCA_CAKE_FWMARK, READ_ONCE(q->fwmark_mask)))
 		goto nla_put_failure;
 
-	if (nla_put_u32(skb, TCA_CAKE_SCE,
+	if (nla_put_u16(skb, TCA_CAKE_SCE,
 			q->ramp_divisor))
 		goto nla_put_failure;
 
