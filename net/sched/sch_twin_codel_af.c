@@ -35,6 +35,7 @@
  */
 
 #include <net/pkt_cls.h>
+#include <net/gso.h>
 #include <net/tcp.h>
 
 #define CNQ_QUEUES (65536)

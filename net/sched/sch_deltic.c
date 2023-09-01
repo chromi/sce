@@ -13,6 +13,7 @@
  */
 
 #include <net/pkt_cls.h>
+#include <net/gso.h>
 #include <net/tcp.h>
 
 struct deltic_params {
