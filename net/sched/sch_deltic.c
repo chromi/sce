@@ -2,7 +2,7 @@
 
 /* DelTiC (Delay Time Control) AQM discipline
  *
- * Copyright (C) 2022 Jonathan Morton <chromatix99@gmail.com>
+ * Copyright (C) 2022-3 Jonathan Morton <chromatix99@gmail.com>
  *
  * DelTiC is a fully time-domain AQM based on a delta-sigma control loop and
  * a numerically-controlled oscillator.  Delta-sigma means a PID controller
@@ -364,7 +364,7 @@ static int deltic_init(struct Qdisc *sch, struct nlattr *opt,
 	memset(q, 0, sizeof(*q));
 	sch->limit = 10240;
 
-	q->sig_freq = 12;	// signalling rate when accumulator == target is 12Hz
+	q->sig_freq = 1;	// signalling rate when accumulator == target is 1Hz
 	deltic_parameterise(&q->drp_params,   8, q->sig_freq);  // 125ms target for hard dropping
 	deltic_parameterise(&q->ecn_params,  40, q->sig_freq);  //  25ms target for ECN marking
 	deltic_parameterise(&q->sce_params, 200, q->sig_freq);  //   5ms target for SCE marking
