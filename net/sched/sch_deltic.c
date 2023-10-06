@@ -41,7 +41,6 @@ struct deltic_sched_data {
 	struct deltic_params	sce_params;
 	struct deltic_params	ecn_params;
 	struct deltic_params	drp_params;
-	u16	sig_freq;
 
 	/* AQM state */
 	struct deltic_vars	sce_vars;
@@ -286,11 +285,11 @@ static const struct nla_policy deltic_policy[TCA_DELTIC_MAX + 1] = {
 	[TCA_DELTIC_FREQ_SIGNAL]	= { .type = NLA_U16 },  // baseline signalling frequency for all controllers
 };
 
-static void deltic_parameterise(struct deltic_params *p, const u16 res_freq, const u16 sig_freq)
+static void deltic_parameterise(struct deltic_params *p, const u16 res_freq)
 {
 	p->resonance = res_freq;
 
-	if(res_freq && sig_freq)
+	if(res_freq)
 		p->target = NSEC_PER_SEC / res_freq;
 	else
 		p->target = NSEC_PER_SEC;
@@ -307,17 +306,14 @@ static int deltic_change(struct Qdisc *sch, struct nlattr *opt,
 	if (err < 0)
 		return err;
 
-	if (tb[TCA_DELTIC_FREQ_SIGNAL])
-		q->sig_freq = nla_get_u16(tb[TCA_DELTIC_FREQ_SIGNAL]);
-
 	if (tb[TCA_DELTIC_FREQ_DROP])
-		deltic_parameterise(&q->drp_params, nla_get_u16(tb[TCA_DELTIC_FREQ_DROP]), q->sig_freq);
+		deltic_parameterise(&q->drp_params, nla_get_u16(tb[TCA_DELTIC_FREQ_DROP]));
 
 	if (tb[TCA_DELTIC_FREQ_ECN])
-		deltic_parameterise(&q->ecn_params, nla_get_u16(tb[TCA_DELTIC_FREQ_ECN]), q->sig_freq);
+		deltic_parameterise(&q->ecn_params, nla_get_u16(tb[TCA_DELTIC_FREQ_ECN]));
 
 	if (tb[TCA_DELTIC_FREQ_SCE])
-		deltic_parameterise(&q->sce_params, nla_get_u16(tb[TCA_DELTIC_FREQ_SCE]), q->sig_freq);
+		deltic_parameterise(&q->sce_params, nla_get_u16(tb[TCA_DELTIC_FREQ_SCE]));
 
 	/* unlimited mode */
 	sch->flags |= TCQ_F_CAN_BYPASS;
@@ -332,9 +328,6 @@ static int deltic_dump(struct Qdisc *sch, struct sk_buff *skb)
 
 	opts = nla_nest_start_noflag(skb, TCA_OPTIONS);
 	if (!opts)
-		goto nla_put_failure;
-
-	if (nla_put_u16(skb, TCA_DELTIC_FREQ_SIGNAL, q->sig_freq))
 		goto nla_put_failure;
 
 	if (nla_put_u16(skb, TCA_DELTIC_FREQ_DROP, q->drp_params.resonance))
@@ -360,10 +353,9 @@ static int deltic_init(struct Qdisc *sch, struct nlattr *opt,
 	memset(q, 0, sizeof(*q));
 	sch->limit = 10240;
 
-	q->sig_freq = 1;	// signalling rate when accumulator == target is 1Hz
-	deltic_parameterise(&q->drp_params,   8, q->sig_freq);  // 125ms target for hard dropping
-	deltic_parameterise(&q->ecn_params,  40, q->sig_freq);  //  25ms target for ECN marking
-	deltic_parameterise(&q->sce_params, 200, q->sig_freq);  //   5ms target for SCE marking
+	deltic_parameterise(&q->drp_params,   8);  // 125ms target for hard dropping
+	deltic_parameterise(&q->ecn_params,  40);  //  25ms target for ECN marking
+	deltic_parameterise(&q->sce_params, 200);  //   5ms target for SCE marking
 
 //	deltic_parameterise(&q->sce_params,   0);  //  default disable SCE marking
 
