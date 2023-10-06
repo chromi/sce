@@ -17,7 +17,6 @@
 #include <net/tcp.h>
 
 struct deltic_params {
-	u32 frequency_scale;	/* product of sig_freq and resonance */
 	u32 target;		/* sojourn time in nanoseconds */
 	u16 resonance;	/* target queue depth expressed as a frequency, Hz */
 };
@@ -129,9 +128,9 @@ static bool deltic_control(struct deltic_vars *vars,
 
 	{
 		s64 delta = sojourn - vars->history;
-		s64 sigma = ns_scaled_mul(sojourn - p->target, interval) * p->resonance;
+		s64 sigma = ns_scaled_mul(sojourn - p->target, interval);
 
-		vars->accumulator += delta + sigma;
+		vars->accumulator += (delta + sigma) * p->resonance;
 		if(vars->accumulator < 0) {
 			vars->accumulator = 0;
 			vars->oscillator  = 0;
@@ -144,10 +143,10 @@ static bool deltic_control(struct deltic_vars *vars,
 	// Suppress marking below half of control target
 	if(sojourn * 2 >= p->target) {
 		// Numerically Controlled Oscillator:
-		// osc += acc * (now - then) * frequency_scale
+		// osc += acc * (now - then) * resonance
 		// Issue a mark event when osc overflows.
 
-		vars->oscillator += ns_scaled_mul(vars->accumulator, interval) * p->frequency_scale;
+		vars->oscillator += ns_scaled_mul(vars->accumulator, interval) * p->resonance;
 		if(vars->oscillator >= NSEC_PER_SEC) {
 			mark = true;
 			vars->oscillator -= NSEC_PER_SEC;
@@ -291,13 +290,10 @@ static void deltic_parameterise(struct deltic_params *p, const u16 res_freq, con
 {
 	p->resonance = res_freq;
 
-	if(res_freq && sig_freq) {
+	if(res_freq && sig_freq)
 		p->target = NSEC_PER_SEC / res_freq;
-		p->frequency_scale = res_freq * sig_freq;
-	} else {
+	else
 		p->target = NSEC_PER_SEC;
-		p->frequency_scale = 0;
-	}
 }
 
 static int deltic_change(struct Qdisc *sch, struct nlattr *opt,
