@@ -396,6 +396,40 @@ nla_put_failure:
 	return -1;
 }
 
+static int deltic_dump_stats(struct Qdisc *sch, struct gnet_dump *d)
+{
+	struct nlattr *stats = nla_nest_start_noflag(d->skb, TCA_STATS_APP);
+	struct deltic_sched_data *q = qdisc_priv(sch);
+
+	if (!stats)
+		return -1;
+
+#define PUT_STAT_U32(attr, data) do {                             \
+	if (nla_put_u32(d->skb, TCA_DELTIC_STATS_ ## attr, data)) \
+		goto nla_put_failure;                             \
+	} while (0)
+
+#define PUT_STAT_U64(attr, data) do {                             \
+	if (nla_put_u64_64bit(d->skb, TCA_DELTIC_STATS_ ## attr,  \
+				data, TCA_DELTIC_STATS_PAD))      \
+		goto nla_put_failure;                             \
+	} while (0)
+
+	PUT_STAT_U64(JITTER_EST, q->jit_vars.jitter);
+	PUT_STAT_U64(SCE_MARKS,  q->sce_marks);
+	PUT_STAT_U64( CE_MARKS,  q-> ce_marks);
+//	PUT_STAT_U64(AQM_DROPS,  q->);
+
+#undef PUT_STAT_U32
+#undef PUT_STAT_U64
+
+	return nla_nest_end(d->skb, stats);
+
+nla_put_failure:
+	nla_nest_cancel(d->skb, stats);
+	return -1;
+}
+
 static int deltic_init(struct Qdisc *sch, struct nlattr *opt,
 		    struct netlink_ext_ack *extack)
 {
@@ -443,6 +477,7 @@ static struct Qdisc_ops deltic_qdisc_ops __read_mostly = {
 	.peek		=	qdisc_peek_dequeued,
 	.change		=	deltic_change,
 	.dump		=	deltic_dump,
+	.dump_stats	=	deltic_dump_stats,
 	.init		=	deltic_init,
 	.reset		=	deltic_reset,
 	.destroy	=	deltic_destroy,
