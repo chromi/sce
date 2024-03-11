@@ -124,7 +124,7 @@ static bool deltic_control(struct deltic_vars *vars,
 	// The above simplifies by cancelling the division in slope calculation
 	// against the multiplication by the same quantity:
 
-	// acc = max(0, acc + (sojourn - last_sojourn) + (sojourn - target) * (now - then) * resonant_freq)
+	// acc = max(0, acc + ((sojourn - last_sojourn) + (sojourn - target) * (now - then)) * resonant_freq)
 
 	// Since we still multiply two fixed-point values (times in nanoseconds), we need to
 	// correct that before adding the result to other time values.  Our helper function
