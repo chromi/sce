@@ -2,7 +2,7 @@
 
 /* DelTiC (Delay Time Control) AQM discipline
  *
- * Copyright (C) 2022-3 Jonathan Morton <chromatix99@gmail.com>
+ * Copyright (C) 2022-4 Jonathan Morton <chromatix99@gmail.com>
  *
  * DelTiC is a fully time-domain AQM based on a delta-sigma control loop and
  * a numerically-controlled oscillator.  Delta-sigma means a PID controller
@@ -28,6 +28,11 @@ struct deltic_vars {
 	u64 oscillator;     // Numerically Controlled Oscillator's accumulator
 };
 
+struct deltic_jitter {
+	ktime_t timestamp;  // time of last txop or queue becoming non-empty
+	u64 jitter;         // interval-weighted moving average of jitter, in nanoseconds
+};
+
 struct deltic_skb_cb {
 	ktime_t	enqueue_time;
 };
@@ -46,6 +51,8 @@ struct deltic_sched_data {
 	struct deltic_vars	sce_vars;
 	struct deltic_vars	ecn_vars;
 	struct deltic_vars	drp_vars;
+
+	struct deltic_jitter	jit_vars;
 
 	/* resource tracking */
 	u32	backlog;
@@ -74,6 +81,12 @@ static inline s64 ns_scaled_mul(s64 a, s64 b)
 	return div64_long(ab, NSEC_PER_SEC);
 }
 
+static inline s64 ns_scaled_weight(u64 a, u64 wa, u64 b, u64 wb)
+{
+	u64 ab = a * wa + b * wb;
+	return div64_ul(ab, NSEC_PER_SEC);
+}
+
 static struct deltic_skb_cb *get_deltic_cb(const struct sk_buff *skb)
 {
 	qdisc_cb_private_validate(skb, sizeof(struct deltic_skb_cb));
@@ -86,15 +99,16 @@ static ktime_t deltic_get_enqueue_time(const struct sk_buff *skb)
 }
 
 static void deltic_set_enqueue_time(struct sk_buff *skb,
-				    ktime_t now)
+				    const ktime_t now)
 {
 	get_deltic_cb(skb)->enqueue_time = now;
 }
 
 static bool deltic_control(struct deltic_vars *vars,
-			       struct deltic_params *p,
-			       ktime_t now,
-			       struct sk_buff *skb)
+			       const struct deltic_params *p,
+			       const ktime_t now,
+			       const u64 jitter,
+			       const struct sk_buff *skb)
 {
 	// Delta-Sigma control is essentially a PID controller without the P term:
 
@@ -114,6 +128,13 @@ static bool deltic_control(struct deltic_vars *vars,
 	bool mark = false;
 	u64 sojourn = ktime_to_ns(ktime_sub(now, deltic_get_enqueue_time(skb)));
 	u64 interval = ktime_to_ns(ktime_sub(now, vars->timestamp));
+
+	// Jitter can result from the serialisation time of individual packets or aggregates thereof,
+	// or a sparse availability of transmission opportunities (eg. DOCSIS, WiFi, or FQ).
+	// We "forgive" the estimated jitter from the sojourn time of the queue to avoid emitting
+	// spurious congestion signals.  It is thus no longer necessary to explicitly calculate
+	// serialisation times, etc. for this purpose.
+	sojourn = (sojourn > jitter) ? sojourn - jitter : 0;
 
 	if(interval > NSEC_PER_SEC) {
 		// Avoid overflow risks when coming out of idle
@@ -160,6 +181,20 @@ static bool deltic_control(struct deltic_vars *vars,
 }
 
 
+static u64 deltic_jitter_estimate(struct deltic_jitter * const jit, const ktime_t now)
+{
+	// We define jitter as the typical interval between transmission opportunities, each of which results
+	// in the dequeuing of one or more packets.  Intervals during which the queue is empty are ignored.
+	// This quantity is estimated by taking an interval-weighted moving average of intervals.
+	// The calculated jitter is returned for convenience.
+	u64 interval = min((u64) max((s64) 0, (s64) ktime_to_ns(ktime_sub(now, jit->timestamp))), (u64) NSEC_PER_SEC);
+	u64 jitter = ns_scaled_weight(interval, interval, jit->jitter, NSEC_PER_SEC - interval);
+
+	jit->jitter = jitter;
+	return jitter;
+}
+
+
 static struct sk_buff* dequeue_bulk(struct deltic_sched_data *q)
 {
 	struct sk_buff *skb = q->bulk_head;
@@ -190,6 +225,9 @@ static s32 deltic_enqueue(struct sk_buff *skb, struct Qdisc *sch, struct sk_buff
 	struct deltic_sched_data *q = qdisc_priv(sch);
 	int len = qdisc_pkt_len(skb);
 	ktime_t now = ktime_get();
+
+	if(!q->backlog)  // queue just became non-empty
+		q->jit_vars.timestamp = now;
 
 	/* GSO splitting */
 	if (skb_is_gso(skb)) {
@@ -234,6 +272,7 @@ static struct sk_buff* deltic_dequeue(struct Qdisc *sch)
 	ktime_t now = ktime_get();
 	struct sk_buff *skb;
 	u32 len;
+	u64 jitter;
 	bool mark_sce, mark_ecn, drop;
 
 	if(!sch->q.qlen)
@@ -249,9 +288,11 @@ static struct sk_buff* deltic_dequeue(struct Qdisc *sch)
 	q->backlog -= (len = qdisc_pkt_len(skb));
 
 	/* AQM */
-	mark_sce = q->sce_params.resonance && deltic_control(&q->sce_vars, &q->sce_params, now, skb);
-	mark_ecn = q->ecn_params.resonance && deltic_control(&q->ecn_vars, &q->ecn_params, now, skb);
-	drop     = q->drp_params.resonance && deltic_control(&q->drp_vars, &q->drp_params, now, skb);
+	jitter   = deltic_jitter_estimate(&q->jit_vars, now);
+
+	mark_sce = q->sce_params.resonance && deltic_control(&q->sce_vars, &q->sce_params, now, jitter, skb);
+	mark_ecn = q->ecn_params.resonance && deltic_control(&q->ecn_vars, &q->ecn_params, now, jitter, skb);
+	drop     = q->drp_params.resonance && deltic_control(&q->drp_vars, &q->drp_params, now, jitter, skb);
 
 	if(mark_sce)
 		INET_ECN_set_ect1(skb);
