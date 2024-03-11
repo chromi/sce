@@ -56,6 +56,12 @@ struct deltic_sched_data {
 
 	/* resource tracking */
 	u32	backlog;
+
+	u32 	dummy;
+
+	/* statistics */
+	u64	ce_marks;
+	u64	sce_marks;
 };
 
 
@@ -294,12 +300,16 @@ static struct sk_buff* deltic_dequeue(struct Qdisc *sch)
 	mark_ecn = q->ecn_params.resonance && deltic_control(&q->ecn_vars, &q->ecn_params, now, jitter, skb);
 	drop     = q->drp_params.resonance && deltic_control(&q->drp_vars, &q->drp_params, now, jitter, skb);
 
-	if(mark_sce)
-		INET_ECN_set_ect1(skb);
+	if(mark_sce && !mark_ecn && !drop)
+		if(INET_ECN_set_ect1(skb))
+			q->sce_marks++;
 
-	if(mark_ecn)
-		if(!INET_ECN_set_ce(skb))
+	if(mark_ecn && !drop) {
+		if(INET_ECN_set_ce(skb))
+			q->ce_marks++;
+		else
 			drop = true;
+	}
 
 	/* We can't call qdisc_tree_reduce_backlog() if our qlen is 0 or HTB crashes.
 	 * Defer it for the next round.
