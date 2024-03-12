@@ -382,13 +382,13 @@ static int deltic_dump(struct Qdisc *sch, struct sk_buff *skb)
 	if (!opts)
 		goto nla_put_failure;
 
-	if (nla_put_u16(skb, TCA_DELTIC_FREQ_DROP, (q->drp_params.resonance * 60) >> FREQ_SHIFT))
+	if (nla_put_u16(skb, TCA_DELTIC_FREQ_DROP, (q->drp_params.resonance * 60 + (1 << (FREQ_SHIFT-1))) >> FREQ_SHIFT))
 		goto nla_put_failure;
 
-	if (nla_put_u16(skb, TCA_DELTIC_FREQ_ECN, (q->ecn_params.resonance * 60) >> FREQ_SHIFT))
+	if (nla_put_u16(skb, TCA_DELTIC_FREQ_ECN, (q->ecn_params.resonance * 60 + (1 << (FREQ_SHIFT-1))) >> FREQ_SHIFT))
 		goto nla_put_failure;
 
-	if (nla_put_u16(skb, TCA_DELTIC_FREQ_SCE, (q->sce_params.resonance * 60) >> FREQ_SHIFT))
+	if (nla_put_u16(skb, TCA_DELTIC_FREQ_SCE, (q->sce_params.resonance * 60 + (1 << (FREQ_SHIFT-1))) >> FREQ_SHIFT))
 		goto nla_put_failure;
 
 	return nla_nest_end(skb, opts);
