@@ -331,18 +331,18 @@ static struct sk_buff* deltic_dequeue(struct Qdisc *sch)
 /* Configuration */
 
 static const struct nla_policy deltic_policy[TCA_DELTIC_MAX + 1] = {
-	[TCA_DELTIC_FREQ_DROP]   	= { .type = NLA_U16 },  // resonance frequency (RPM) for drop controller
-	[TCA_DELTIC_FREQ_ECN]   	= { .type = NLA_U16 },  // resonance frequency (RPM) for ECN controller
-	[TCA_DELTIC_FREQ_SCE]   	= { .type = NLA_U16 },  // resonance frequency (RPM) for SCE controller
-//	[TCA_DELTIC_FREQ_SIGNAL]	= { .type = NLA_U16 },  // baseline signalling frequency for all controllers
+	[TCA_DELTIC_FREQ_DROP]   	= { .type = NLA_U32 },  // resonance frequency (16.16) for drop controller
+	[TCA_DELTIC_FREQ_ECN]   	= { .type = NLA_U32 },  // resonance frequency (16.16) for ECN controller
+	[TCA_DELTIC_FREQ_SCE]   	= { .type = NLA_U32 },  // resonance frequency (16.16) for SCE controller
+//	[TCA_DELTIC_FREQ_SIGNAL]	= { .type = NLA_U32 },  // baseline signalling frequency for all controllers
 };
 
-static void deltic_parameterise(struct deltic_params *p, const u16 res_freq)
+static void deltic_parameterise(struct deltic_params *p, const u32 res_freq)
 {
-	p->resonance = (((u32) res_freq) << FREQ_SHIFT) / 60;
+	p->resonance = res_freq;
 
 	if(res_freq)
-		p->target = div64_ul(NSEC_PER_SEC * 60ULL, res_freq);
+		p->target = div64_ul(NSEC_PER_SEC * (1ULL << FREQ_SHIFT), res_freq);
 	else
 		p->target = NSEC_PER_SEC;
 }
@@ -359,13 +359,13 @@ static int deltic_change(struct Qdisc *sch, struct nlattr *opt,
 		return err;
 
 	if (tb[TCA_DELTIC_FREQ_DROP])
-		deltic_parameterise(&q->drp_params, nla_get_u16(tb[TCA_DELTIC_FREQ_DROP]));
+		deltic_parameterise(&q->drp_params, nla_get_u32(tb[TCA_DELTIC_FREQ_DROP]));
 
 	if (tb[TCA_DELTIC_FREQ_ECN])
-		deltic_parameterise(&q->ecn_params, nla_get_u16(tb[TCA_DELTIC_FREQ_ECN]));
+		deltic_parameterise(&q->ecn_params, nla_get_u32(tb[TCA_DELTIC_FREQ_ECN]));
 
 	if (tb[TCA_DELTIC_FREQ_SCE])
-		deltic_parameterise(&q->sce_params, nla_get_u16(tb[TCA_DELTIC_FREQ_SCE]));
+		deltic_parameterise(&q->sce_params, nla_get_u32(tb[TCA_DELTIC_FREQ_SCE]));
 
 	/* unlimited mode */
 	sch->flags |= TCQ_F_CAN_BYPASS;
@@ -382,13 +382,13 @@ static int deltic_dump(struct Qdisc *sch, struct sk_buff *skb)
 	if (!opts)
 		goto nla_put_failure;
 
-	if (nla_put_u16(skb, TCA_DELTIC_FREQ_DROP, (q->drp_params.resonance * 60 + (1 << (FREQ_SHIFT-1))) >> FREQ_SHIFT))
+	if (nla_put_u16(skb, TCA_DELTIC_FREQ_DROP, q->drp_params.resonance))
 		goto nla_put_failure;
 
-	if (nla_put_u16(skb, TCA_DELTIC_FREQ_ECN, (q->ecn_params.resonance * 60 + (1 << (FREQ_SHIFT-1))) >> FREQ_SHIFT))
+	if (nla_put_u16(skb, TCA_DELTIC_FREQ_ECN, q->ecn_params.resonance))
 		goto nla_put_failure;
 
-	if (nla_put_u16(skb, TCA_DELTIC_FREQ_SCE, (q->sce_params.resonance * 60 + (1 << (FREQ_SHIFT-1))) >> FREQ_SHIFT))
+	if (nla_put_u16(skb, TCA_DELTIC_FREQ_SCE, q->sce_params.resonance))
 		goto nla_put_failure;
 
 	return nla_nest_end(skb, opts);
@@ -439,9 +439,9 @@ static int deltic_init(struct Qdisc *sch, struct nlattr *opt,
 	memset(q, 0, sizeof(*q));
 	sch->limit = 10240;
 
-	deltic_parameterise(&q->drp_params,   8);  // 125ms target for hard dropping
-	deltic_parameterise(&q->ecn_params,  40);  //  25ms target for ECN marking
-	deltic_parameterise(&q->sce_params, 200);  //   5ms target for SCE marking
+	deltic_parameterise(&q->drp_params,   8 << FREQ_SHIFT);  // 125ms target for hard dropping
+	deltic_parameterise(&q->ecn_params,  40 << FREQ_SHIFT);  //  25ms target for ECN marking
+	deltic_parameterise(&q->sce_params, 200 << FREQ_SHIFT);  //   5ms target for SCE marking
 
 //	deltic_parameterise(&q->sce_params,   0);  //  default disable SCE marking
 
