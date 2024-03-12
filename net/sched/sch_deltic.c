@@ -16,9 +16,10 @@
 #include <net/gso.h>
 #include <net/tcp.h>
 
+#define FREQ_SHIFT (16)
 struct deltic_params {
-	u32 target;		/* sojourn time in nanoseconds */
-	u16 resonance;	/* target queue depth expressed as a frequency, Hz */
+	u32 target;     /* sojourn time in nanoseconds */
+	u32 resonance;  /* target queue depth expressed as a frequency, Hz, 16.16 fixed-point */
 };
 
 struct deltic_vars {
@@ -156,7 +157,7 @@ static bool deltic_control(struct deltic_vars *vars,
 		s64 delta = sojourn - vars->history;
 		s64 sigma = ns_scaled_mul(sojourn - p->target, interval);
 
-		vars->accumulator += (delta + sigma) * p->resonance;
+		vars->accumulator += ((delta + sigma) * p->resonance) >> FREQ_SHIFT;
 		if(vars->accumulator < 0) {
 			vars->accumulator = 0;
 			vars->oscillator  = 0;
@@ -172,7 +173,7 @@ static bool deltic_control(struct deltic_vars *vars,
 		// osc += acc * (now - then) * resonance
 		// Issue a mark event when osc overflows.
 
-		vars->oscillator += ns_scaled_mul(vars->accumulator, interval) * p->resonance;
+		vars->oscillator += (ns_scaled_mul(vars->accumulator, interval) * p->resonance) >> FREQ_SHIFT;
 		if(vars->oscillator >= NSEC_PER_SEC) {
 			mark = true;
 			vars->oscillator -= NSEC_PER_SEC;
@@ -330,18 +331,18 @@ static struct sk_buff* deltic_dequeue(struct Qdisc *sch)
 /* Configuration */
 
 static const struct nla_policy deltic_policy[TCA_DELTIC_MAX + 1] = {
-	[TCA_DELTIC_FREQ_DROP]   	= { .type = NLA_U16 },  // resonance frequency for drop controller
-	[TCA_DELTIC_FREQ_ECN]   	= { .type = NLA_U16 },  // resonance frequency for ECN controller
-	[TCA_DELTIC_FREQ_SCE]   	= { .type = NLA_U16 },  // resonance frequency for SCE controller
-	[TCA_DELTIC_FREQ_SIGNAL]	= { .type = NLA_U16 },  // baseline signalling frequency for all controllers
+	[TCA_DELTIC_FREQ_DROP]   	= { .type = NLA_U16 },  // resonance frequency (RPM) for drop controller
+	[TCA_DELTIC_FREQ_ECN]   	= { .type = NLA_U16 },  // resonance frequency (RPM) for ECN controller
+	[TCA_DELTIC_FREQ_SCE]   	= { .type = NLA_U16 },  // resonance frequency (RPM) for SCE controller
+//	[TCA_DELTIC_FREQ_SIGNAL]	= { .type = NLA_U16 },  // baseline signalling frequency for all controllers
 };
 
 static void deltic_parameterise(struct deltic_params *p, const u16 res_freq)
 {
-	p->resonance = res_freq;
+	p->resonance = (((u32) res_freq) << FREQ_SHIFT) / 60;
 
 	if(res_freq)
-		p->target = NSEC_PER_SEC / res_freq;
+		p->target = div64_ul(NSEC_PER_SEC * 60ULL, res_freq);
 	else
 		p->target = NSEC_PER_SEC;
 }
@@ -381,13 +382,13 @@ static int deltic_dump(struct Qdisc *sch, struct sk_buff *skb)
 	if (!opts)
 		goto nla_put_failure;
 
-	if (nla_put_u16(skb, TCA_DELTIC_FREQ_DROP, q->drp_params.resonance))
+	if (nla_put_u16(skb, TCA_DELTIC_FREQ_DROP, (q->drp_params.resonance * 60) >> FREQ_SHIFT))
 		goto nla_put_failure;
 
-	if (nla_put_u16(skb, TCA_DELTIC_FREQ_ECN, q->ecn_params.resonance))
+	if (nla_put_u16(skb, TCA_DELTIC_FREQ_ECN, (q->ecn_params.resonance * 60) >> FREQ_SHIFT))
 		goto nla_put_failure;
 
-	if (nla_put_u16(skb, TCA_DELTIC_FREQ_SCE, q->sce_params.resonance))
+	if (nla_put_u16(skb, TCA_DELTIC_FREQ_SCE, (q->sce_params.resonance * 60) >> FREQ_SHIFT))
 		goto nla_put_failure;
 
 	return nla_nest_end(skb, opts);
