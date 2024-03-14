@@ -335,6 +335,8 @@ config NET_SCH_DELTIC
 		  mode within a Tetra Queue structure.  This is an efficient
 		  approximation to a full Fair Queuing system, in which low-
 		  latency flows are automatically isolated from high-latency ones.
+		  "Boroshne" is Ukrainian for flour, the result of grinding grain
+		  into uniformly sized particles, and the main ingredient in bread.
 
 		  To compile this driver as a module, choose M here: the module
 		  will be called sch_deltic_boroshne.
