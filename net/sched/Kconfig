@@ -297,14 +297,64 @@ config NET_SCH_CAKE
 	  If unsure, say N.
 
 config NET_SCH_DELTIC
-	tristate "DelTiC (Delay Time Control) AQM"
+	bool "Qdiscs based on DelTiC (Delay Time Control) AQM"
+	default y
 	help
-	  Say Y here if you want to use the DelTiC AQM just by itself.
+	  DelTiC is a modern, time-domain AQM.  Say Y here to select
+	  from the reference family of DelTiC-based qdiscs.
 
-	  To compile this driver as a module, choose M here: the module
-	  will be called sch_cobalt.
+	if NET_SCH_DELTIC
+		config NET_SCH_DELTIC_POLYA
+		tristate "DelTiC Polya AQM qdisc"
+		help
+		  Say Y here if you want to use the DelTiC AQM just by itself.
+		  This could be useful as a leaf qdisc in a custom QoS tree.
+		  "Polya" is Ukrainian for fields, from which all things grow.
 
-	  If unsure, say N.
+		  To compile this driver as a module, choose M here: the module
+		  will be called sch_deltic_polya.
+
+		  If unsure, say N.
+
+		config NET_SCH_DELTIC_ZERNO
+		tristate "DelTiC Zerno policing qdisc"
+		help
+		  Say Y here if you want to use the DelTiC AQM as a work-
+		  conserving shaper.  "Zerno" is Ukrainian for grain, which
+		  flows freely through the transport networks of the world.
+
+		  To compile this driver as a module, choose M here: the module
+		  will be called sch_deltic_zerno.
+
+		  If unsure, say N.
+
+		config NET_SCH_DELTIC_BOROSHNE
+		tristate "DelTiC Boroshne Approximate Fairness qdisc"
+		help
+		  Say Y here if you want to use DelTiC in Approximate Fairness
+		  mode within a Tetra Queue structure.  This is an efficient
+		  approximation to a full Fair Queuing system, in which low-
+		  latency flows are automatically isolated from high-latency ones.
+
+		  To compile this driver as a module, choose M here: the module
+		  will be called sch_deltic_boroshne.
+
+		  If unsure, say N.
+
+		config NET_SCH_DELTIC_KHLIB
+		tristate "DelTiC Khlib SQM qdisc"
+		help
+		  Say Y here if you want the full power of DelTiC, in a similar
+		  but more modern arrangement to CAKE.
+		  "Khlib" is a Ukrainian word for bread, which is considered
+		  almost sacred there; wasting it is heavily frowned upon.
+
+		  To compile this driver as a module, choose M here: the module
+		  will be called sch_deltic_khlib.
+
+		  If unsure, say N.
+
+	endif
 
 config NET_SCH_COBALT
 	tristate "COBALT AQM"

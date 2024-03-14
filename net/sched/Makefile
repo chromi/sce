@@ -56,7 +56,16 @@ obj-$(CONFIG_NET_SCH_QFQ)	+= sch_qfq.o
 obj-$(CONFIG_NET_SCH_CODEL)	+= sch_codel.o
 obj-$(CONFIG_NET_SCH_FQ_CODEL)	+= sch_fq_codel.o
 obj-$(CONFIG_NET_SCH_CAKE)	+= sch_cake.o
-obj-$(CONFIG_NET_SCH_DELTIC)	+= sch_deltic.o
+
+obj-$(CONFIG_NET_SCH_DELTIC_POLYA)	+= sch_deltic_polya.o
+obj-$(CONFIG_NET_SCH_DELTIC_ZERNO)	+= sch_deltic_zerno.o
+obj-$(CONFIG_NET_SCH_DELTIC_BOROSHNE)	+= sch_deltic_boroshne.o
+obj-$(CONFIG_NET_SCH_DELTIC_KHLIB)	+= sch_deltic_khlib.o
+sch_deltic_polya-objs		+= sch_deltic.o sch_deltic-polya.o
+sch_deltic_zerno-objs		+= sch_deltic.o sch_deltic-zerno.o
+sch_deltic_boroshne-objs	+= sch_deltic.o sch_deltic-boroshne.o
+sch_deltic_khlib-objs		+= sch_deltic.o sch_deltic-khlib.o
+
 obj-$(CONFIG_NET_SCH_COBALT)	+= sch_cobalt.o
 obj-$(CONFIG_NET_SCH_CNQ_COBALT) += sch_cnq_cobalt.o
 obj-$(CONFIG_NET_SCH_CNQ_CODEL_AF) += sch_cnq_codel_af.o
