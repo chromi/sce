@@ -348,7 +348,7 @@ static void deltic_destroy(struct Qdisc *sch)
 
 
 static struct Qdisc_ops deltic_qdisc_ops __read_mostly = {
-	.id		=	"deltic",
+	.id		=	"deltic_polya",
 	.priv_size	=	sizeof(struct deltic_sched_data),
 	.enqueue	=	deltic_enqueue,
 	.dequeue	=	deltic_dequeue,
@@ -376,4 +376,4 @@ module_init(deltic_module_init)
 module_exit(deltic_module_exit)
 MODULE_AUTHOR("Jonathan Morton");
 MODULE_LICENSE("Dual BSD/GPL");
-MODULE_DESCRIPTION("Delay Time Control (DelTiC) AQM.");
+MODULE_DESCRIPTION("DelTiC-POLYA - Delay Time Control AQM.");
