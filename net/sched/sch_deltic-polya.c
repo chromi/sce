@@ -259,13 +259,13 @@ static int deltic_dump(struct Qdisc *sch, struct sk_buff *skb)
 	if (!opts)
 		goto nla_put_failure;
 
-	if (nla_put_u16(skb, TCA_DELTIC_FREQ_DROP, q->drp_params.resonance))
+	if (nla_put_u32(skb, TCA_DELTIC_FREQ_DROP, q->drp_params.resonance))
 		goto nla_put_failure;
 
-	if (nla_put_u16(skb, TCA_DELTIC_FREQ_ECN, q->ecn_params.resonance))
+	if (nla_put_u32(skb, TCA_DELTIC_FREQ_ECN, q->ecn_params.resonance))
 		goto nla_put_failure;
 
-	if (nla_put_u16(skb, TCA_DELTIC_FREQ_SCE, q->sce_params.resonance))
+	if (nla_put_u32(skb, TCA_DELTIC_FREQ_SCE, q->sce_params.resonance))
 		goto nla_put_failure;
 
 	return nla_nest_end(skb, opts);
@@ -293,7 +293,7 @@ static int deltic_dump_stats(struct Qdisc *sch, struct gnet_dump *d)
 		goto nla_put_failure;                             \
 	} while (0)
 
-	PUT_STAT_U64(JITTER_EST, q->jit_vars.jitter);
+	PUT_STAT_U32(JITTER_EST, ns_to_us(q->jit_vars.jitter));
 	PUT_STAT_U64(SCE_MARKS,  q->sce_marks);
 	PUT_STAT_U64( CE_MARKS,  q-> ce_marks);
 //	PUT_STAT_U64(AQM_DROPS,  q->);
