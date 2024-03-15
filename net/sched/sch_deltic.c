@@ -127,5 +127,6 @@ u64 deltic_jitter_estimate(struct deltic_jitter *jit, const ktime_t now)
 	u64 jitter = ns_scaled_weight(interval, interval, jit->jitter, NSEC_PER_SEC - interval);
 
 	jit->jitter = jitter;
+	jit->timestamp = now;
 	return jitter;
 }
