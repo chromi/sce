@@ -388,7 +388,8 @@ static void bictcp_drop_slow_start(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
-	tp->snd_ssthresh = max(2U, min(tp->snd_ssthresh, tcp_snd_cwnd(tp) / 2));
+	if(tcp_in_initial_slowstart(tp))
+		tp->snd_ssthresh = max(2U, min(tp->snd_ssthresh, tcp_snd_cwnd(tp)));
 }
 
 static u32 bictcp_recalc_ssthresh(struct sock *sk)
@@ -515,10 +516,13 @@ static void bictcp_handle_ack(struct sock *sk, u32 flags)
 			bictcp_drop_slow_start(sk);
 		} else if ((flags & (CA_ACK_ECE|CA_ACK_ESCE)) == CA_ACK_ESCE) {
 			/* We have a block of SCE feedback */
+			u32 stepdown = 0;
+			u32 effective_cwnd = tcp_in_slow_start(tp) ? tp->snd_ssthresh : tcp_snd_cwnd(tp);
 
 #if 1 // Simplify to just halting polynomial growth on ESCE
 			ca->epoch_start = 0;
-			ca->last_max_cwnd = tcp_snd_cwnd(tp);
+			if(!tcp_in_slow_start(tp))
+				ca->last_max_cwnd = effective_cwnd;
 #else
 			u32 now = tcp_jiffies32;
 			u64 t = now - ca->epoch_start;
@@ -576,13 +580,15 @@ static void bictcp_handle_ack(struct sock *sk, u32 flags)
 
 			while(ca->ack_cnt <= -cnt_over) {
 				ca->ack_cnt += cnt_over;
-				if(tcp_snd_cwnd(tp) > 2) {
-					tcp_snd_cwnd_set(tp, tcp_snd_cwnd(tp) - 1);
-					if(ca->sqrt_cnt * ca->sqrt_cnt >= tcp_snd_cwnd(tp))
+				if(effective_cwnd - stepdown > 2) {
+					stepdown++;
+					if(ca->sqrt_cnt * ca->sqrt_cnt >= effective_cwnd - stepdown)
 						ca->sqrt_cnt--;
-					ca->last_max_cwnd--;
 				}
 			}
+			ca->last_max_cwnd = min(ca->last_max_cwnd, effective_cwnd - stepdown);
+			tp->snd_ssthresh  = min(tp->snd_ssthresh,  effective_cwnd - stepdown);
+			tcp_snd_cwnd_set(tp, min(tcp_snd_cwnd(tp), effective_cwnd - stepdown));
 		}
 
 		if(ca->recent_sce)
