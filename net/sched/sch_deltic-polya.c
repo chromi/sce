@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 
-/* DelTiC (Delay Time Control) AQM discipline
+/* DelTiC (Delay Time Control) AQM discipline POLYA
  *
  * Copyright (C) 2022-4 Jonathan Morton <chromatix99@gmail.com>
  *
@@ -8,7 +8,7 @@
  * a numerically-controlled oscillator.  Delta-sigma means a PID controller
  * lacking a Proportional term, with the D term accumulated into the I term.
  *
- * This qdisc implements a single queue with no built-in shaper, so that it
+ * POLYA implements a single queue with no built-in shaper, so that it
  * can be compared directly against simple AQMs like CoDel and PIE.
  */
 
