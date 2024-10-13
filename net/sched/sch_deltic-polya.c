@@ -40,7 +40,7 @@ struct deltic_sched_data {
 	/* resource tracking */
 	u32	backlog;
 
-	u32 	dummy;
+	u32 dummy;
 
 	/* statistics */
 	u64	ce_marks;
