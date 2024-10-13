@@ -18,20 +18,21 @@ struct deltic_params {
 };
 
 struct deltic_vars {
-	s64 accumulator;    // for I part of PID controller
-	u64 history;// for D part of PID controller
-	ktime_t timestamp;  // time last packet was processed
-	u64 oscillator;     // Numerically Controlled Oscillator's accumulator
+	s64     accumulator;	// for I part of PID controller
+	u64     history;		// for D part of PID controller
+	ktime_t timestamp;		// time last packet was processed
+	u64     oscillator;		// Numerically Controlled Oscillator's accumulator
 };
 
 struct deltic_jitter {
-	ktime_t timestamp;  // time of last txop or queue becoming non-empty
-	u64 jitter; // interval-weighted moving average of jitter, in nanoseconds
+	ktime_t timestamp;	// time of last txop or queue becoming non-empty
+	u64     jitter;		// interval-weighted moving average of jitter, in nanoseconds
 };
 
 struct deltic_skb_cb {
 	ktime_t enqueue_time;
-	u16 flow;
+	u16     flow;
+	bool    sparse;
 };
 
 
@@ -51,12 +52,27 @@ static inline u16 deltic_get_flow(const struct sk_buff *skb)
 	return get_deltic_cb(skb)->flow;
 }
 
+static inline bool deltic_is_sparse(const struct sk_buff *skb)
+{
+	return get_deltic_cb(skb)->sparse;
+}
+
 static inline void deltic_set_cb(struct sk_buff *skb, const ktime_t now, u16 flow)
 {
 	struct deltic_skb_cb *cb = get_deltic_cb(skb);
 
 	cb->enqueue_time = now;
 	cb->flow = flow;
+	cb->sparse = false;
+}
+
+static inline void deltic_set_cb_sparse(struct sk_buff *skb, const ktime_t now, u16 flow)
+{
+	struct deltic_skb_cb *cb = get_deltic_cb(skb);
+
+	cb->enqueue_time = now;
+	cb->flow = flow;
+	cb->sparse = true;
 }
 
 
