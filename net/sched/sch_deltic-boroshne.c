@@ -265,6 +265,7 @@ static struct sk_buff* dequeue_sparse(struct boroshne_sched_data *q)
 	return skb;
 }
 
+/*
 static void enqueue_hog(struct boroshne_sched_data *q, struct sk_buff *skb)
 {
 	u16 flow = deltic_get_flow(skb);
@@ -300,6 +301,7 @@ static void enqueue_bulk(struct boroshne_sched_data *q, struct sk_buff *skb)
 	q->bulk_tail = skb;
 	skb->next = NULL;
 }
+*/
 
 static void enqueue_quick(struct boroshne_sched_data *q, struct sk_buff *skb)
 {
