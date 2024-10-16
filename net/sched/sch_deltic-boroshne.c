@@ -612,10 +612,15 @@ static struct sk_buff* boroshne_dequeue(struct Qdisc *sch)
 /* Configuration */
 
 static const struct nla_policy boroshne_policy[TCA_DELTIC_MAX + 1] = {
-	[TCA_DELTIC_FREQ_DROP]   	= { .type = NLA_U32 },  // resonance frequency (16.16) for drop controller
-	[TCA_DELTIC_FREQ_ECN]   	= { .type = NLA_U32 },  // resonance frequency (16.16) for ECN controller
-	[TCA_DELTIC_FREQ_SCE]   	= { .type = NLA_U32 },  // resonance frequency (16.16) for SCE controller
+	[TCA_DELTIC_FREQ_DROP]		= { .type = NLA_U32 },  // resonance frequency (16.16) for drop controller
+	[TCA_DELTIC_FREQ_ECN]		= { .type = NLA_U32 },  // resonance frequency (16.16) for ECN controller
+	[TCA_DELTIC_FREQ_SCE]		= { .type = NLA_U32 },  // resonance frequency (16.16) for SCE controller
 //	[TCA_DELTIC_FREQ_SIGNAL]	= { .type = NLA_U32 },  // baseline signalling frequency for all controllers
+	[TCA_DELTIC_BASE_RATE64]	= { .type = NLA_U64 },
+	[TCA_DELTIC_ATM]			= { .type = NLA_U8 },
+	[TCA_DELTIC_OVERHEAD]		= { .type = NLA_S8 },
+	[TCA_DELTIC_RAW]			= { .type = NLA_FLAG },
+	[TCA_DELTIC_MPU]			= { .type = NLA_U16 },
 };
 
 static void boroshne_parameterise(struct deltic_params *p, const u32 res_freq)
@@ -648,12 +653,55 @@ static int boroshne_change(struct Qdisc *sch, struct nlattr *opt,
 	if (tb[TCA_DELTIC_FREQ_SCE])
 		boroshne_parameterise(&q->sce_params, nla_get_u32(tb[TCA_DELTIC_FREQ_SCE]));
 
-	/* unlimited mode */
-	sch->flags |= TCQ_F_CAN_BYPASS;
+	if (tb[TCA_DELTIC_BASE_RATE64])
+		q->rate_bps = nla_get_u64(tb[TCA_DELTIC_BASE_RATE64]);
 
+	if (tb[TCA_DELTIC_ATM]) {
+		q->rate_flags &= ~(SHAPER_FLAG_ATM | SHAPER_FLAG_PTM);
+		switch(nla_get_u8(tb[TCA_DELTIC_ATM])) {
+		case CAKE_ATM_ATM:
+			q->rate_flags |= SHAPER_FLAG_ATM;
+			break;
 
-	// TODO: configure shaper
+		case CAKE_ATM_PTM:
+			q->rate_flags |= SHAPER_FLAG_PTM;
+			break;
 
+		default:;
+		};
+	}
+
+	if (tb[TCA_DELTIC_OVERHEAD]) {
+		q->rate_overhead = nla_get_s8(tb[TCA_DELTIC_OVERHEAD]);
+		q->rate_flags |= SHAPER_FLAG_OVERHEAD;
+	}
+
+	if (tb[TCA_DELTIC_RAW] && nla_get_flag(tb[TCA_DELTIC_RAW]))
+		q->rate_flags &= ~SHAPER_FLAG_OVERHEAD;
+
+	if (tb[TCA_DELTIC_MPU])
+		q->rate_mpu = nla_get_u16(tb[TCA_DELTIC_MPU]);
+
+	if(!q->rate_bps) {
+		/* unlimited mode */
+		q->rate_ns = q->rate_shift = 0;
+		sch->flags |= TCQ_F_CAN_BYPASS;
+	} else {
+		/* convert bytes per second into nanoseconds per byte */
+		u8  rate_shft = 34;
+		u64 rate_ns = 0;
+
+		rate_ns = ((u64)NSEC_PER_SEC) << rate_shft;
+		rate_ns = div64_u64(rate_ns, max(64ULL, q->rate_bps));
+		while(!!(rate_ns >> 34)) {
+			rate_ns >>= 1;
+			rate_shft--;
+		}
+		q->rate_ns = rate_ns;
+		q->rate_shift = rate_shft;
+
+		sch->flags &= ~TCQ_F_CAN_BYPASS;
+	}
 
 	return 0;
 }
@@ -677,7 +725,24 @@ static int boroshne_dump(struct Qdisc *sch, struct sk_buff *skb)
 		goto nla_put_failure;
 
 
-	// TODO: handle shaper parameters too
+	if (nla_put_u64_64bit(skb, TCA_DELTIC_BASE_RATE64, q->rate_bps, TCA_DELTIC_PAD))
+		goto nla_put_failure;
+
+	if (nla_put_s8(skb, TCA_DELTIC_OVERHEAD, q->rate_overhead))
+		goto nla_put_failure;
+
+	if (!(q->rate_flags & SHAPER_FLAG_OVERHEAD))
+		if (nla_put_flag(skb, TCA_DELTIC_RAW))
+			goto nla_put_failure;
+
+	if (nla_put_u8(skb, TCA_DELTIC_ATM,
+	                q->rate_flags & SHAPER_FLAG_ATM ? CAKE_ATM_ATM :
+	                q->rate_flags & SHAPER_FLAG_PTM ? CAKE_ATM_PTM :
+	                0))
+		goto nla_put_failure;
+
+	if (nla_put_u16(skb, TCA_DELTIC_MPU, q->rate_mpu))
+		goto nla_put_failure;
 
 
 	return nla_nest_end(skb, opts);
