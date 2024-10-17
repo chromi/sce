@@ -466,10 +466,10 @@ static int boroshne_advance_shaper(struct boroshne_sched_data *q,
 static void boroshne_unstale_shaper(struct boroshne_sched_data *q, ktime_t now)
 {
 	if (!boroshne_total_backlog(q)) {
-		if (ktime_before(q->time_next_packet, now))
-			q->time_next_packet = now;
-		else
+		if (ktime_after(q->time_next_packet, now))
 			qdisc_watchdog_schedule_ns(&q->watchdog, q->time_next_packet);
+		else
+			q->time_next_packet = now;
 	}
 }
 
@@ -483,7 +483,7 @@ static s32 boroshne_enqueue(struct sk_buff *skb, struct Qdisc *sch, struct sk_bu
 	ktime_t now = ktime_get();
 	u32 flow;
 
-	if(!boroshne_total_backlog(q))  // queue just became non-empty
+	if(!sch->q.qlen)  // queue just became non-empty
 		q->jit_vars.timestamp = now;
 
 	/* GSO splitting */
@@ -515,14 +515,13 @@ static s32 boroshne_enqueue(struct sk_buff *skb, struct Qdisc *sch, struct sk_bu
 	/* prepare and enqueue */
 	flow = boroshne_hash(skb);
 	deltic_set_cb(skb, now, flow);
+	boroshne_unstale_shaper(q, now);
 
 	/* TODO: also handle the Bulk and Hog queues; currently this is just CNQ */
 	if(boroshne_flow_backlog(q, flow))
 		enqueue_quick(q, skb);
 	else
 		enqueue_sparse(q, skb);
-
-	boroshne_unstale_shaper(q, now);
 
 	sch->q.qlen++;
 
