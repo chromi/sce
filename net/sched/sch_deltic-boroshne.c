@@ -557,6 +557,8 @@ static struct sk_buff* boroshne_dequeue(struct Qdisc *sch)
 	u64 jitter, sojourn;
 	u64 *queue_sojourn = 0;
 	bool mark_sce, mark_ecn, drop;
+	bool quik_blocked, bulk_blocked, hogg_blocked;
+	bool quik_avail, bulk_avail, hogg_avail;
 	bool any_blocked, any_avail;
 
 	if(!sch->q.qlen)
@@ -571,20 +573,15 @@ static struct sk_buff* boroshne_dequeue(struct Qdisc *sch)
 
 	/* Sparse queue has strict priority */
 	/* Weighted Deficit Round Robin between Quick, Bulk, Hog queues */
-	{
-		bool quik_blocked, bulk_blocked, hogg_blocked;
-		bool quik_avail, bulk_avail, hogg_avail;
+	quik_blocked = q->quik_bklg && q->quik_deficit < 0;
+	bulk_blocked = q->bulk_bklg && q->bulk_deficit < 0;
+	hogg_blocked = q->hogg_bklg && q->hogg_deficit < 0;
+	any_blocked = quik_blocked || bulk_blocked || hogg_blocked;
 
-		quik_blocked = q->quik_bklg && q->quik_deficit < 0;
-		bulk_blocked = q->bulk_bklg && q->bulk_deficit < 0;
-		hogg_blocked = q->hogg_bklg && q->hogg_deficit < 0;
-		any_blocked = quik_blocked || bulk_blocked || hogg_blocked;
-
-		quik_avail = q->quik_bklg && q->quik_deficit >= 0;
-		bulk_avail = q->bulk_bklg && q->bulk_deficit >= 0;
-		hogg_avail = q->hogg_bklg && q->hogg_deficit >= 0;
-		any_avail = quik_avail || bulk_avail || hogg_avail;
-	}
+	quik_avail = q->quik_bklg && q->quik_deficit >= 0;
+	bulk_avail = q->bulk_bklg && q->bulk_deficit >= 0;
+	hogg_avail = q->hogg_bklg && q->hogg_deficit >= 0;
+	any_avail = quik_avail || bulk_avail || hogg_avail;
 
 	if(any_blocked && !any_avail) {
 		// all queues with waiting traffic have deficits
