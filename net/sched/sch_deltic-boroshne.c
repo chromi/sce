@@ -60,6 +60,7 @@ struct boroshne_sched_data {
 		struct deltic_vars	sce_vars;
 		struct deltic_vars	ecn_vars;
 		struct deltic_vars	drp_vars;
+		u8  tgt_queue;
 	} flow[TETRA_FLOWS];
 
 	/* Resource tracking */
@@ -74,6 +75,9 @@ struct boroshne_sched_data {
 	u64 quik_sojourn;
 	u64 bulk_sojourn;
 	u64 hogg_sojourn;
+	u32 quik_deficit;
+	u32 bulk_deficit;
+	u32 hogg_deficit;
 
 	/* Shaper state */
 	ktime_t	time_next_packet;
@@ -124,6 +128,12 @@ static inline s64 ns_scaled_weight(u64 a, u64 wa, u64 b, u64 wb)
 
 /* Queues & Flows */
 
+enum {
+	TGT_QUICK = 0,
+	TGT_BULK,
+	TGT_HOG
+};
+
 static u32 boroshne_hash(const struct sk_buff *skb)
 {
 	/* Implements only 5-tuple flow hash, without set association */
@@ -137,7 +147,7 @@ static u32 boroshne_hash(const struct sk_buff *skb)
 	return flow_hash % TETRA_FLOWS;
 }
 
-static u32 boroshne_flow_backlog(struct boroshne_sched_data *q, u32 flow)
+static inline u32 boroshne_flow_backlog(struct boroshne_sched_data *q, u32 flow)
 {
 	return
 		q->flow[flow].sprs_bklg +
@@ -146,7 +156,7 @@ static u32 boroshne_flow_backlog(struct boroshne_sched_data *q, u32 flow)
 		q->flow[flow].hogg_bklg;
 }
 
-static u32 boroshne_total_backlog(struct boroshne_sched_data *q)
+static inline u32 boroshne_total_backlog(struct boroshne_sched_data *q)
 {
 	return
 		q->sprs_bklg +
@@ -165,6 +175,8 @@ static struct sk_buff* dequeue_hog(struct boroshne_sched_data *q)
 
 		q->hogg_head = skb->next;
 		skb_mark_not_on_list(skb);
+
+		q->hogg_deficit -= len;
 
 		WARN_ON(q->hogg_bklg < len);
 		q->hogg_bklg -= len;
@@ -191,6 +203,8 @@ static struct sk_buff* dequeue_bulk(struct boroshne_sched_data *q)
 
 		q->bulk_head = skb->next;
 		skb_mark_not_on_list(skb);
+
+		q->bulk_deficit -= len;
 
 		WARN_ON(q->bulk_bklg < len);
 		q->bulk_bklg -= len;
@@ -223,6 +237,8 @@ static struct sk_buff* dequeue_quick(struct boroshne_sched_data *q)
 			kfree_skb(skb);
 			return dequeue_quick(q);
 		}
+
+		q->quik_deficit -= len;
 
 		WARN_ON(q->quik_bklg < len);
 		q->quik_bklg -= len;
@@ -265,7 +281,6 @@ static struct sk_buff* dequeue_sparse(struct boroshne_sched_data *q)
 	return skb;
 }
 
-/*
 static void enqueue_hog(struct boroshne_sched_data *q, struct sk_buff *skb)
 {
 	u16 flow = deltic_get_flow(skb);
@@ -301,7 +316,6 @@ static void enqueue_bulk(struct boroshne_sched_data *q, struct sk_buff *skb)
 	q->bulk_tail = skb;
 	skb->next = NULL;
 }
-*/
 
 static void enqueue_quick(struct boroshne_sched_data *q, struct sk_buff *skb)
 {
@@ -517,11 +531,17 @@ static s32 boroshne_enqueue(struct sk_buff *skb, struct Qdisc *sch, struct sk_bu
 	deltic_set_cb(skb, now, flow);
 	boroshne_unstale_shaper(q, now);
 
-	/* TODO: also handle the Bulk and Hog queues; currently this is just CNQ */
-	if(boroshne_flow_backlog(q, flow))
-		enqueue_quick(q, skb);
-	else
+	/* direct packet to the appropriate queue */
+	if(boroshne_flow_backlog(q, flow)) {
+		if(q->flow[flow].tgt_queue == TGT_HOG)
+			enqueue_hog(q, skb);
+		else if(q->flow[flow].tgt_queue == TGT_BULK)
+			enqueue_bulk(q, skb);
+		else
+			enqueue_quick(q, skb);
+	} else {
 		enqueue_sparse(q, skb);
+	}
 
 	sch->q.qlen++;
 
@@ -548,12 +568,43 @@ static struct sk_buff* boroshne_dequeue(struct Qdisc *sch)
 		return NULL;
 	}
 
-	/* sparse queue has strict priority */
-	/* TODO: also handle Bulk and Hog queues */
+	/* Sparse queue has strict priority */
+	/* Weighted Deficit Round Robin between Quick, Bulk, Hog queues */
+	if(	(!q->quik_bklg || q->quik_deficit < 0) &&
+		(!q->bulk_bklg || q->bulk_deficit < 0) &&
+		(!q->hogg_bklg || q->hogg_deficit < 0) &&
+		(q->quik_bklg | q->bulk_bklg | q->hogg_bklg))
+	{
+		// all queues with waiting traffic have deficits
+		// replenish them proportionally to flow occupancy
+		u32 quik_inc = q->quik_flows;
+		u32 bulk_inc = q->bulk_flows;
+		u32 hogg_inc = q->hogg_flows;
+
+		while(quik_inc < -q->quik_deficit && bulk_inc < -q->bulk_deficit && hogg_inc < -q->hogg_deficit) {
+			quik_inc *= 2;
+			bulk_inc *= 2;
+			hogg_inc *= 2;
+		}
+
+		q->quik_deficit += quik_inc;
+		q->bulk_deficit += bulk_inc;
+		q->hogg_deficit += hogg_inc;
+	}
+
+	/* Dequeue in priority order from queues not in deficit */
 	skb = dequeue_sparse(q);
-	if (!skb) {
+	if (!skb && q->quik_deficit >= 0) {
 		skb = dequeue_quick(q);
 		queue_sojourn = &q->quik_sojourn;
+	}
+	if (!skb && q->bulk_deficit >= 0) {
+		skb = dequeue_bulk(q);
+		queue_sojourn = &q->bulk_sojourn;
+	}
+	if (!skb && q->hogg_deficit >= 0) {
+		skb = dequeue_hog(q);
+		queue_sojourn = &q->hogg_sojourn;
 	}
 	if (unlikely(!skb)) {
 		WARN_ON(!skb);
@@ -572,6 +623,18 @@ static struct sk_buff* boroshne_dequeue(struct Qdisc *sch)
 	if(queue_sojourn) {
 		*queue_sojourn = sojourn;
 		sojourn = boroshne_effective_sojourn(q, flow);
+
+		// update flow direction based on effective sojourn time
+		// apply promotion thresholds with hysteresis, based on which AQM they respond to
+		if(q->flow[flow].tgt_queue == TGT_HOG && sojourn < q->ecn_params.target)
+			q->flow[flow].tgt_queue = TGT_BULK;
+		if(q->flow[flow].tgt_queue == TGT_BULK && sojourn < q->sce_params.target)
+			q->flow[flow].tgt_queue = TGT_QUICK;
+
+		if(q->flow[flow].tgt_queue == TGT_QUICK && sojourn > q->sce_params.target * 2)
+			q->flow[flow].tgt_queue = TGT_BULK;
+		if(q->flow[flow].tgt_queue == TGT_BULK && sojourn > q->ecn_params.target * 2)
+			q->flow[flow].tgt_queue = TGT_HOG;
 	}
 
 	mark_sce = q->sce_params.resonance && deltic_control(&q->flow[flow].sce_vars, &q->sce_params, now, sojourn);
