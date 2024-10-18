@@ -581,6 +581,14 @@ static struct sk_buff* boroshne_dequeue(struct Qdisc *sch)
 		u32 bulk_inc = q->bulk_flows;
 		u32 hogg_inc = q->hogg_flows;
 
+		WARN_ON(q->quik_bklg && !q->quik_flows);
+		WARN_ON(q->bulk_bklg && !q->bulk_flows);
+		WARN_ON(q->hogg_bklg && !q->hogg_flows);
+
+		WARN_ON(q->quik_flows && !q->quik_bklg);
+		WARN_ON(q->bulk_flows && !q->bulk_bklg);
+		WARN_ON(q->hogg_flows && !q->hogg_bklg);
+
 		while(quik_inc < -q->quik_deficit && bulk_inc < -q->bulk_deficit && hogg_inc < -q->hogg_deficit) {
 			quik_inc *= 2;
 			bulk_inc *= 2;
