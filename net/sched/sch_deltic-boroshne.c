@@ -586,6 +586,7 @@ static struct sk_buff* boroshne_dequeue(struct Qdisc *sch)
 	if(any_blocked && !any_avail) {
 		// all queues with waiting traffic have deficits
 		// replenish them proportionally to flow occupancy
+		/*
 		u32 quik_inc = q->quik_flows;
 		u32 bulk_inc = q->bulk_flows;
 		u32 hogg_inc = q->hogg_flows;
@@ -610,6 +611,20 @@ static struct sk_buff* boroshne_dequeue(struct Qdisc *sch)
 		q->quik_deficit += quik_inc;
 		q->bulk_deficit += bulk_inc;
 		q->hogg_deficit += hogg_inc;
+		*/
+
+		s32 max_deficit = 0;
+
+		if(q->quik_flows && q->quik_deficit < max_deficit)
+			max_deficit = q->quik_deficit;
+		if(q->bulk_flows && q->bulk_deficit < max_deficit)
+			max_deficit = q->bulk_deficit;
+		if(q->hogg_flows && q->hogg_deficit < max_deficit)
+			max_deficit = q->hogg_deficit;
+
+		q->quik_deficit -= max_deficit * q->quik_flows;
+		q->bulk_deficit -= max_deficit * q->bulk_flows;
+		q->hogg_deficit -= max_deficit * q->hogg_flows;
 	}
 
 	/* Dequeue in priority order from queues not in deficit */
