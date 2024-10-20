@@ -570,10 +570,10 @@ static struct sk_buff* boroshne_dequeue(struct Qdisc *sch)
 
 	/* Sparse queue has strict priority */
 	/* Weighted Deficit Round Robin between Quick, Bulk, Hog queues */
-	if(	(!q->quik_bklg || q->quik_deficit < 0) &&
-		(!q->bulk_bklg || q->bulk_deficit < 0) &&
-		(!q->hogg_bklg || q->hogg_deficit < 0) &&
-		(q->quik_bklg | q->bulk_bklg | q->hogg_bklg))
+	if(	(!q->quik_flows || q->quik_deficit < 0) &&
+		(!q->bulk_flows || q->bulk_deficit < 0) &&
+		(!q->hogg_flows || q->hogg_deficit < 0) &&
+		(q->quik_flows | q->bulk_flows | q->hogg_flows))
 	{
 		// all queues with waiting traffic have deficits
 		// replenish them proportionally to flow occupancy
@@ -581,9 +581,9 @@ static struct sk_buff* boroshne_dequeue(struct Qdisc *sch)
 		s32 bulk_inc = q->bulk_flows;
 		s32 hogg_inc = q->hogg_flows;
 
-		while(	(quik_blocked && quik_inc < -q->quik_deficit) ||
-				(bulk_blocked && bulk_inc < -q->bulk_deficit) ||
-				(hogg_blocked && hogg_inc < -q->hogg_deficit) )
+		while(	(q->quik_flows && quik_inc < -q->quik_deficit) ||
+				(q->bulk_flows && bulk_inc < -q->bulk_deficit) ||
+				(q->hogg_flows && hogg_inc < -q->hogg_deficit) )
 		{
 			quik_inc *= 2;
 			bulk_inc *= 2;
