@@ -75,9 +75,9 @@ struct boroshne_sched_data {
 	u64 quik_sojourn;
 	u64 bulk_sojourn;
 	u64 hogg_sojourn;
-	u32 quik_deficit;
-	u32 bulk_deficit;
-	u32 hogg_deficit;
+	s32 quik_deficit;
+	s32 bulk_deficit;
+	s32 hogg_deficit;
 
 	/* Shaper state */
 	ktime_t	time_next_packet;
@@ -557,9 +557,6 @@ static struct sk_buff* boroshne_dequeue(struct Qdisc *sch)
 	u64 jitter, sojourn;
 	u64 *queue_sojourn = 0;
 	bool mark_sce, mark_ecn, drop;
-	bool quik_blocked, bulk_blocked, hogg_blocked;
-	bool quik_avail, bulk_avail, hogg_avail;
-	bool any_blocked, any_avail;
 
 	if(!sch->q.qlen)
 		return NULL;
@@ -573,35 +570,20 @@ static struct sk_buff* boroshne_dequeue(struct Qdisc *sch)
 
 	/* Sparse queue has strict priority */
 	/* Weighted Deficit Round Robin between Quick, Bulk, Hog queues */
-	quik_blocked = q->quik_bklg && q->quik_deficit < 0;
-	bulk_blocked = q->bulk_bklg && q->bulk_deficit < 0;
-	hogg_blocked = q->hogg_bklg && q->hogg_deficit < 0;
-	any_blocked = quik_blocked || bulk_blocked || hogg_blocked;
-
-	quik_avail = q->quik_bklg && q->quik_deficit >= 0;
-	bulk_avail = q->bulk_bklg && q->bulk_deficit >= 0;
-	hogg_avail = q->hogg_bklg && q->hogg_deficit >= 0;
-	any_avail = quik_avail || bulk_avail || hogg_avail;
-
-	if(any_blocked && !any_avail) {
+	if(	(!q->quik_bklg || q->quik_deficit < 0) &&
+		(!q->bulk_bklg || q->bulk_deficit < 0) &&
+		(!q->hogg_bklg || q->hogg_deficit < 0) &&
+		(q->quik_bklg | q->bulk_bklg | q->hogg_bklg))
+	{
 		// all queues with waiting traffic have deficits
 		// replenish them proportionally to flow occupancy
-		/*
-		u32 quik_inc = q->quik_flows;
-		u32 bulk_inc = q->bulk_flows;
-		u32 hogg_inc = q->hogg_flows;
+		s32 quik_inc = q->quik_flows;
+		s32 bulk_inc = q->bulk_flows;
+		s32 hogg_inc = q->hogg_flows;
 
-		WARN_ON(q->quik_bklg && !q->quik_flows);
-		WARN_ON(q->bulk_bklg && !q->bulk_flows);
-		WARN_ON(q->hogg_bklg && !q->hogg_flows);
-
-		WARN_ON(q->quik_flows && !q->quik_bklg);
-		WARN_ON(q->bulk_flows && !q->bulk_bklg);
-		WARN_ON(q->hogg_flows && !q->hogg_bklg);
-
-		while(	(quik_blocked && ((s32) quik_inc) < -q->quik_deficit) ||
-				(bulk_blocked && ((s32) bulk_inc) < -q->bulk_deficit) ||
-				(hogg_blocked && ((s32) hogg_inc) < -q->hogg_deficit) )
+		while(	(quik_blocked && quik_inc < -q->quik_deficit) ||
+				(bulk_blocked && bulk_inc < -q->bulk_deficit) ||
+				(hogg_blocked && hogg_inc < -q->hogg_deficit) )
 		{
 			quik_inc *= 2;
 			bulk_inc *= 2;
@@ -611,20 +593,6 @@ static struct sk_buff* boroshne_dequeue(struct Qdisc *sch)
 		q->quik_deficit += quik_inc;
 		q->bulk_deficit += bulk_inc;
 		q->hogg_deficit += hogg_inc;
-		*/
-
-		s32 max_deficit = 0;
-
-		if(q->quik_flows && q->quik_deficit < max_deficit)
-			max_deficit = q->quik_deficit;
-		if(q->bulk_flows && q->bulk_deficit < max_deficit)
-			max_deficit = q->bulk_deficit;
-		if(q->hogg_flows && q->hogg_deficit < max_deficit)
-			max_deficit = q->hogg_deficit;
-
-		q->quik_deficit -= max_deficit * q->quik_flows;
-		q->bulk_deficit -= max_deficit * q->bulk_flows;
-		q->hogg_deficit -= max_deficit * q->hogg_flows;
 	}
 
 	/* Dequeue in priority order from queues not in deficit */
