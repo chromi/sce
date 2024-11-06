@@ -629,14 +629,14 @@ static struct sk_buff* boroshne_dequeue(struct Qdisc *sch)
 
 		// update flow direction based on effective sojourn time
 		// apply promotion thresholds with hysteresis, based on which AQM they respond to
-		if(q->flow[flow].tgt_queue == TGT_HOG && sojourn < q->ecn_params.target)
+		if(q->flow[flow].tgt_queue == TGT_HOG && sojourn < q->ecn_params.target + (q->ecn_params.target >> 2))
 			q->flow[flow].tgt_queue = TGT_BULK;
-		if(q->flow[flow].tgt_queue == TGT_BULK && sojourn < q->sce_params.target)
+		if(q->flow[flow].tgt_queue == TGT_BULK && sojourn < q->sce_params.target + (q->sce_params.target >> 2))
 			q->flow[flow].tgt_queue = TGT_QUICK;
 
-		if(q->flow[flow].tgt_queue == TGT_QUICK && sojourn > q->sce_params.target * 2)
+		if(q->flow[flow].tgt_queue == TGT_QUICK && sojourn > q->sce_params.target + (q->sce_params.target >> 1))
 			q->flow[flow].tgt_queue = TGT_BULK;
-		if(q->flow[flow].tgt_queue == TGT_BULK && sojourn > q->ecn_params.target * 2)
+		if(q->flow[flow].tgt_queue == TGT_BULK && sojourn > q->ecn_params.target + (q->ecn_params.target >> 1))
 			q->flow[flow].tgt_queue = TGT_HOG;
 	}
 
