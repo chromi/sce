@@ -104,7 +104,6 @@ struct bictcp {
 	u32	prior_snd_una;
 	u32	prior_rcv_nxt;
 	u32	next_seq;
-	u32	sqrt_cnt;
 	u32	recent_sce;
 	u32	mss;
 };
@@ -124,7 +123,6 @@ static inline void bictcp_reset(struct bictcp *ca)
 	ca->found = 0;
 
 	/* added SCE-related fields */
-	ca->sqrt_cnt = 1;
 	ca->recent_sce = 0;
 }
 
@@ -377,11 +375,6 @@ static void bictcp_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 	ca->ack_cnt += acked * ca->mss;
 	bictcp_update(ca, tcp_snd_cwnd(tp), acked);
 	tcp_cong_avoid_ai(tp, ca->cnt, acked);
-
-	while(ca->sqrt_cnt * ca->sqrt_cnt < tcp_snd_cwnd(tp))
-		ca->sqrt_cnt++;
-	while(ca->sqrt_cnt * ca->sqrt_cnt > tcp_snd_cwnd(tp))
-		ca->sqrt_cnt--;
 }
 
 static void bictcp_drop_slow_start(struct sock *sk)
@@ -516,75 +509,24 @@ static void bictcp_handle_ack(struct sock *sk, u32 flags)
 			bictcp_drop_slow_start(sk);
 		} else if ((flags & (CA_ACK_ECE|CA_ACK_ESCE)) == CA_ACK_ESCE) {
 			/* We have a block of SCE feedback */
+			u32 now = tcp_jiffies32;
 			u32 stepdown = 0;
 			u32 effective_cwnd = tcp_in_slow_start(tp) ? tp->snd_ssthresh : tcp_snd_cwnd(tp);
 
-#if 1 // Simplify to just halting polynomial growth on ESCE
-			ca->epoch_start = 0;
+			// Halt polynomial growth
+			ca->epoch_start = now;
 			if(!tcp_in_slow_start(tp))
 				ca->last_max_cwnd = effective_cwnd;
-#else
-			u32 now = tcp_jiffies32;
-			u64 t = now - ca->epoch_start;
-
-			/* Reduce gradient of CUBIC function */
-			t <<= BICTCP_HZ;
-			do_div(t, HZ);
-
-			if (t < ca->bic_K) {
-				u64 offs = ca->bic_K - t;
-				u32 delta1 = (cube_rtt_scale * offs * offs * offs) >> (10+3*BICTCP_HZ);
-				u32 delta2;
-
-				/* below inflection point, bring it back towards us */
-				ca->epoch_start = now;
-				ca->bic_K -= t;
-				t = 0;
-				if(0 && acked_bytes < mss * ca->sqrt_cnt) {
-					ca->bic_K = ca->bic_K * (mss * ca->sqrt_cnt - acked_bytes) / (mss * ca->sqrt_cnt);
-				} else {
-					ca->bic_K = 0;
-				}
-
-				/* calculate adjustment to inflection point level, keeping snd_cwnd constant */
-				offs = ca->bic_K - t;
-				delta2 = (cube_rtt_scale * offs * offs * offs) >> (10+3*BICTCP_HZ);
-				ca->bic_origin_point -= delta2 - delta1;
-			} else {
-				u64 offs = t - ca->bic_K;
-				u32 delta1 = (cube_rtt_scale * offs * offs * offs) >> (10+3*BICTCP_HZ);
-				u32 delta2;
-
-				/* above inflection point, advance it towards us */
-				ca->epoch_start += (ca->bic_K * HZ) >> BICTCP_HZ;
-				t = offs;
-				if(0 && acked_bytes < mss * ca->sqrt_cnt) {
-					ca->bic_K = ((u32) t) * acked_bytes / (mss * ca->sqrt_cnt);
-				} else {
-					ca->bic_K = t;
-				}
-
-				/* calculate adjustment to inflection point level, keeping snd_cwnd constant */
-				offs = t - ca->bic_K;
-				delta2 = (cube_rtt_scale * offs * offs * offs) >> (10+3*BICTCP_HZ);
-				ca->bic_origin_point += delta1 - delta2;
-			}
-
-			bictcp_drop_slow_start(sk);
-#endif
 
 			/* Also step down both the inflection point and the current cwnd. */
-			/* A full cwnd of ESCE nominally results in sqrt(cwnd) reduction. */
-			ca->ack_cnt   -= acked_bytes * ca->sqrt_cnt;
+			/* A full cwnd of ESCE nominally results in cwnd/2 reduction, as per DCTCP. */
+			ca->ack_cnt   -= acked_bytes * mss / 2;
 			ca->recent_sce = tcp_snd_cwnd(tp) + 1;
 
 			while(ca->ack_cnt <= -cnt_over) {
 				ca->ack_cnt += cnt_over;
-				if(effective_cwnd - stepdown > 2) {
+				if(effective_cwnd - stepdown > 2)
 					stepdown++;
-					if(ca->sqrt_cnt * ca->sqrt_cnt >= effective_cwnd - stepdown)
-						ca->sqrt_cnt--;
-				}
 			}
 			ca->last_max_cwnd = min(ca->last_max_cwnd, effective_cwnd - stepdown);
 			tp->snd_ssthresh  = min(tp->snd_ssthresh,  effective_cwnd - stepdown);
