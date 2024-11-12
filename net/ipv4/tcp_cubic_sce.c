@@ -528,9 +528,17 @@ static void bictcp_handle_ack(struct sock *sk, u32 flags)
 				if(effective_cwnd - stepdown > 2)
 					stepdown++;
 			}
-			ca->last_max_cwnd = min(ca->last_max_cwnd, effective_cwnd - stepdown);
-			tp->snd_ssthresh  = min(tp->snd_ssthresh,  effective_cwnd - stepdown);
-			tcp_snd_cwnd_set(tp, min(tcp_snd_cwnd(tp), effective_cwnd - stepdown));
+
+			if(stepdown) {
+				ca->epoch_start = 0;
+				if(2 + stepdown > ca->tcp_cwnd)
+					ca->tcp_cwnd -= stepdown;
+				else
+					ca->tcp_cwnd = 2;
+				ca->last_max_cwnd = min(ca->last_max_cwnd, effective_cwnd - stepdown);
+				tp->snd_ssthresh  = min(tp->snd_ssthresh,  effective_cwnd - stepdown);
+				tcp_snd_cwnd_set(tp, min(tcp_snd_cwnd(tp), effective_cwnd - stepdown));
+			}
 		}
 
 		if(ca->recent_sce)
