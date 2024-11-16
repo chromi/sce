@@ -1213,11 +1213,7 @@ static void tcp_update_skb_after_send(struct sock *sk, struct sk_buff *skb,
 	if (sk->sk_pacing_status != SK_PACING_NONE) {
 		unsigned long rate = sk->sk_pacing_rate;
 
-		/* Original sch_fq does not pace first 10 MSS
-		 * Note that tp->data_segs_out overflows after 2^32 packets,
-		 * this is a minor annoyance.
-		 */
-		if (rate != ~0UL && rate && tp->data_segs_out >= 1) {
+		if (rate != ~0UL && rate) {
 			u64 len_ns = div64_ul((u64)skb->len * NSEC_PER_SEC, rate);
 			u64 credit = tp->tcp_wstamp_ns - prior_wstamp;
 

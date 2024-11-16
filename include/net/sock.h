@@ -458,7 +458,8 @@ struct sock {
 	__s32			sk_peek_off;
 	int			sk_write_pending;
 	__u32			sk_dst_pending_confirm;
-	u32			sk_pacing_status; /* see enum sk_pacing */
+	u16			sk_pacing_status; /* see enum sk_pacing */
+	u16			sk_pacing_multiplier; /* in percent - or zero for default behaviour */
 	long			sk_sndtimeo;
 	struct timer_list	sk_timer;
 	__u32			sk_priority;

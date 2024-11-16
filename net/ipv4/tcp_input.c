@@ -957,7 +957,9 @@ static void tcp_update_pacing_rate(struct sock *sk)
 	 *	 If snd_cwnd >= (tp->snd_ssthresh / 2), we are approaching
 	 *	 end of slow start and should slow down.
 	 */
-	if (tcp_snd_cwnd(tp) < tp->snd_ssthresh / 2)
+	if (sk->sk_pacing_multiplier > 0)
+		rate *= sk->sk_pacing_multiplier;
+	else if (tcp_snd_cwnd(tp) < tp->snd_ssthresh / 2)
 		rate *= READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_pacing_ss_ratio);
 	else
 		rate *= READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_pacing_ca_ratio);
