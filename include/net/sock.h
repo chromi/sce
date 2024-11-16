@@ -461,7 +461,8 @@ struct sock {
 	};
 	struct sk_buff_head	sk_write_queue;
 	u32			sk_dst_pending_confirm;
-	u32			sk_pacing_status; /* see enum sk_pacing */
+	u16			sk_pacing_status; /* see enum sk_pacing */
+	u16			sk_pacing_multiplier; /* in percent - or zero for default behaviour */
 	struct page_frag	sk_frag;
 	struct timer_list	sk_timer;
 
