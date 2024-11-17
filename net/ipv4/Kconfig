@@ -672,6 +672,12 @@ config TCP_CONG_CUBIC_SCE
 	help
 	  This is CUBIC with support for Some Congestion Experienced (SCE) signals.
 
+config TCP_CONG_CUBIC_ESSP
+	tristate "CUBIC TCP with ESSP support"
+	default n
+	help
+	  This is CUBIC with HyStart replaced by Extended Slow Start with Pacing (ESSP).
+
 config TCP_CONG_LINEAR
 	tristate "LINEAR TCP"
 	default n

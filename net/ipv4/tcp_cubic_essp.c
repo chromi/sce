@@ -75,8 +75,7 @@ struct bictcp {
 
 static inline void bictcp_reset(struct bictcp *ca)
 {
-	memset(ca, 0, offsetof(struct bictcp, unused));
-	ca->found = 0;
+	memset(ca, 0, sizeof(*ca));
 }
 
 static inline u32 bictcp_clock_us(const struct sock *sk)
@@ -319,7 +318,7 @@ __bpf_kfunc static void cubictcp_state(struct sock *sk, u8 new_state)
 
 __bpf_kfunc static void cubictcp_acked(struct sock *sk, const struct ack_sample *sample)
 {
-	const struct tcp_sock *tp = tcp_sk(sk);
+//	const struct tcp_sock *tp = tcp_sk(sk);
 	struct bictcp *ca = inet_csk_ca(sk);
 	u32 delay;
 
