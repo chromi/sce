@@ -139,6 +139,12 @@ __bpf_kfunc static void cubictcp_init(struct sock *sk)
 		tcp_sk(sk)->snd_ssthresh = initial_ssthresh;
 }
 
+__bpf_kfunc static void cubictcp_pacing_init(struct sock *sk)
+{
+	cubictcp_init(sk);
+	cmpxchg(&sk->sk_pacing_status, SK_PACING_NONE, SK_PACING_NEEDED);
+}
+
 __bpf_kfunc static void cubictcp_cwnd_event(struct sock *sk, enum tcp_ca_event event)
 {
 	if (event == CA_EVENT_TX_START) {
@@ -485,10 +491,23 @@ static struct tcp_congestion_ops cubictcp __read_mostly = {
 	.name		= "cubic",
 };
 
+static struct tcp_congestion_ops cubictcp_pacing __read_mostly = {
+	.init		= cubictcp_pacing_init,
+	.ssthresh	= cubictcp_recalc_ssthresh,
+	.cong_avoid	= cubictcp_cong_avoid,
+	.set_state	= cubictcp_state,
+	.undo_cwnd	= tcp_reno_undo_cwnd,
+	.cwnd_event	= cubictcp_cwnd_event,
+	.pkts_acked     = cubictcp_acked,
+	.owner		= THIS_MODULE,
+	.name		= "cubic-pacing",
+};
+
 BTF_SET8_START(tcp_cubic_check_kfunc_ids)
 #ifdef CONFIG_X86
 #ifdef CONFIG_DYNAMIC_FTRACE
 BTF_ID_FLAGS(func, cubictcp_init)
+BTF_ID_FLAGS(func, cubictcp_pacing_init)
 BTF_ID_FLAGS(func, cubictcp_recalc_ssthresh)
 BTF_ID_FLAGS(func, cubictcp_cong_avoid)
 BTF_ID_FLAGS(func, cubictcp_state)
@@ -540,12 +559,15 @@ static int __init cubictcp_register(void)
 	ret = register_btf_kfunc_id_set(BPF_PROG_TYPE_STRUCT_OPS, &tcp_cubic_kfunc_set);
 	if (ret < 0)
 		return ret;
+
+	tcp_register_congestion_control(&cubictcp_pacing);
 	return tcp_register_congestion_control(&cubictcp);
 }
 
 static void __exit cubictcp_unregister(void)
 {
 	tcp_unregister_congestion_control(&cubictcp);
+	tcp_unregister_congestion_control(&cubictcp_pacing);
 }
 
 module_init(cubictcp_register);
