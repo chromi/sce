@@ -11,6 +11,7 @@
 #include <linux/module.h>
 #include <linux/interrupt.h>
 #include <linux/platform_device.h>
+#include <linux/clk.h>
 #include <linux/errno.h>
 #include <linux/io.h>
 #include <linux/of.h>
@@ -83,6 +84,7 @@ struct omap4_keypad {
 	bool no_autorepeat;
 	u64 keys;
 	unsigned short *keymap;
+	struct clk *fck;
 };
 
 static int kbd_readl(struct omap4_keypad *keypad_data, u32 offset)
@@ -142,7 +144,7 @@ static void omap4_keypad_scan_keys(struct omap4_keypad *keypad_data, u64 keys)
 {
 	u64 changed;
 
-	mutex_lock(&keypad_data->lock);
+	guard(mutex)(&keypad_data->lock);
 
 	changed = keys ^ keypad_data->keys;
 
@@ -156,8 +158,6 @@ static void omap4_keypad_scan_keys(struct omap4_keypad *keypad_data, u64 keys)
 	omap4_keypad_report_keys(keypad_data, changed & keys, true);
 
 	keypad_data->keys = keys;
-
-	mutex_unlock(&keypad_data->lock);
 }
 
 /* Interrupt handlers */
@@ -209,6 +209,10 @@ static int omap4_keypad_open(struct input_dev *input)
 	if (error)
 		return error;
 
+	error = clk_prepare_enable(keypad_data->fck);
+	if (error)
+		goto out;
+
 	disable_irq(keypad_data->irq);
 
 	kbd_writel(keypad_data, OMAP4_KBD_CTRL,
@@ -226,10 +230,11 @@ static int omap4_keypad_open(struct input_dev *input)
 
 	enable_irq(keypad_data->irq);
 
+out:
 	pm_runtime_mark_last_busy(dev);
 	pm_runtime_put_autosuspend(dev);
 
-	return 0;
+	return error;
 }
 
 static void omap4_keypad_stop(struct omap4_keypad *keypad_data)
@@ -258,6 +263,7 @@ static void omap4_keypad_close(struct input_dev *input)
 	disable_irq(keypad_data->irq);
 	omap4_keypad_stop(keypad_data);
 	enable_irq(keypad_data->irq);
+	clk_disable_unprepare(keypad_data->fck);
 
 	pm_runtime_mark_last_busy(dev);
 	pm_runtime_put_autosuspend(dev);
@@ -356,6 +362,11 @@ static int omap4_keypad_probe(struct platform_device *pdev)
 	}
 
 	keypad_data->irq = irq;
+	keypad_data->fck = devm_clk_get(&pdev->dev, "fck");
+	if (IS_ERR(keypad_data->fck))
+		return dev_err_probe(&pdev->dev, PTR_ERR(keypad_data->fck),
+				     "unable to get fck");
+
 	mutex_init(&keypad_data->lock);
 	platform_set_drvdata(pdev, keypad_data);
 
@@ -461,11 +472,9 @@ static int omap4_keypad_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int omap4_keypad_remove(struct platform_device *pdev)
+static void omap4_keypad_remove(struct platform_device *pdev)
 {
 	dev_pm_clear_wake_irq(&pdev->dev);
-
-	return 0;
 }
 
 static const struct of_device_id omap_keypad_dt_match[] = {

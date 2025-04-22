@@ -179,16 +179,16 @@ static ssize_t vbus_show(struct device *dev,
 
 	switch (twl->linkstat) {
 	case MUSB_VBUS_VALID:
-	       ret = snprintf(buf, PAGE_SIZE, "vbus\n");
+	       ret = sysfs_emit(buf, "vbus\n");
 	       break;
 	case MUSB_ID_GROUND:
-	       ret = snprintf(buf, PAGE_SIZE, "id\n");
+	       ret = sysfs_emit(buf, "id\n");
 	       break;
 	case MUSB_VBUS_OFF:
-	       ret = snprintf(buf, PAGE_SIZE, "none\n");
+	       ret = sysfs_emit(buf, "none\n");
 	       break;
 	default:
-	       ret = snprintf(buf, PAGE_SIZE, "UNKNOWN\n");
+	       ret = sysfs_emit(buf, "UNKNOWN\n");
 	}
 	spin_unlock_irqrestore(&twl->lock, flags);
 
@@ -432,7 +432,7 @@ MODULE_DEVICE_TABLE(of, twl6030_usb_id_table);
 
 static struct platform_driver twl6030_usb_driver = {
 	.probe		= twl6030_usb_probe,
-	.remove_new	= twl6030_usb_remove,
+	.remove		= twl6030_usb_remove,
 	.driver		= {
 		.name	= "twl6030_usb",
 		.of_match_table = of_match_ptr(twl6030_usb_id_table),

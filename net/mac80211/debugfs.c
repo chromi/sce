@@ -4,7 +4,7 @@
  *
  * Copyright 2007	Johannes Berg <johannes@sipsolutions.net>
  * Copyright 2013-2014  Intel Mobile Communications GmbH
- * Copyright (C) 2018 - 2019, 2021-2022 Intel Corporation
+ * Copyright (C) 2018 - 2019, 2021-2024 Intel Corporation
  */
 
 #include <linux/debugfs.h>
@@ -42,9 +42,8 @@ static ssize_t name## _read(struct file *file, char __user *userbuf,	\
 }
 
 #define DEBUGFS_READONLY_FILE_OPS(name)			\
-static const struct file_operations name## _ops = {			\
+static const struct debugfs_short_fops name## _ops = {				\
 	.read = name## _read,						\
-	.open = simple_open,						\
 	.llseek = generic_file_llseek,					\
 };
 
@@ -142,10 +141,9 @@ static ssize_t aqm_write(struct file *file,
 	return -EINVAL;
 }
 
-static const struct file_operations aqm_ops = {
+static const struct debugfs_short_fops aqm_ops = {
 	.write = aqm_write,
 	.read = aqm_read,
-	.open = simple_open,
 	.llseek = default_llseek,
 };
 
@@ -194,10 +192,9 @@ static ssize_t airtime_flags_write(struct file *file,
 	return count;
 }
 
-static const struct file_operations airtime_flags_ops = {
+static const struct debugfs_short_fops airtime_flags_ops = {
 	.write = airtime_flags_write,
 	.read = airtime_flags_read,
-	.open = simple_open,
 	.llseek = default_llseek,
 };
 
@@ -225,9 +222,8 @@ static ssize_t aql_pending_read(struct file *file,
 				       buf, len);
 }
 
-static const struct file_operations aql_pending_ops = {
+static const struct debugfs_short_fops aql_pending_ops = {
 	.read = aql_pending_read,
-	.open = simple_open,
 	.llseek = default_llseek,
 };
 
@@ -288,10 +284,11 @@ static ssize_t aql_txq_limit_write(struct file *file,
 	q_limit_low_old = local->aql_txq_limit_low[ac];
 	q_limit_high_old = local->aql_txq_limit_high[ac];
 
+	guard(wiphy)(local->hw.wiphy);
+
 	local->aql_txq_limit_low[ac] = q_limit_low;
 	local->aql_txq_limit_high[ac] = q_limit_high;
 
-	mutex_lock(&local->sta_mtx);
 	list_for_each_entry(sta, &local->sta_list, list) {
 		/* If a sta has customized queue limits, keep it */
 		if (sta->airtime[ac].aql_limit_low == q_limit_low_old &&
@@ -300,14 +297,13 @@ static ssize_t aql_txq_limit_write(struct file *file,
 			sta->airtime[ac].aql_limit_high = q_limit_high;
 		}
 	}
-	mutex_unlock(&local->sta_mtx);
+
 	return count;
 }
 
-static const struct file_operations aql_txq_limit_ops = {
+static const struct debugfs_short_fops aql_txq_limit_ops = {
 	.write = aql_txq_limit_write,
 	.read = aql_txq_limit_read,
-	.open = simple_open,
 	.llseek = default_llseek,
 };
 
@@ -354,10 +350,9 @@ static ssize_t aql_enable_write(struct file *file, const char __user *user_buf,
 	return count;
 }
 
-static const struct file_operations aql_enable_ops = {
+static const struct debugfs_short_fops aql_enable_ops = {
 	.write = aql_enable_write,
 	.read = aql_enable_read,
-	.open = simple_open,
 	.llseek = default_llseek,
 };
 
@@ -405,10 +400,9 @@ static ssize_t force_tx_status_write(struct file *file,
 	return count;
 }
 
-static const struct file_operations force_tx_status_ops = {
+static const struct debugfs_short_fops force_tx_status_ops = {
 	.write = force_tx_status_write,
 	.read = force_tx_status_read,
-	.open = simple_open,
 	.llseek = default_llseek,
 };
 
@@ -433,9 +427,8 @@ static ssize_t reset_write(struct file *file, const char __user *user_buf,
 	return count;
 }
 
-static const struct file_operations reset_ops = {
+static const struct debugfs_short_fops reset_ops = {
 	.write = reset_write,
-	.open = simple_open,
 	.llseek = noop_llseek,
 };
 #endif
@@ -455,6 +448,7 @@ static const char *hw_flag_names[] = {
 	FLAG(SUPPORTS_DYNAMIC_PS),
 	FLAG(MFP_CAPABLE),
 	FLAG(WANT_MONITOR_VIF),
+	FLAG(NO_VIRTUAL_MONITOR),
 	FLAG(NO_AUTO_VIF),
 	FLAG(SW_CRYPTO_CONTROL),
 	FLAG(SUPPORT_FAST_XMIT),
@@ -482,7 +476,6 @@ static const char *hw_flag_names[] = {
 	FLAG(REPORTS_LOW_ACK),
 	FLAG(SUPPORTS_TX_FRAG),
 	FLAG(SUPPORTS_TDLS_BUFFER_STA),
-	FLAG(DEAUTH_NEED_MGD_TX_PREP),
 	FLAG(DOESNT_SUPPORT_QOS_NDP),
 	FLAG(BUFF_MMPDU_TXQ),
 	FLAG(SUPPORTS_VHT_EXT_NSS_BW),
@@ -496,6 +489,9 @@ static const char *hw_flag_names[] = {
 	FLAG(SUPPORTS_CONC_MON_RX_DECAP),
 	FLAG(DETECTS_COLOR_COLLISION),
 	FLAG(MLO_MCAST_MULTI_LINK_TX),
+	FLAG(DISALLOW_PUNCTURING),
+	FLAG(DISALLOW_PUNCTURING_5GHZ),
+	FLAG(HANDLES_QUIET_CSA),
 #undef FLAG
 };
 
@@ -594,9 +590,9 @@ static ssize_t format_devstat_counter(struct ieee80211_local *local,
 	char buf[20];
 	int res;
 
-	rtnl_lock();
+	wiphy_lock(local->hw.wiphy);
 	res = drv_get_stats(local, &stats);
-	rtnl_unlock();
+	wiphy_unlock(local->hw.wiphy);
 	if (res)
 		return res;
 	res = printvalue(&stats, buf, sizeof(buf));
@@ -620,9 +616,8 @@ static ssize_t stats_ ##name## _read(struct file *file,			\
 				      print_devstats_##name);		\
 }									\
 									\
-static const struct file_operations stats_ ##name## _ops = {		\
+static const struct debugfs_short_fops stats_ ##name## _ops = {			\
 	.read = stats_ ##name## _read,					\
-	.open = simple_open,						\
 	.llseek = generic_file_llseek,					\
 };
 

@@ -85,7 +85,7 @@ static int mdio_mux_multiplexer_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static int mdio_mux_multiplexer_remove(struct platform_device *pdev)
+static void mdio_mux_multiplexer_remove(struct platform_device *pdev)
 {
 	struct mdio_mux_multiplexer_state *s = platform_get_drvdata(pdev);
 
@@ -93,8 +93,6 @@ static int mdio_mux_multiplexer_remove(struct platform_device *pdev)
 
 	if (s->do_deselect)
 		mux_control_deselect(s->muxc);
-
-	return 0;
 }
 
 static const struct of_device_id mdio_mux_multiplexer_match[] = {

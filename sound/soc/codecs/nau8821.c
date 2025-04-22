@@ -287,10 +287,8 @@ static int nau8821_biq_coeff_get(struct snd_kcontrol *kcontrol,
 	if (!component->regmap)
 		return -EINVAL;
 
-	regmap_raw_read(component->regmap, NAU8821_R21_BIQ0_COF1,
+	return regmap_raw_read(component->regmap, NAU8821_R21_BIQ0_COF1,
 		ucontrol->value.bytes.data, params->max);
-
-	return 0;
 }
 
 static int nau8821_biq_coeff_put(struct snd_kcontrol *kcontrol,
@@ -299,6 +297,7 @@ static int nau8821_biq_coeff_put(struct snd_kcontrol *kcontrol,
 	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	struct soc_bytes_ext *params = (void *)kcontrol->private_value;
 	void *data;
+	int ret;
 
 	if (!component->regmap)
 		return -EINVAL;
@@ -308,12 +307,12 @@ static int nau8821_biq_coeff_put(struct snd_kcontrol *kcontrol,
 	if (!data)
 		return -ENOMEM;
 
-	regmap_raw_write(component->regmap, NAU8821_R21_BIQ0_COF1,
+	ret = regmap_raw_write(component->regmap, NAU8821_R21_BIQ0_COF1,
 		data, params->max);
 
 	kfree(data);
 
-	return 0;
+	return ret;
 }
 
 static const char * const nau8821_adc_decimation[] = {
@@ -511,13 +510,9 @@ static int nau8821_left_adc_event(struct snd_soc_dapm_widget *w,
 
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMU:
-		msleep(125);
-		regmap_update_bits(nau8821->regmap, NAU8821_R01_ENA_CTRL,
-			NAU8821_EN_ADCL, NAU8821_EN_ADCL);
+		msleep(nau8821->adc_delay);
 		break;
 	case SND_SOC_DAPM_POST_PMD:
-		regmap_update_bits(nau8821->regmap,
-			NAU8821_R01_ENA_CTRL, NAU8821_EN_ADCL, 0);
 		break;
 	default:
 		return -EINVAL;
@@ -535,13 +530,9 @@ static int nau8821_right_adc_event(struct snd_soc_dapm_widget *w,
 
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMU:
-		msleep(125);
-		regmap_update_bits(nau8821->regmap, NAU8821_R01_ENA_CTRL,
-			NAU8821_EN_ADCR, NAU8821_EN_ADCR);
+		msleep(nau8821->adc_delay);
 		break;
 	case SND_SOC_DAPM_POST_PMD:
-		regmap_update_bits(nau8821->regmap,
-			NAU8821_R01_ENA_CTRL, NAU8821_EN_ADCR, 0);
 		break;
 	default:
 		return -EINVAL;
@@ -1136,6 +1127,9 @@ static void nau8821_jdet_work(struct work_struct *work)
 				NAU8821_R12_INTERRUPT_DIS_CTRL,
 				NAU8821_IRQ_KEY_RELEASE_DIS |
 				NAU8821_IRQ_KEY_PRESS_DIS, 0);
+		} else {
+			snd_soc_component_disable_pin(component, "MICBIAS");
+			snd_soc_dapm_sync(nau8821->dapm);
 		}
 	} else {
 		dev_dbg(nau8821->dev, "Headphone connected\n");
@@ -1694,6 +1688,7 @@ static void nau8821_print_device_properties(struct nau8821 *nau8821)
 	dev_dbg(dev, "dmic-clk-threshold:       %d\n",
 		nau8821->dmic_clk_threshold);
 	dev_dbg(dev, "key_enable:       %d\n", nau8821->key_enable);
+	dev_dbg(dev, "adc-delay-ms:		%d\n", nau8821->adc_delay);
 }
 
 static int nau8821_read_device_properties(struct device *dev,
@@ -1735,6 +1730,16 @@ static int nau8821_read_device_properties(struct device *dev,
 		&nau8821->dmic_clk_threshold);
 	if (ret)
 		nau8821->dmic_clk_threshold = 3072000;
+	ret = device_property_read_u32(dev, "nuvoton,dmic-slew-rate",
+		&nau8821->dmic_slew_rate);
+	if (ret)
+		nau8821->dmic_slew_rate = 0;
+	ret = device_property_read_u32(dev, "nuvoton,adc-delay-ms",
+		&nau8821->adc_delay);
+	if (ret)
+		nau8821->adc_delay = 125;
+	if (nau8821->adc_delay < 125 || nau8821->adc_delay > 500)
+		dev_warn(dev, "Please set the suitable delay time!\n");
 
 	return 0;
 }
@@ -1794,6 +1799,9 @@ static void nau8821_init_regs(struct nau8821 *nau8821)
 		NAU8821_ADC_SYNC_DOWN_MASK, NAU8821_ADC_SYNC_DOWN_64);
 	regmap_update_bits(regmap, NAU8821_R2C_DAC_CTRL1,
 		NAU8821_DAC_OVERSAMPLE_MASK, NAU8821_DAC_OVERSAMPLE_64);
+	regmap_update_bits(regmap, NAU8821_R13_DMIC_CTRL,
+		NAU8821_DMIC_SLEW_MASK, nau8821->dmic_slew_rate <<
+		NAU8821_DMIC_SLEW_SFT);
 	if (nau8821->left_input_single_end) {
 		regmap_update_bits(regmap, NAU8821_R6B_PGA_MUTE,
 			NAU8821_MUTE_MICNL_EN, NAU8821_MUTE_MICNL_EN);
@@ -1913,7 +1921,7 @@ static int nau8821_i2c_probe(struct i2c_client *i2c)
 }
 
 static const struct i2c_device_id nau8821_i2c_ids[] = {
-	{ "nau8821", 0 },
+	{ "nau8821" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, nau8821_i2c_ids);

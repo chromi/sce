@@ -1,17 +1,19 @@
 /* SPDX-License-Identifier: MIT */
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (c) 2020-2024, Intel Corporation.
  */
 
 #ifndef VPU_BOOT_API_H
 #define VPU_BOOT_API_H
 
 /*
- * =========== FW API version information beginning ================
- *  The bellow values will be used to construct the version info this way:
+ *  The below values will be used to construct the version info this way:
  *  fw_bin_header->api_version[VPU_BOOT_API_VER_ID] = (VPU_BOOT_API_VER_MAJOR << 16) |
  *  VPU_BOOT_API_VER_MINOR;
- *  VPU_BOOT_API_VER_PATCH will be ignored. KMD and compatibility is not affected if this changes.
+ *  VPU_BOOT_API_VER_PATCH will be ignored. KMD and compatibility is not affected if this changes
+ *  This information is collected by using vpuip_2/application/vpuFirmware/make_std_fw_image.py
+ *  If a header is missing this info we ignore the header, if a header is missing or contains
+ *  partial info a build error will be generated.
  */
 
 /*
@@ -24,21 +26,20 @@
  * Minor version changes when API backward compatibility is preserved.
  * Resets to 0 if Major version is incremented.
  */
-#define VPU_BOOT_API_VER_MINOR 12
+#define VPU_BOOT_API_VER_MINOR 26
 
 /*
  * API header changed (field names, documentation, formatting) but API itself has not been changed
  */
-#define VPU_BOOT_API_VER_PATCH 2
+#define VPU_BOOT_API_VER_PATCH 3
 
 /*
  * Index in the API version table
  * Must be unique for each API
  */
 #define VPU_BOOT_API_VER_INDEX 0
-/* ------------ FW API version information end ---------------------*/
 
-#pragma pack(push, 1)
+#pragma pack(push, 4)
 
 /*
  * Firmware image header format
@@ -63,6 +64,25 @@ struct vpu_firmware_header {
 	/* Size of memory require for firmware execution */
 	u32 runtime_size;
 	u32 shave_nn_fw_size;
+	/*
+	 * Size of primary preemption buffer, assuming a 2-job submission queue.
+	 * NOTE: host driver is expected to adapt size accordingly to actual
+	 * submission queue size and device capabilities.
+	 */
+	u32 preemption_buffer_1_size;
+	/*
+	 * Size of secondary preemption buffer, assuming a 2-job submission queue.
+	 * NOTE: host driver is expected to adapt size accordingly to actual
+	 * submission queue size and device capabilities.
+	 */
+	u32 preemption_buffer_2_size;
+	/* Space reserved for future preemption-related fields. */
+	u32 preemption_reserved[6];
+	/* FW image read only section start address, 4KB aligned */
+	u64 ro_section_start_address;
+	/* FW image read only section size, 4KB aligned */
+	u32 ro_section_size;
+	u32 reserved;
 };
 
 /*
@@ -87,6 +107,14 @@ enum VPU_BOOT_L2_CACHE_CFG_TYPE {
 	VPU_BOOT_L2_CACHE_CFG_UPA = 0,
 	VPU_BOOT_L2_CACHE_CFG_NN = 1,
 	VPU_BOOT_L2_CACHE_CFG_NUM = 2
+};
+
+/** VPU MCA ECC signalling mode. By default, no signalling is used */
+enum VPU_BOOT_MCA_ECC_SIGNAL_TYPE {
+	VPU_BOOT_MCA_ECC_NONE = 0,
+	VPU_BOOT_MCA_ECC_CORR = 1,
+	VPU_BOOT_MCA_ECC_FATAL = 2,
+	VPU_BOOT_MCA_ECC_BOTH = 3
 };
 
 /**
@@ -131,9 +159,9 @@ enum vpu_trace_destination {
 #define VPU_TRACE_PROC_BIT_ACT_SHV_3 22
 #define VPU_TRACE_PROC_NO_OF_HW_DEVS 23
 
-/* KMB HW component IDs are sequential, so define first and last IDs. */
-#define VPU_TRACE_PROC_BIT_KMB_FIRST VPU_TRACE_PROC_BIT_LRT
-#define VPU_TRACE_PROC_BIT_KMB_LAST  VPU_TRACE_PROC_BIT_SHV_15
+/* VPU 30xx HW component IDs are sequential, so define first and last IDs. */
+#define VPU_TRACE_PROC_BIT_30XX_FIRST VPU_TRACE_PROC_BIT_LRT
+#define VPU_TRACE_PROC_BIT_30XX_LAST  VPU_TRACE_PROC_BIT_SHV_15
 
 struct vpu_boot_l2_cache_config {
 	u8 use;
@@ -146,6 +174,36 @@ struct vpu_warm_boot_section {
 	u32 size;
 	u32 core_id;
 	u32 is_clear_op;
+};
+
+/*
+ * When HW scheduling mode is enabled, a present period is defined.
+ * It will be used by VPU to swap between normal and focus priorities
+ * to prevent starving of normal priority band (when implemented).
+ * Host must provide a valid value at boot time in
+ * `vpu_focus_present_timer_ms`. If the value provided by the host is not within the
+ * defined range a default value will be used. Here we define the min. and max.
+ * allowed values and the and default value of the present period. Units are milliseconds.
+ */
+#define VPU_PRESENT_CALL_PERIOD_MS_DEFAULT 50
+#define VPU_PRESENT_CALL_PERIOD_MS_MIN	   16
+#define VPU_PRESENT_CALL_PERIOD_MS_MAX	   10000
+
+/**
+ * Macros to enable various power profiles within the NPU.
+ * To be defined as part of 32 bit mask.
+ */
+#define POWER_PROFILE_SURVIVABILITY 0x1
+
+/**
+ * Enum for dvfs_mode boot param.
+ */
+enum vpu_governor {
+	VPU_GOV_DEFAULT = 0, /* Default Governor for the system */
+	VPU_GOV_MAX_PERFORMANCE = 1, /* Maximum performance governor */
+	VPU_GOV_ON_DEMAND = 2, /* On Demand frequency control governor */
+	VPU_GOV_POWER_SAVE = 3, /* Power save governor */
+	VPU_GOV_ON_DEMAND_PRIORITY_AWARE = 4 /* On Demand priority based governor */
 };
 
 struct vpu_boot_params {
@@ -218,6 +276,7 @@ struct vpu_boot_params {
 	 * the threshold will not be logged); applies to every enabled logging
 	 * destination and loggable HW component. See 'mvLog_t' enum for acceptable
 	 * values.
+	 * TODO: EISW-33556: Move log level definition (mvLog_t) to this file.
 	 */
 	u32 default_trace_level;
 	u32 boot_type;
@@ -249,7 +308,58 @@ struct vpu_boot_params {
 	u32 temp_sensor_period_ms;
 	/** PLL ratio for efficient clock frequency */
 	u32 pn_freq_pll_ratio;
-	u32 pad4[28];
+	/**
+	 * DVFS Mode:
+	 * 0 - Default, DVFS mode selected by the firmware
+	 * 1 - Max Performance
+	 * 2 - On Demand
+	 * 3 - Power Save
+	 * 4 - On Demand Priority Aware
+	 */
+	u32 dvfs_mode;
+	/**
+	 * Depending on DVFS Mode:
+	 * On-demand: Default if 0.
+	 *    Bit 0-7   - uint8_t: Highest residency percent
+	 *    Bit 8-15  - uint8_t: High residency percent
+	 *    Bit 16-23 - uint8_t: Low residency percent
+	 *    Bit 24-31 - uint8_t: Lowest residency percent
+	 *    Bit 32-35 - unsigned 4b: PLL Ratio increase amount on highest residency
+	 *    Bit 36-39 - unsigned 4b: PLL Ratio increase amount on high residency
+	 *    Bit 40-43 - unsigned 4b: PLL Ratio decrease amount on low residency
+	 *    Bit 44-47 - unsigned 4b: PLL Ratio decrease amount on lowest frequency
+	 *    Bit 48-55 - uint8_t: Period (ms) for residency decisions
+	 *    Bit 56-63 - uint8_t: Averaging windows (as multiples of period. Max: 30 decimal)
+	 * Power Save/Max Performance: Unused
+	 */
+	u64 dvfs_param;
+	/**
+	 * D0i3 delayed entry
+	 * Bit0: Disable CPU state save on D0i2 entry flow.
+	 *       0: Every D0i2 entry saves state. Save state IPC message ignored.
+	 *       1: IPC message required to save state on D0i3 entry flow.
+	 */
+	u32 d0i3_delayed_entry;
+	/* Time spent by VPU in D0i3 state */
+	u64 d0i3_residency_time_us;
+	/* Value of VPU perf counter at the time of entering D0i3 state . */
+	u64 d0i3_entry_vpu_ts;
+	/*
+	 * The system time of the host operating system in microseconds.
+	 * E.g the number of microseconds since 1st of January 1970, or whatever
+	 * date the host operating system uses to maintain system time.
+	 * This value will be used to track system time on the VPU.
+	 * The KMD is required to update this value on every VPU reset.
+	 */
+	u64 system_time_us;
+	u32 pad4[2];
+	/*
+	 * The delta between device monotonic time and the current value of the
+	 * HW timestamp register, in ticks. Written by the firmware during boot.
+	 * Can be used by the KMD to calculate device time.
+	 */
+	u64 device_time_delta_ticks;
+	u32 pad7[14];
 	/* Warm boot information: 0x400 - 0x43F */
 	u32 warm_boot_sections_count;
 	u32 warm_boot_start_address_reference;
@@ -274,14 +384,19 @@ struct vpu_boot_params {
 	u32 vpu_scheduling_mode;
 	/* Present call period in milliseconds. */
 	u32 vpu_focus_present_timer_ms;
-	/* Unused/reserved: 0x478 - 0xFFF */
-	u32 pad6[738];
+	/* VPU ECC Signaling */
+	u32 vpu_uses_ecc_mca_signal;
+	/* Values defined by POWER_PROFILE* macros */
+	u32 power_profile;
+	/* Microsecond value for DCT active cycle */
+	u32 dct_active_us;
+	/* Microsecond value for DCT inactive cycle */
+	u32 dct_inactive_us;
+	/* Unused/reserved: 0x488 - 0xFFF */
+	u32 pad6[734];
 };
 
-/*
- * Magic numbers set between host and vpu to detect corruptio of tracing init
- */
-
+/* Magic numbers set between host and vpu to detect corruption of tracing init */
 #define VPU_TRACING_BUFFER_CANARY (0xCAFECAFE)
 
 /* Tracing buffer message format definitions */
@@ -301,7 +416,9 @@ struct vpu_tracing_buffer_header {
 	u32 host_canary_start;
 	/* offset from start of buffer for trace entries */
 	u32 read_index;
-	u32 pad_to_cache_line_size_0[14];
+	/* keeps track of wrapping on the reader side */
+	u32 read_wrap_count;
+	u32 pad_to_cache_line_size_0[13];
 	/* End of first cache line */
 
 	/**

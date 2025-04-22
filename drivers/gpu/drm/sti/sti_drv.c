@@ -5,6 +5,7 @@
  */
 
 #include <linux/component.h>
+#include <linux/debugfs.h>
 #include <linux/dma-mapping.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -12,6 +13,7 @@
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 
+#include <drm/clients/drm_client_setup.h>
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_debugfs.h>
@@ -27,7 +29,6 @@
 
 #define DRIVER_NAME	"sti"
 #define DRIVER_DESC	"STMicroelectronics SoC DRM"
-#define DRIVER_DATE	"20140601"
 #define DRIVER_MAJOR	1
 #define DRIVER_MINOR	0
 
@@ -135,12 +136,12 @@ static const struct drm_driver sti_driver = {
 	.driver_features = DRIVER_MODESET | DRIVER_GEM | DRIVER_ATOMIC,
 	.fops = &sti_driver_fops,
 	DRM_GEM_DMA_DRIVER_OPS,
+	DRM_FBDEV_DMA_DRIVER_OPS,
 
 	.debugfs_init = sti_drm_dbg_init,
 
 	.name = DRIVER_NAME,
 	.desc = DRIVER_DESC,
-	.date = DRIVER_DATE,
 	.major = DRIVER_MAJOR,
 	.minor = DRIVER_MINOR,
 };
@@ -174,6 +175,7 @@ static void sti_cleanup(struct drm_device *ddev)
 	drm_atomic_helper_shutdown(ddev);
 	drm_mode_config_cleanup(ddev);
 	component_unbind_all(ddev->dev, ddev);
+	dev_set_drvdata(ddev->dev, NULL);
 	kfree(private);
 	ddev->dev_private = NULL;
 }
@@ -201,7 +203,7 @@ static int sti_bind(struct device *dev)
 
 	drm_mode_config_reset(ddev);
 
-	drm_fbdev_dma_setup(ddev, 32);
+	drm_client_setup(ddev, NULL);
 
 	return 0;
 
@@ -253,6 +255,11 @@ static void sti_platform_remove(struct platform_device *pdev)
 	component_master_del(&pdev->dev, &sti_ops);
 }
 
+static void sti_platform_shutdown(struct platform_device *pdev)
+{
+	drm_atomic_helper_shutdown(platform_get_drvdata(pdev));
+}
+
 static const struct of_device_id sti_dt_ids[] = {
 	{ .compatible = "st,sti-display-subsystem", },
 	{ /* end node */ },
@@ -261,7 +268,8 @@ MODULE_DEVICE_TABLE(of, sti_dt_ids);
 
 static struct platform_driver sti_platform_driver = {
 	.probe = sti_platform_probe,
-	.remove_new = sti_platform_remove,
+	.remove = sti_platform_remove,
+	.shutdown = sti_platform_shutdown,
 	.driver = {
 		.name = DRIVER_NAME,
 		.of_match_table = sti_dt_ids,

@@ -408,14 +408,12 @@ static int pm8941_pwrkey_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int pm8941_pwrkey_remove(struct platform_device *pdev)
+static void pm8941_pwrkey_remove(struct platform_device *pdev)
 {
 	struct pm8941_pwrkey *pwrkey = platform_get_drvdata(pdev);
 
 	if (pwrkey->data->supports_ps_hold_poff_config)
 		unregister_reboot_notifier(&pwrkey->reboot_notifier);
-
-	return 0;
 }
 
 static const struct pm8941_data pwrkey_data = {

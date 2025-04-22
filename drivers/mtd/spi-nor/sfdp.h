@@ -118,11 +118,19 @@ struct sfdp_bfpt {
 	(BFPT_DWORD16_EN4B_EN4B | BFPT_DWORD16_EX4B_EX4B)
 #define BFPT_DWORD16_SWRST_EN_RST		BIT(12)
 
+#define BFPT_DWORD17_RD_1_1_8_CMD		GENMASK(31, 24)
+#define BFPT_DWORD17_RD_1_1_8_MODE_CLOCKS	GENMASK(23, 21)
+#define BFPT_DWORD17_RD_1_1_8_WAIT_STATES	GENMASK(20, 16)
+#define BFPT_DWORD17_RD_1_8_8_CMD		GENMASK(15, 8)
+#define BFPT_DWORD17_RD_1_8_8_MODE_CLOCKS	GENMASK(7, 5)
+#define BFPT_DWORD17_RD_1_8_8_WAIT_STATES	GENMASK(4, 0)
+
 #define BFPT_DWORD18_CMD_EXT_MASK		GENMASK(30, 29)
 #define BFPT_DWORD18_CMD_EXT_REP		(0x0UL << 29) /* Repeat */
 #define BFPT_DWORD18_CMD_EXT_INV		(0x1UL << 29) /* Invert */
 #define BFPT_DWORD18_CMD_EXT_RES		(0x2UL << 29) /* Reserved */
 #define BFPT_DWORD18_CMD_EXT_16B		(0x3UL << 29) /* 16-bit opcode */
+#define BFPT_DWORD18_BYTE_ORDER_SWAPPED		BIT(31)	/* Byte order swapped in 8D-8D-8D mode */
 
 struct sfdp_parameter_header {
 	u8		id_lsb;

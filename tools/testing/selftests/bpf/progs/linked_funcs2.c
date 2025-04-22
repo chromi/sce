@@ -63,12 +63,14 @@ extern int set_output_val1(int x);
 /* here we'll force set_output_ctx1() to be __hidden in the final obj file */
 __hidden extern void set_output_ctx1(__u64 *ctx);
 
+void *bpf_cast_to_kern_ctx(void *obj) __ksym;
+
 SEC("?raw_tp/sys_enter")
 int BPF_PROG(handler2, struct pt_regs *regs, long id)
 {
 	static volatile int whatever;
 
-	if (my_tid != (u32)bpf_get_current_pid_tgid() || id != syscall_id)
+	if (my_tid != (s32)bpf_get_current_pid_tgid() || id != syscall_id)
 		return 0;
 
 	/* make sure we have CO-RE relocations in main program */
@@ -84,6 +86,12 @@ int BPF_PROG(handler2, struct pt_regs *regs, long id)
 	set_output_weak(42);
 
 	return 0;
+}
+
+/* Generate BTF FUNC record and test linking with duplicate extern functions */
+void kfunc_gen2(void)
+{
+	bpf_cast_to_kern_ctx(0);
 }
 
 char LICENSE[] SEC("license") = "GPL";

@@ -238,6 +238,7 @@ config APPLICOM
 config SONYPI
 	tristate "Sony Vaio Programmable I/O Control Device support"
 	depends on X86_32 && PCI && INPUT
+	depends on ACPI_EC || !ACPI
 	help
 	  This driver enables access to the Sony Programmable I/O Control
 	  Device which can be found in many (all ?) Sony Vaio laptops.
@@ -348,7 +349,7 @@ config DEVPORT
 	  device is similar to /dev/mem, but for I/O ports.
 
 config HPET
-	bool "HPET - High Precision Event Timer" if (X86 || IA64)
+	bool "HPET - High Precision Event Timer" if X86
 	default n
 	depends on ACPI
 	help
@@ -377,7 +378,7 @@ config HPET_MMAP_DEFAULT
 
 config HANGCHECK_TIMER
 	tristate "Hangcheck timer"
-	depends on X86 || IA64 || PPC64 || S390
+	depends on X86 || PPC64 || S390
 	help
 	  The hangcheck-timer module detects when the system has gone
 	  out to lunch past a certain margin.  It can reboot the system

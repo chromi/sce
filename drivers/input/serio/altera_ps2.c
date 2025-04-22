@@ -100,7 +100,7 @@ static int altera_ps2_probe(struct platform_device *pdev)
 		return error;
 	}
 
-	serio = kzalloc(sizeof(struct serio), GFP_KERNEL);
+	serio = kzalloc(sizeof(*serio), GFP_KERNEL);
 	if (!serio)
 		return -ENOMEM;
 
@@ -125,13 +125,11 @@ static int altera_ps2_probe(struct platform_device *pdev)
 /*
  * Remove one device from this driver.
  */
-static int altera_ps2_remove(struct platform_device *pdev)
+static void altera_ps2_remove(struct platform_device *pdev)
 {
 	struct ps2if *ps2if = platform_get_drvdata(pdev);
 
 	serio_unregister_port(ps2if->io);
-
-	return 0;
 }
 
 #ifdef CONFIG_OF

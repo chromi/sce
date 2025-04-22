@@ -975,7 +975,8 @@ static inline void update_can_queue(struct Scsi_Host *host, u_int in_ptr, u_int 
 	host->sg_tablesize = QLOGICPTI_MAX_SG(num_free);
 }
 
-static int qlogicpti_slave_configure(struct scsi_device *sdev)
+static int qlogicpti_sdev_configure(struct scsi_device *sdev,
+				    struct queue_limits *lim)
 {
 	struct qlogicpti *qpti = shost_priv(sdev->host);
 	int tgt = sdev->id;
@@ -1292,7 +1293,7 @@ static const struct scsi_host_template qpti_template = {
 	.name			= "qlogicpti",
 	.info			= qlogicpti_info,
 	.queuecommand		= qlogicpti_queuecommand,
-	.slave_configure	= qlogicpti_slave_configure,
+	.sdev_configure		= qlogicpti_sdev_configure,
 	.eh_abort_handler	= qlogicpti_abort,
 	.eh_host_reset_handler	= qlogicpti_reset,
 	.can_queue		= QLOGICPTI_REQ_QUEUE_LEN,
@@ -1409,7 +1410,7 @@ fail_unlink:
 	return -ENODEV;
 }
 
-static int qpti_sbus_remove(struct platform_device *op)
+static void qpti_sbus_remove(struct platform_device *op)
 {
 	struct qlogicpti *qpti = dev_get_drvdata(&op->dev);
 
@@ -1438,8 +1439,6 @@ static int qpti_sbus_remove(struct platform_device *op)
 		of_iounmap(&op->resource[0], qpti->sreg, sizeof(unsigned char));
 
 	scsi_host_put(qpti->qhost);
-
-	return 0;
 }
 
 static const struct of_device_id qpti_match[] = {
@@ -1470,7 +1469,7 @@ static struct platform_driver qpti_sbus_driver = {
 module_platform_driver(qpti_sbus_driver);
 
 MODULE_DESCRIPTION("QlogicISP SBUS driver");
-MODULE_AUTHOR("David S. Miller (davem@davemloft.net)");
+MODULE_AUTHOR("David S. Miller <davem@davemloft.net>");
 MODULE_LICENSE("GPL");
 MODULE_VERSION("2.1");
 MODULE_FIRMWARE("qlogic/isp1000.bin");

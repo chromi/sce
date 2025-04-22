@@ -8,15 +8,15 @@
  */
 #define pr_fmt(fmt) "iommufd: " fmt
 
+#include <linux/bug.h>
 #include <linux/file.h>
 #include <linux/fs.h>
-#include <linux/module.h>
-#include <linux/slab.h>
-#include <linux/miscdevice.h>
-#include <linux/mutex.h>
-#include <linux/bug.h>
-#include <uapi/linux/iommufd.h>
 #include <linux/iommufd.h>
+#include <linux/miscdevice.h>
+#include <linux/module.h>
+#include <linux/mutex.h>
+#include <linux/slab.h>
+#include <uapi/linux/iommufd.h>
 
 #include "io_pagetable.h"
 #include "iommufd_private.h"
@@ -28,46 +28,6 @@ struct iommufd_object_ops {
 };
 static const struct iommufd_object_ops iommufd_object_ops[];
 static struct miscdevice vfio_misc_dev;
-
-struct iommufd_object *_iommufd_object_alloc(struct iommufd_ctx *ictx,
-					     size_t size,
-					     enum iommufd_object_type type)
-{
-	static struct lock_class_key obj_keys[IOMMUFD_OBJ_MAX];
-	struct iommufd_object *obj;
-	int rc;
-
-	obj = kzalloc(size, GFP_KERNEL_ACCOUNT);
-	if (!obj)
-		return ERR_PTR(-ENOMEM);
-	obj->type = type;
-	/*
-	 * In most cases the destroy_rwsem is obtained with try so it doesn't
-	 * interact with lockdep, however on destroy we have to sleep. This
-	 * means if we have to destroy an object while holding a get on another
-	 * object it triggers lockdep. Using one locking class per object type
-	 * is a simple and reasonable way to avoid this.
-	 */
-	__init_rwsem(&obj->destroy_rwsem, "iommufd_object::destroy_rwsem",
-		     &obj_keys[type]);
-	refcount_set(&obj->users, 1);
-
-	/*
-	 * Reserve an ID in the xarray but do not publish the pointer yet since
-	 * the caller hasn't initialized it yet. Once the pointer is published
-	 * in the xarray and visible to other threads we can't reliably destroy
-	 * it anymore, so the caller must complete all errorable operations
-	 * before calling iommufd_object_finalize().
-	 */
-	rc = xa_alloc(&ictx->objects, &obj->id, XA_ZERO_ENTRY,
-		      xa_limit_31b, GFP_KERNEL_ACCOUNT);
-	if (rc)
-		goto out_free;
-	return obj;
-out_free:
-	kfree(obj);
-	return ERR_PTR(rc);
-}
 
 /*
  * Allow concurrent access to the object.
@@ -81,20 +41,26 @@ out_free:
 void iommufd_object_finalize(struct iommufd_ctx *ictx,
 			     struct iommufd_object *obj)
 {
+	XA_STATE(xas, &ictx->objects, obj->id);
 	void *old;
 
-	old = xa_store(&ictx->objects, obj->id, obj, GFP_KERNEL);
-	/* obj->id was returned from xa_alloc() so the xa_store() cannot fail */
-	WARN_ON(old);
+	xa_lock(&ictx->objects);
+	old = xas_store(&xas, obj);
+	xa_unlock(&ictx->objects);
+	/* obj->id was returned from xa_alloc() so the xas_store() cannot fail */
+	WARN_ON(old != XA_ZERO_ENTRY);
 }
 
 /* Undo _iommufd_object_alloc() if iommufd_object_finalize() was not called */
 void iommufd_object_abort(struct iommufd_ctx *ictx, struct iommufd_object *obj)
 {
+	XA_STATE(xas, &ictx->objects, obj->id);
 	void *old;
 
-	old = xa_erase(&ictx->objects, obj->id);
-	WARN_ON(old);
+	xa_lock(&ictx->objects);
+	old = xas_store(&xas, NULL);
+	xa_unlock(&ictx->objects);
+	WARN_ON(old != XA_ZERO_ENTRY);
 	kfree(obj);
 }
 
@@ -129,92 +95,113 @@ struct iommufd_object *iommufd_get_object(struct iommufd_ctx *ictx, u32 id,
 	return obj;
 }
 
+static int iommufd_object_dec_wait_shortterm(struct iommufd_ctx *ictx,
+					     struct iommufd_object *to_destroy)
+{
+	if (refcount_dec_and_test(&to_destroy->shortterm_users))
+		return 0;
+
+	if (wait_event_timeout(ictx->destroy_wait,
+				refcount_read(&to_destroy->shortterm_users) ==
+					0,
+				msecs_to_jiffies(60000)))
+		return 0;
+
+	pr_crit("Time out waiting for iommufd object to become free\n");
+	refcount_inc(&to_destroy->shortterm_users);
+	return -EBUSY;
+}
+
 /*
  * Remove the given object id from the xarray if the only reference to the
- * object is held by the xarray. The caller must call ops destroy().
+ * object is held by the xarray.
  */
-static struct iommufd_object *iommufd_object_remove(struct iommufd_ctx *ictx,
-						    u32 id, bool extra_put)
+int iommufd_object_remove(struct iommufd_ctx *ictx,
+			  struct iommufd_object *to_destroy, u32 id,
+			  unsigned int flags)
 {
 	struct iommufd_object *obj;
 	XA_STATE(xas, &ictx->objects, id);
+	bool zerod_shortterm = false;
+	int ret;
+
+	/*
+	 * The purpose of the shortterm_users is to ensure deterministic
+	 * destruction of objects used by external drivers and destroyed by this
+	 * function. Any temporary increment of the refcount must increment
+	 * shortterm_users, such as during ioctl execution.
+	 */
+	if (flags & REMOVE_WAIT_SHORTTERM) {
+		ret = iommufd_object_dec_wait_shortterm(ictx, to_destroy);
+		if (ret) {
+			/*
+			 * We have a bug. Put back the callers reference and
+			 * defer cleaning this object until close.
+			 */
+			refcount_dec(&to_destroy->users);
+			return ret;
+		}
+		zerod_shortterm = true;
+	}
 
 	xa_lock(&ictx->objects);
 	obj = xas_load(&xas);
-	if (xa_is_zero(obj) || !obj) {
-		obj = ERR_PTR(-ENOENT);
-		goto out_xa;
-	}
-
-	/*
-	 * If the caller is holding a ref on obj we put it here under the
-	 * spinlock.
-	 */
-	if (extra_put)
+	if (to_destroy) {
+		/*
+		 * If the caller is holding a ref on obj we put it here under
+		 * the spinlock.
+		 */
 		refcount_dec(&obj->users);
 
+		if (WARN_ON(obj != to_destroy)) {
+			ret = -ENOENT;
+			goto err_xa;
+		}
+	} else if (xa_is_zero(obj) || !obj) {
+		ret = -ENOENT;
+		goto err_xa;
+	}
+
 	if (!refcount_dec_if_one(&obj->users)) {
-		obj = ERR_PTR(-EBUSY);
-		goto out_xa;
+		ret = -EBUSY;
+		goto err_xa;
 	}
 
 	xas_store(&xas, NULL);
 	if (ictx->vfio_ioas == container_of(obj, struct iommufd_ioas, obj))
 		ictx->vfio_ioas = NULL;
-
-out_xa:
 	xa_unlock(&ictx->objects);
 
-	/* The returned object reference count is zero */
-	return obj;
-}
-
-/*
- * The caller holds a users refcount and wants to destroy the object. Returns
- * true if the object was destroyed. In all cases the caller no longer has a
- * reference on obj.
- */
-void __iommufd_object_destroy_user(struct iommufd_ctx *ictx,
-				   struct iommufd_object *obj, bool allow_fail)
-{
-	struct iommufd_object *ret;
-
 	/*
-	 * The purpose of the destroy_rwsem is to ensure deterministic
-	 * destruction of objects used by external drivers and destroyed by this
-	 * function. Any temporary increment of the refcount must hold the read
-	 * side of this, such as during ioctl execution.
+	 * Since users is zero any positive users_shortterm must be racing
+	 * iommufd_put_object(), or we have a bug.
 	 */
-	down_write(&obj->destroy_rwsem);
-	ret = iommufd_object_remove(ictx, obj->id, true);
-	up_write(&obj->destroy_rwsem);
-
-	if (allow_fail && IS_ERR(ret))
-		return;
-
-	/*
-	 * If there is a bug and we couldn't destroy the object then we did put
-	 * back the caller's refcount and will eventually try to free it again
-	 * during close.
-	 */
-	if (WARN_ON(IS_ERR(ret)))
-		return;
+	if (!zerod_shortterm) {
+		ret = iommufd_object_dec_wait_shortterm(ictx, obj);
+		if (WARN_ON(ret))
+			return ret;
+	}
 
 	iommufd_object_ops[obj->type].destroy(obj);
 	kfree(obj);
+	return 0;
+
+err_xa:
+	if (zerod_shortterm) {
+		/* Restore the xarray owned reference */
+		refcount_set(&obj->shortterm_users, 1);
+	}
+	xa_unlock(&ictx->objects);
+
+	/* The returned object reference count is zero */
+	return ret;
 }
 
 static int iommufd_destroy(struct iommufd_ucmd *ucmd)
 {
 	struct iommu_destroy *cmd = ucmd->cmd;
-	struct iommufd_object *obj;
 
-	obj = iommufd_object_remove(ucmd->ictx, cmd->id, false);
-	if (IS_ERR(obj))
-		return PTR_ERR(obj);
-	iommufd_object_ops[obj->type].destroy(obj);
-	kfree(obj);
-	return 0;
+	return iommufd_object_remove(ucmd->ictx, NULL, cmd->id, 0);
 }
 
 static int iommufd_fops_open(struct inode *inode, struct file *filp)
@@ -235,9 +222,11 @@ static int iommufd_fops_open(struct inode *inode, struct file *filp)
 		pr_info_once("IOMMUFD is providing /dev/vfio/vfio, not VFIO.\n");
 	}
 
+	init_rwsem(&ictx->ioas_creation_lock);
 	xa_init_flags(&ictx->objects, XA_FLAGS_ALLOC1 | XA_FLAGS_ACCOUNT);
 	xa_init(&ictx->groups);
 	ictx->file = filp;
+	init_waitqueue_head(&ictx->destroy_wait);
 	filp->private_data = ictx;
 	return 0;
 }
@@ -305,8 +294,12 @@ static int iommufd_option(struct iommufd_ucmd *ucmd)
 
 union ucmd_buffer {
 	struct iommu_destroy destroy;
+	struct iommu_fault_alloc fault;
 	struct iommu_hw_info info;
 	struct iommu_hwpt_alloc hwpt;
+	struct iommu_hwpt_get_dirty_bitmap get_dirty_bitmap;
+	struct iommu_hwpt_invalidate cache;
+	struct iommu_hwpt_set_dirty_tracking set_dirty_tracking;
 	struct iommu_ioas_alloc alloc;
 	struct iommu_ioas_allow_iovas allow_iovas;
 	struct iommu_ioas_copy ioas_copy;
@@ -314,7 +307,9 @@ union ucmd_buffer {
 	struct iommu_ioas_map map;
 	struct iommu_ioas_unmap unmap;
 	struct iommu_option option;
+	struct iommu_vdevice_alloc vdev;
 	struct iommu_vfio_ioas vfio_ioas;
+	struct iommu_viommu_alloc viommu;
 #ifdef CONFIG_IOMMUFD_TEST
 	struct iommu_test_cmd test;
 #endif
@@ -338,26 +333,40 @@ struct iommufd_ioctl_op {
 	}
 static const struct iommufd_ioctl_op iommufd_ioctl_ops[] = {
 	IOCTL_OP(IOMMU_DESTROY, iommufd_destroy, struct iommu_destroy, id),
+	IOCTL_OP(IOMMU_FAULT_QUEUE_ALLOC, iommufd_fault_alloc,
+		 struct iommu_fault_alloc, out_fault_fd),
 	IOCTL_OP(IOMMU_GET_HW_INFO, iommufd_get_hw_info, struct iommu_hw_info,
 		 __reserved),
 	IOCTL_OP(IOMMU_HWPT_ALLOC, iommufd_hwpt_alloc, struct iommu_hwpt_alloc,
 		 __reserved),
+	IOCTL_OP(IOMMU_HWPT_GET_DIRTY_BITMAP, iommufd_hwpt_get_dirty_bitmap,
+		 struct iommu_hwpt_get_dirty_bitmap, data),
+	IOCTL_OP(IOMMU_HWPT_INVALIDATE, iommufd_hwpt_invalidate,
+		 struct iommu_hwpt_invalidate, __reserved),
+	IOCTL_OP(IOMMU_HWPT_SET_DIRTY_TRACKING, iommufd_hwpt_set_dirty_tracking,
+		 struct iommu_hwpt_set_dirty_tracking, __reserved),
 	IOCTL_OP(IOMMU_IOAS_ALLOC, iommufd_ioas_alloc_ioctl,
 		 struct iommu_ioas_alloc, out_ioas_id),
 	IOCTL_OP(IOMMU_IOAS_ALLOW_IOVAS, iommufd_ioas_allow_iovas,
 		 struct iommu_ioas_allow_iovas, allowed_iovas),
+	IOCTL_OP(IOMMU_IOAS_CHANGE_PROCESS, iommufd_ioas_change_process,
+		 struct iommu_ioas_change_process, __reserved),
 	IOCTL_OP(IOMMU_IOAS_COPY, iommufd_ioas_copy, struct iommu_ioas_copy,
 		 src_iova),
 	IOCTL_OP(IOMMU_IOAS_IOVA_RANGES, iommufd_ioas_iova_ranges,
 		 struct iommu_ioas_iova_ranges, out_iova_alignment),
-	IOCTL_OP(IOMMU_IOAS_MAP, iommufd_ioas_map, struct iommu_ioas_map,
-		 iova),
+	IOCTL_OP(IOMMU_IOAS_MAP, iommufd_ioas_map, struct iommu_ioas_map, iova),
+	IOCTL_OP(IOMMU_IOAS_MAP_FILE, iommufd_ioas_map_file,
+		 struct iommu_ioas_map_file, iova),
 	IOCTL_OP(IOMMU_IOAS_UNMAP, iommufd_ioas_unmap, struct iommu_ioas_unmap,
 		 length),
-	IOCTL_OP(IOMMU_OPTION, iommufd_option, struct iommu_option,
-		 val64),
+	IOCTL_OP(IOMMU_OPTION, iommufd_option, struct iommu_option, val64),
+	IOCTL_OP(IOMMU_VDEVICE_ALLOC, iommufd_vdevice_alloc_ioctl,
+		 struct iommu_vdevice_alloc, virt_id),
 	IOCTL_OP(IOMMU_VFIO_IOAS, iommufd_vfio_ioas, struct iommu_vfio_ioas,
 		 __reserved),
+	IOCTL_OP(IOMMU_VIOMMU_ALLOC, iommufd_viommu_alloc_ioctl,
+		 struct iommu_viommu_alloc, out_viommu_id),
 #ifdef CONFIG_IOMMUFD_TEST
 	IOCTL_OP(IOMMU_TEST_CMD, iommufd_test, struct iommu_test_cmd, last),
 #endif
@@ -416,7 +425,7 @@ void iommufd_ctx_get(struct iommufd_ctx *ictx)
 {
 	get_file(ictx->file);
 }
-EXPORT_SYMBOL_NS_GPL(iommufd_ctx_get, IOMMUFD);
+EXPORT_SYMBOL_NS_GPL(iommufd_ctx_get, "IOMMUFD");
 
 /**
  * iommufd_ctx_from_file - Acquires a reference to the iommufd context
@@ -436,7 +445,7 @@ struct iommufd_ctx *iommufd_ctx_from_file(struct file *file)
 	iommufd_ctx_get(ictx);
 	return ictx;
 }
-EXPORT_SYMBOL_NS_GPL(iommufd_ctx_from_file, IOMMUFD);
+EXPORT_SYMBOL_NS_GPL(iommufd_ctx_from_file, "IOMMUFD");
 
 /**
  * iommufd_ctx_from_fd - Acquires a reference to the iommufd context
@@ -460,7 +469,7 @@ struct iommufd_ctx *iommufd_ctx_from_fd(int fd)
 	/* fget is the same as iommufd_ctx_get() */
 	return file->private_data;
 }
-EXPORT_SYMBOL_NS_GPL(iommufd_ctx_from_fd, IOMMUFD);
+EXPORT_SYMBOL_NS_GPL(iommufd_ctx_from_fd, "IOMMUFD");
 
 /**
  * iommufd_ctx_put - Put back a reference
@@ -470,7 +479,7 @@ void iommufd_ctx_put(struct iommufd_ctx *ictx)
 {
 	fput(ictx->file);
 }
-EXPORT_SYMBOL_NS_GPL(iommufd_ctx_put, IOMMUFD);
+EXPORT_SYMBOL_NS_GPL(iommufd_ctx_put, "IOMMUFD");
 
 static const struct iommufd_object_ops iommufd_object_ops[] = {
 	[IOMMUFD_OBJ_ACCESS] = {
@@ -479,12 +488,25 @@ static const struct iommufd_object_ops iommufd_object_ops[] = {
 	[IOMMUFD_OBJ_DEVICE] = {
 		.destroy = iommufd_device_destroy,
 	},
+	[IOMMUFD_OBJ_FAULT] = {
+		.destroy = iommufd_fault_destroy,
+	},
+	[IOMMUFD_OBJ_HWPT_PAGING] = {
+		.destroy = iommufd_hwpt_paging_destroy,
+		.abort = iommufd_hwpt_paging_abort,
+	},
+	[IOMMUFD_OBJ_HWPT_NESTED] = {
+		.destroy = iommufd_hwpt_nested_destroy,
+		.abort = iommufd_hwpt_nested_abort,
+	},
 	[IOMMUFD_OBJ_IOAS] = {
 		.destroy = iommufd_ioas_destroy,
 	},
-	[IOMMUFD_OBJ_HW_PAGETABLE] = {
-		.destroy = iommufd_hw_pagetable_destroy,
-		.abort = iommufd_hw_pagetable_abort,
+	[IOMMUFD_OBJ_VDEVICE] = {
+		.destroy = iommufd_vdevice_destroy,
+	},
+	[IOMMUFD_OBJ_VIOMMU] = {
+		.destroy = iommufd_viommu_destroy,
 	},
 #ifdef CONFIG_IOMMUFD_TEST
 	[IOMMUFD_OBJ_SELFTEST] = {
@@ -551,6 +573,7 @@ module_exit(iommufd_exit);
 MODULE_ALIAS_MISCDEV(VFIO_MINOR);
 MODULE_ALIAS("devname:vfio/vfio");
 #endif
-MODULE_IMPORT_NS(IOMMUFD_INTERNAL);
+MODULE_IMPORT_NS("IOMMUFD_INTERNAL");
+MODULE_IMPORT_NS("IOMMUFD");
 MODULE_DESCRIPTION("I/O Address Space Management for passthrough devices");
 MODULE_LICENSE("GPL");

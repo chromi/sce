@@ -4,288 +4,226 @@
 #include "ice.h"
 #include "ice_lib.h"
 #include "ice_trace.h"
+#include "ice_cgu_regs.h"
 
-#define E810_OUT_PROP_DELAY_NS 1
-
-#define UNKNOWN_INCVAL_E822 0x100000000ULL
-
-static const struct ptp_pin_desc ice_pin_desc_e810t[] = {
-	/* name    idx   func         chan */
-	{ "GNSS",  GNSS, PTP_PF_EXTTS, 0, { 0, } },
-	{ "SMA1",  SMA1, PTP_PF_NONE, 1, { 0, } },
-	{ "U.FL1", UFL1, PTP_PF_NONE, 1, { 0, } },
-	{ "SMA2",  SMA2, PTP_PF_NONE, 2, { 0, } },
-	{ "U.FL2", UFL2, PTP_PF_NONE, 2, { 0, } },
+static const char ice_pin_names[][64] = {
+	"SDP0",
+	"SDP1",
+	"SDP2",
+	"SDP3",
+	"TIME_SYNC",
+	"1PPS"
 };
 
-/**
- * ice_get_sma_config_e810t
- * @hw: pointer to the hw struct
- * @ptp_pins: pointer to the ptp_pin_desc struture
- *
- * Read the configuration of the SMA control logic and put it into the
- * ptp_pin_desc structure
- */
-static int
-ice_get_sma_config_e810t(struct ice_hw *hw, struct ptp_pin_desc *ptp_pins)
+static const struct ice_ptp_pin_desc ice_pin_desc_e82x[] = {
+	/* name,        gpio,       delay */
+	{  TIME_SYNC, {  4, -1 }, { 0,  0 }},
+	{  ONE_PPS,   { -1,  5 }, { 0, 11 }},
+};
+
+static const struct ice_ptp_pin_desc ice_pin_desc_e825c[] = {
+	/* name,        gpio,       delay */
+	{  SDP0,      {  0,  0 }, { 15, 14 }},
+	{  SDP1,      {  1,  1 }, { 15, 14 }},
+	{  SDP2,      {  2,  2 }, { 15, 14 }},
+	{  SDP3,      {  3,  3 }, { 15, 14 }},
+	{  TIME_SYNC, {  4, -1 }, { 11,  0 }},
+	{  ONE_PPS,   { -1,  5 }, {  0,  9 }},
+};
+
+static const struct ice_ptp_pin_desc ice_pin_desc_e810[] = {
+	/* name,        gpio,       delay */
+	{  SDP0,      {  0,  0 }, { 0, 1 }},
+	{  SDP1,      {  1,  1 }, { 0, 1 }},
+	{  SDP2,      {  2,  2 }, { 0, 1 }},
+	{  SDP3,      {  3,  3 }, { 0, 1 }},
+	{  ONE_PPS,   { -1,  5 }, { 0, 1 }},
+};
+
+static const char ice_pin_names_nvm[][64] = {
+	"GNSS",
+	"SMA1",
+	"U.FL1",
+	"SMA2",
+	"U.FL2",
+};
+
+static const struct ice_ptp_pin_desc ice_pin_desc_e810_sma[] = {
+	/* name,   gpio,       delay */
+	{  GNSS, {  1, -1 }, { 0, 0 }},
+	{  SMA1, {  1,  0 }, { 0, 1 }},
+	{  UFL1, { -1,  0 }, { 0, 1 }},
+	{  SMA2, {  3,  2 }, { 0, 1 }},
+	{  UFL2, {  3, -1 }, { 0, 0 }},
+};
+
+static struct ice_pf *ice_get_ctrl_pf(struct ice_pf *pf)
 {
-	u8 data, i;
-	int status;
+	return !pf->adapter ? NULL : pf->adapter->ctrl_pf;
+}
 
-	/* Read initial pin state */
-	status = ice_read_sma_ctrl_e810t(hw, &data);
-	if (status)
-		return status;
+static struct ice_ptp *ice_get_ctrl_ptp(struct ice_pf *pf)
+{
+	struct ice_pf *ctrl_pf = ice_get_ctrl_pf(pf);
 
-	/* initialize with defaults */
-	for (i = 0; i < NUM_PTP_PINS_E810T; i++) {
-		snprintf(ptp_pins[i].name, sizeof(ptp_pins[i].name),
-			 "%s", ice_pin_desc_e810t[i].name);
-		ptp_pins[i].index = ice_pin_desc_e810t[i].index;
-		ptp_pins[i].func = ice_pin_desc_e810t[i].func;
-		ptp_pins[i].chan = ice_pin_desc_e810t[i].chan;
-	}
-
-	/* Parse SMA1/UFL1 */
-	switch (data & ICE_SMA1_MASK_E810T) {
-	case ICE_SMA1_MASK_E810T:
-	default:
-		ptp_pins[SMA1].func = PTP_PF_NONE;
-		ptp_pins[UFL1].func = PTP_PF_NONE;
-		break;
-	case ICE_SMA1_DIR_EN_E810T:
-		ptp_pins[SMA1].func = PTP_PF_PEROUT;
-		ptp_pins[UFL1].func = PTP_PF_NONE;
-		break;
-	case ICE_SMA1_TX_EN_E810T:
-		ptp_pins[SMA1].func = PTP_PF_EXTTS;
-		ptp_pins[UFL1].func = PTP_PF_NONE;
-		break;
-	case 0:
-		ptp_pins[SMA1].func = PTP_PF_EXTTS;
-		ptp_pins[UFL1].func = PTP_PF_PEROUT;
-		break;
-	}
-
-	/* Parse SMA2/UFL2 */
-	switch (data & ICE_SMA2_MASK_E810T) {
-	case ICE_SMA2_MASK_E810T:
-	default:
-		ptp_pins[SMA2].func = PTP_PF_NONE;
-		ptp_pins[UFL2].func = PTP_PF_NONE;
-		break;
-	case (ICE_SMA2_TX_EN_E810T | ICE_SMA2_UFL2_RX_DIS_E810T):
-		ptp_pins[SMA2].func = PTP_PF_EXTTS;
-		ptp_pins[UFL2].func = PTP_PF_NONE;
-		break;
-	case (ICE_SMA2_DIR_EN_E810T | ICE_SMA2_UFL2_RX_DIS_E810T):
-		ptp_pins[SMA2].func = PTP_PF_PEROUT;
-		ptp_pins[UFL2].func = PTP_PF_NONE;
-		break;
-	case (ICE_SMA2_DIR_EN_E810T | ICE_SMA2_TX_EN_E810T):
-		ptp_pins[SMA2].func = PTP_PF_NONE;
-		ptp_pins[UFL2].func = PTP_PF_EXTTS;
-		break;
-	case ICE_SMA2_DIR_EN_E810T:
-		ptp_pins[SMA2].func = PTP_PF_PEROUT;
-		ptp_pins[UFL2].func = PTP_PF_EXTTS;
-		break;
-	}
-
-	return 0;
+	return !ctrl_pf ? NULL : &ctrl_pf->ptp;
 }
 
 /**
- * ice_ptp_set_sma_config_e810t
- * @hw: pointer to the hw struct
- * @ptp_pins: pointer to the ptp_pin_desc struture
+ * ice_ptp_find_pin_idx - Find pin index in ptp_pin_desc
+ * @pf: Board private structure
+ * @func: Pin function
+ * @chan: GPIO channel
  *
- * Set the configuration of the SMA control logic based on the configuration in
- * num_pins parameter
+ * Return: positive pin number when pin is present, -1 otherwise
  */
-static int
-ice_ptp_set_sma_config_e810t(struct ice_hw *hw,
-			     const struct ptp_pin_desc *ptp_pins)
+static int ice_ptp_find_pin_idx(struct ice_pf *pf, enum ptp_pin_function func,
+				unsigned int chan)
 {
-	int status;
+	const struct ptp_clock_info *info = &pf->ptp.info;
+	int i;
+
+	for (i = 0; i < info->n_pins; i++) {
+		if (info->pin_config[i].func == func &&
+		    info->pin_config[i].chan == chan)
+			return i;
+	}
+
+	return -1;
+}
+
+/**
+ * ice_ptp_update_sma_data - update SMA pins data according to pins setup
+ * @pf: Board private structure
+ * @sma_pins: parsed SMA pins status
+ * @data: SMA data to update
+ */
+static void ice_ptp_update_sma_data(struct ice_pf *pf, unsigned int sma_pins[],
+				    u8 *data)
+{
+	const char *state1, *state2;
+
+	/* Set the right state based on the desired configuration.
+	 * When bit is set, functionality is disabled.
+	 */
+	*data &= ~ICE_ALL_SMA_MASK;
+	if (!sma_pins[UFL1 - 1]) {
+		if (sma_pins[SMA1 - 1] == PTP_PF_EXTTS) {
+			state1 = "SMA1 Rx, U.FL1 disabled";
+			*data |= ICE_SMA1_TX_EN;
+		} else if (sma_pins[SMA1 - 1] == PTP_PF_PEROUT) {
+			state1 = "SMA1 Tx U.FL1 disabled";
+			*data |= ICE_SMA1_DIR_EN;
+		} else {
+			state1 = "SMA1 disabled, U.FL1 disabled";
+			*data |= ICE_SMA1_MASK;
+		}
+	} else {
+		/* U.FL1 Tx will always enable SMA1 Rx */
+		state1 = "SMA1 Rx, U.FL1 Tx";
+	}
+
+	if (!sma_pins[UFL2 - 1]) {
+		if (sma_pins[SMA2 - 1] == PTP_PF_EXTTS) {
+			state2 = "SMA2 Rx, U.FL2 disabled";
+			*data |= ICE_SMA2_TX_EN | ICE_SMA2_UFL2_RX_DIS;
+		} else if (sma_pins[SMA2 - 1] == PTP_PF_PEROUT) {
+			state2 = "SMA2 Tx, U.FL2 disabled";
+			*data |= ICE_SMA2_DIR_EN | ICE_SMA2_UFL2_RX_DIS;
+		} else {
+			state2 = "SMA2 disabled, U.FL2 disabled";
+			*data |= ICE_SMA2_MASK;
+		}
+	} else {
+		if (!sma_pins[SMA2 - 1]) {
+			state2 = "SMA2 disabled, U.FL2 Rx";
+			*data |= ICE_SMA2_DIR_EN | ICE_SMA2_TX_EN;
+		} else {
+			state2 = "SMA2 Tx, U.FL2 Rx";
+			*data |= ICE_SMA2_DIR_EN;
+		}
+	}
+
+	dev_dbg(ice_pf_to_dev(pf), "%s, %s\n", state1, state2);
+}
+
+/**
+ * ice_ptp_set_sma_cfg - set the configuration of the SMA control logic
+ * @pf: Board private structure
+ *
+ * Return: 0 on success, negative error code otherwise
+ */
+static int ice_ptp_set_sma_cfg(struct ice_pf *pf)
+{
+	const struct ice_ptp_pin_desc *ice_pins = pf->ptp.ice_pin_desc;
+	struct ptp_pin_desc *pins = pf->ptp.pin_desc;
+	unsigned int sma_pins[ICE_SMA_PINS_NUM] = {};
+	int err;
 	u8 data;
 
-	/* SMA1 and UFL1 cannot be set to TX at the same time */
-	if (ptp_pins[SMA1].func == PTP_PF_PEROUT &&
-	    ptp_pins[UFL1].func == PTP_PF_PEROUT)
-		return -EINVAL;
-
-	/* SMA2 and UFL2 cannot be set to RX at the same time */
-	if (ptp_pins[SMA2].func == PTP_PF_EXTTS &&
-	    ptp_pins[UFL2].func == PTP_PF_EXTTS)
-		return -EINVAL;
-
 	/* Read initial pin state value */
-	status = ice_read_sma_ctrl_e810t(hw, &data);
-	if (status)
-		return status;
-
-	/* Set the right sate based on the desired configuration */
-	data &= ~ICE_SMA1_MASK_E810T;
-	if (ptp_pins[SMA1].func == PTP_PF_NONE &&
-	    ptp_pins[UFL1].func == PTP_PF_NONE) {
-		dev_info(ice_hw_to_dev(hw), "SMA1 + U.FL1 disabled");
-		data |= ICE_SMA1_MASK_E810T;
-	} else if (ptp_pins[SMA1].func == PTP_PF_EXTTS &&
-		   ptp_pins[UFL1].func == PTP_PF_NONE) {
-		dev_info(ice_hw_to_dev(hw), "SMA1 RX");
-		data |= ICE_SMA1_TX_EN_E810T;
-	} else if (ptp_pins[SMA1].func == PTP_PF_NONE &&
-		   ptp_pins[UFL1].func == PTP_PF_PEROUT) {
-		/* U.FL 1 TX will always enable SMA 1 RX */
-		dev_info(ice_hw_to_dev(hw), "SMA1 RX + U.FL1 TX");
-	} else if (ptp_pins[SMA1].func == PTP_PF_EXTTS &&
-		   ptp_pins[UFL1].func == PTP_PF_PEROUT) {
-		dev_info(ice_hw_to_dev(hw), "SMA1 RX + U.FL1 TX");
-	} else if (ptp_pins[SMA1].func == PTP_PF_PEROUT &&
-		   ptp_pins[UFL1].func == PTP_PF_NONE) {
-		dev_info(ice_hw_to_dev(hw), "SMA1 TX");
-		data |= ICE_SMA1_DIR_EN_E810T;
-	}
-
-	data &= ~ICE_SMA2_MASK_E810T;
-	if (ptp_pins[SMA2].func == PTP_PF_NONE &&
-	    ptp_pins[UFL2].func == PTP_PF_NONE) {
-		dev_info(ice_hw_to_dev(hw), "SMA2 + U.FL2 disabled");
-		data |= ICE_SMA2_MASK_E810T;
-	} else if (ptp_pins[SMA2].func == PTP_PF_EXTTS &&
-			ptp_pins[UFL2].func == PTP_PF_NONE) {
-		dev_info(ice_hw_to_dev(hw), "SMA2 RX");
-		data |= (ICE_SMA2_TX_EN_E810T |
-			 ICE_SMA2_UFL2_RX_DIS_E810T);
-	} else if (ptp_pins[SMA2].func == PTP_PF_NONE &&
-		   ptp_pins[UFL2].func == PTP_PF_EXTTS) {
-		dev_info(ice_hw_to_dev(hw), "UFL2 RX");
-		data |= (ICE_SMA2_DIR_EN_E810T | ICE_SMA2_TX_EN_E810T);
-	} else if (ptp_pins[SMA2].func == PTP_PF_PEROUT &&
-		   ptp_pins[UFL2].func == PTP_PF_NONE) {
-		dev_info(ice_hw_to_dev(hw), "SMA2 TX");
-		data |= (ICE_SMA2_DIR_EN_E810T |
-			 ICE_SMA2_UFL2_RX_DIS_E810T);
-	} else if (ptp_pins[SMA2].func == PTP_PF_PEROUT &&
-		   ptp_pins[UFL2].func == PTP_PF_EXTTS) {
-		dev_info(ice_hw_to_dev(hw), "SMA2 TX + U.FL2 RX");
-		data |= ICE_SMA2_DIR_EN_E810T;
-	}
-
-	return ice_write_sma_ctrl_e810t(hw, data);
-}
-
-/**
- * ice_ptp_set_sma_e810t
- * @info: the driver's PTP info structure
- * @pin: pin index in kernel structure
- * @func: Pin function to be set (PTP_PF_NONE, PTP_PF_EXTTS or PTP_PF_PEROUT)
- *
- * Set the configuration of a single SMA pin
- */
-static int
-ice_ptp_set_sma_e810t(struct ptp_clock_info *info, unsigned int pin,
-		      enum ptp_pin_function func)
-{
-	struct ptp_pin_desc ptp_pins[NUM_PTP_PINS_E810T];
-	struct ice_pf *pf = ptp_info_to_pf(info);
-	struct ice_hw *hw = &pf->hw;
-	int err;
-
-	if (pin < SMA1 || func > PTP_PF_PEROUT)
-		return -EOPNOTSUPP;
-
-	err = ice_get_sma_config_e810t(hw, ptp_pins);
+	err = ice_read_sma_ctrl(&pf->hw, &data);
 	if (err)
 		return err;
 
-	/* Disable the same function on the other pin sharing the channel */
-	if (pin == SMA1 && ptp_pins[UFL1].func == func)
-		ptp_pins[UFL1].func = PTP_PF_NONE;
-	if (pin == UFL1 && ptp_pins[SMA1].func == func)
-		ptp_pins[SMA1].func = PTP_PF_NONE;
+	/* Get SMA/U.FL pins states */
+	for (int i = 0; i < pf->ptp.info.n_pins; i++)
+		if (pins[i].func) {
+			int name_idx = ice_pins[i].name_idx;
 
-	if (pin == SMA2 && ptp_pins[UFL2].func == func)
-		ptp_pins[UFL2].func = PTP_PF_NONE;
-	if (pin == UFL2 && ptp_pins[SMA2].func == func)
-		ptp_pins[SMA2].func = PTP_PF_NONE;
+			switch (name_idx) {
+			case SMA1:
+			case UFL1:
+			case SMA2:
+			case UFL2:
+				sma_pins[name_idx - 1] = pins[i].func;
+				break;
+			default:
+				continue;
+			}
+		}
 
-	/* Set up new pin function in the temp table */
-	ptp_pins[pin].func = func;
-
-	return ice_ptp_set_sma_config_e810t(hw, ptp_pins);
+	ice_ptp_update_sma_data(pf, sma_pins, &data);
+	return ice_write_sma_ctrl(&pf->hw, data);
 }
 
 /**
- * ice_verify_pin_e810t
- * @info: the driver's PTP info structure
- * @pin: Pin index
- * @func: Assigned function
- * @chan: Assigned channel
+ * ice_ptp_cfg_tx_interrupt - Configure Tx timestamp interrupt for the device
+ * @pf: Board private structure
  *
- * Verify if pin supports requested pin function. If the Check pins consistency.
- * Reconfigure the SMA logic attached to the given pin to enable its
- * desired functionality
+ * Program the device to respond appropriately to the Tx timestamp interrupt
+ * cause.
  */
-static int
-ice_verify_pin_e810t(struct ptp_clock_info *info, unsigned int pin,
-		     enum ptp_pin_function func, unsigned int chan)
+static void ice_ptp_cfg_tx_interrupt(struct ice_pf *pf)
 {
-	/* Don't allow channel reassignment */
-	if (chan != ice_pin_desc_e810t[pin].chan)
-		return -EOPNOTSUPP;
-
-	/* Check if functions are properly assigned */
-	switch (func) {
-	case PTP_PF_NONE:
-		break;
-	case PTP_PF_EXTTS:
-		if (pin == UFL1)
-			return -EOPNOTSUPP;
-		break;
-	case PTP_PF_PEROUT:
-		if (pin == UFL2 || pin == GNSS)
-			return -EOPNOTSUPP;
-		break;
-	case PTP_PF_PHYSYNC:
-		return -EOPNOTSUPP;
-	}
-
-	return ice_ptp_set_sma_e810t(info, pin, func);
-}
-
-/**
- * ice_set_tx_tstamp - Enable or disable Tx timestamping
- * @pf: The PF pointer to search in
- * @on: bool value for whether timestamps are enabled or disabled
- */
-static void ice_set_tx_tstamp(struct ice_pf *pf, bool on)
-{
-	struct ice_vsi *vsi;
+	struct ice_hw *hw = &pf->hw;
+	bool enable;
 	u32 val;
-	u16 i;
 
-	vsi = ice_get_main_vsi(pf);
-	if (!vsi)
-		return;
-
-	/* Set the timestamp enable flag for all the Tx rings */
-	ice_for_each_txq(vsi, i) {
-		if (!vsi->tx_rings[i])
-			continue;
-		vsi->tx_rings[i]->ptp_tx = on;
+	switch (pf->ptp.tx_interrupt_mode) {
+	case ICE_PTP_TX_INTERRUPT_ALL:
+		/* React to interrupts across all quads. */
+		wr32(hw, PFINT_TSYN_MSK + (0x4 * hw->pf_id), (u32)0x1f);
+		enable = true;
+		break;
+	case ICE_PTP_TX_INTERRUPT_NONE:
+		/* Do not react to interrupts on any quad. */
+		wr32(hw, PFINT_TSYN_MSK + (0x4 * hw->pf_id), (u32)0x0);
+		enable = false;
+		break;
+	case ICE_PTP_TX_INTERRUPT_SELF:
+	default:
+		enable = pf->ptp.tstamp_config.tx_type == HWTSTAMP_TX_ON;
+		break;
 	}
 
 	/* Configure the Tx timestamp interrupt */
-	val = rd32(&pf->hw, PFINT_OICR_ENA);
-	if (on)
+	val = rd32(hw, PFINT_OICR_ENA);
+	if (enable)
 		val |= PFINT_OICR_TSYN_TX_M;
 	else
 		val &= ~PFINT_OICR_TSYN_TX_M;
-	wr32(&pf->hw, PFINT_OICR_ENA, val);
-
-	pf->ptp.tstamp_config.tx_type = on ? HWTSTAMP_TX_ON : HWTSTAMP_TX_OFF;
+	wr32(hw, PFINT_OICR_ENA, val);
 }
 
 /**
@@ -299,7 +237,7 @@ static void ice_set_rx_tstamp(struct ice_pf *pf, bool on)
 	u16 i;
 
 	vsi = ice_get_main_vsi(pf);
-	if (!vsi)
+	if (!vsi || !vsi->rx_rings)
 		return;
 
 	/* Set the timestamp flag for all the Rx rings */
@@ -308,148 +246,50 @@ static void ice_set_rx_tstamp(struct ice_pf *pf, bool on)
 			continue;
 		vsi->rx_rings[i]->ptp_rx = on;
 	}
-
-	pf->ptp.tstamp_config.rx_filter = on ? HWTSTAMP_FILTER_ALL :
-					       HWTSTAMP_FILTER_NONE;
 }
 
 /**
- * ice_ptp_cfg_timestamp - Configure timestamp for init/deinit
+ * ice_ptp_disable_timestamp_mode - Disable current timestamp mode
  * @pf: Board private structure
- * @ena: bool value to enable or disable time stamp
  *
- * This function will configure timestamping during PTP initialization
- * and deinitialization
+ * Called during preparation for reset to temporarily disable timestamping on
+ * the device. Called during remove to disable timestamping while cleaning up
+ * driver resources.
  */
-void ice_ptp_cfg_timestamp(struct ice_pf *pf, bool ena)
+static void ice_ptp_disable_timestamp_mode(struct ice_pf *pf)
 {
-	ice_set_tx_tstamp(pf, ena);
-	ice_set_rx_tstamp(pf, ena);
+	struct ice_hw *hw = &pf->hw;
+	u32 val;
+
+	val = rd32(hw, PFINT_OICR_ENA);
+	val &= ~PFINT_OICR_TSYN_TX_M;
+	wr32(hw, PFINT_OICR_ENA, val);
+
+	ice_set_rx_tstamp(pf, false);
 }
 
 /**
- * ice_get_ptp_clock_index - Get the PTP clock index
- * @pf: the PF pointer
+ * ice_ptp_restore_timestamp_mode - Restore timestamp configuration
+ * @pf: Board private structure
  *
- * Determine the clock index of the PTP clock associated with this device. If
- * this is the PF controlling the clock, just use the local access to the
- * clock device pointer.
- *
- * Otherwise, read from the driver shared parameters to determine the clock
- * index value.
- *
- * Returns: the index of the PTP clock associated with this device, or -1 if
- * there is no associated clock.
+ * Called at the end of rebuild to restore timestamp configuration after
+ * a device reset.
  */
-int ice_get_ptp_clock_index(struct ice_pf *pf)
+void ice_ptp_restore_timestamp_mode(struct ice_pf *pf)
 {
-	struct device *dev = ice_pf_to_dev(pf);
-	enum ice_aqc_driver_params param_idx;
 	struct ice_hw *hw = &pf->hw;
-	u8 tmr_idx;
-	u32 value;
-	int err;
+	bool enable_rx;
 
-	/* Use the ptp_clock structure if we're the main PF */
-	if (pf->ptp.clock)
-		return ptp_clock_index(pf->ptp.clock);
+	ice_ptp_cfg_tx_interrupt(pf);
 
-	tmr_idx = hw->func_caps.ts_func_info.tmr_index_assoc;
-	if (!tmr_idx)
-		param_idx = ICE_AQC_DRIVER_PARAM_CLK_IDX_TMR0;
-	else
-		param_idx = ICE_AQC_DRIVER_PARAM_CLK_IDX_TMR1;
+	enable_rx = pf->ptp.tstamp_config.rx_filter == HWTSTAMP_FILTER_ALL;
+	ice_set_rx_tstamp(pf, enable_rx);
 
-	err = ice_aq_get_driver_param(hw, param_idx, &value, NULL);
-	if (err) {
-		dev_err(dev, "Failed to read PTP clock index parameter, err %d aq_err %s\n",
-			err, ice_aq_str(hw->adminq.sq_last_status));
-		return -1;
-	}
-
-	/* The PTP clock index is an integer, and will be between 0 and
-	 * INT_MAX. The highest bit of the driver shared parameter is used to
-	 * indicate whether or not the currently stored clock index is valid.
+	/* Trigger an immediate software interrupt to ensure that timestamps
+	 * which occurred during reset are handled now.
 	 */
-	if (!(value & PTP_SHARED_CLK_IDX_VALID))
-		return -1;
-
-	return value & ~PTP_SHARED_CLK_IDX_VALID;
-}
-
-/**
- * ice_set_ptp_clock_index - Set the PTP clock index
- * @pf: the PF pointer
- *
- * Set the PTP clock index for this device into the shared driver parameters,
- * so that other PFs associated with this device can read it.
- *
- * If the PF is unable to store the clock index, it will log an error, but
- * will continue operating PTP.
- */
-static void ice_set_ptp_clock_index(struct ice_pf *pf)
-{
-	struct device *dev = ice_pf_to_dev(pf);
-	enum ice_aqc_driver_params param_idx;
-	struct ice_hw *hw = &pf->hw;
-	u8 tmr_idx;
-	u32 value;
-	int err;
-
-	if (!pf->ptp.clock)
-		return;
-
-	tmr_idx = hw->func_caps.ts_func_info.tmr_index_assoc;
-	if (!tmr_idx)
-		param_idx = ICE_AQC_DRIVER_PARAM_CLK_IDX_TMR0;
-	else
-		param_idx = ICE_AQC_DRIVER_PARAM_CLK_IDX_TMR1;
-
-	value = (u32)ptp_clock_index(pf->ptp.clock);
-	if (value > INT_MAX) {
-		dev_err(dev, "PTP Clock index is too large to store\n");
-		return;
-	}
-	value |= PTP_SHARED_CLK_IDX_VALID;
-
-	err = ice_aq_set_driver_param(hw, param_idx, value, NULL);
-	if (err) {
-		dev_err(dev, "Failed to set PTP clock index parameter, err %d aq_err %s\n",
-			err, ice_aq_str(hw->adminq.sq_last_status));
-	}
-}
-
-/**
- * ice_clear_ptp_clock_index - Clear the PTP clock index
- * @pf: the PF pointer
- *
- * Clear the PTP clock index for this device. Must be called when
- * unregistering the PTP clock, in order to ensure other PFs stop reporting
- * a clock object that no longer exists.
- */
-static void ice_clear_ptp_clock_index(struct ice_pf *pf)
-{
-	struct device *dev = ice_pf_to_dev(pf);
-	enum ice_aqc_driver_params param_idx;
-	struct ice_hw *hw = &pf->hw;
-	u8 tmr_idx;
-	int err;
-
-	/* Do not clear the index if we don't own the timer */
-	if (!hw->func_caps.ts_func_info.src_tmr_owned)
-		return;
-
-	tmr_idx = hw->func_caps.ts_func_info.tmr_index_assoc;
-	if (!tmr_idx)
-		param_idx = ICE_AQC_DRIVER_PARAM_CLK_IDX_TMR0;
-	else
-		param_idx = ICE_AQC_DRIVER_PARAM_CLK_IDX_TMR1;
-
-	err = ice_aq_set_driver_param(hw, param_idx, 0, NULL);
-	if (err) {
-		dev_dbg(dev, "Failed to clear PTP clock index parameter, err %d aq_err %s\n",
-			err, ice_aq_str(hw->adminq.sq_last_status));
-	}
+	wr32(hw, PFINT_OICR, PFINT_OICR_TSYN_TX_M);
+	ice_flush(hw);
 }
 
 /**
@@ -466,6 +306,7 @@ ice_ptp_read_src_clk_reg(struct ice_pf *pf, struct ptp_system_timestamp *sts)
 	u8 tmr_idx;
 
 	tmr_idx = ice_get_ptp_src_clock_index(hw);
+	guard(spinlock)(&pf->adapter->ptp_gltsyn_time_lock);
 	/* Read the system timestamp pre PHC read */
 	ptp_read_system_prets(sts);
 
@@ -617,6 +458,141 @@ ice_ptp_is_tx_tracker_up(struct ice_ptp_tx *tx)
 }
 
 /**
+ * ice_ptp_req_tx_single_tstamp - Request Tx timestamp for a port from FW
+ * @tx: the PTP Tx timestamp tracker
+ * @idx: index of the timestamp to request
+ */
+void ice_ptp_req_tx_single_tstamp(struct ice_ptp_tx *tx, u8 idx)
+{
+	struct ice_e810_params *params;
+	struct ice_ptp_port *ptp_port;
+	unsigned long flags;
+	struct sk_buff *skb;
+	struct ice_pf *pf;
+
+	if (!tx->init)
+		return;
+
+	ptp_port = container_of(tx, struct ice_ptp_port, tx);
+	pf = ptp_port_to_pf(ptp_port);
+	params = &pf->hw.ptp.phy.e810;
+
+	/* Drop packets which have waited for more than 2 seconds */
+	if (time_is_before_jiffies(tx->tstamps[idx].start + 2 * HZ)) {
+		/* Count the number of Tx timestamps that timed out */
+		pf->ptp.tx_hwtstamp_timeouts++;
+
+		skb = tx->tstamps[idx].skb;
+		tx->tstamps[idx].skb = NULL;
+		clear_bit(idx, tx->in_use);
+
+		dev_kfree_skb_any(skb);
+		return;
+	}
+
+	ice_trace(tx_tstamp_fw_req, tx->tstamps[idx].skb, idx);
+
+	spin_lock_irqsave(&params->atqbal_wq.lock, flags);
+
+	params->atqbal_flags |= ATQBAL_FLAGS_INTR_IN_PROGRESS;
+
+	/* Write TS index to read to the PF register so the FW can read it */
+	wr32(&pf->hw, REG_LL_PROXY_H,
+	     REG_LL_PROXY_H_TS_INTR_ENA | FIELD_PREP(REG_LL_PROXY_H_TS_IDX, idx) |
+	     REG_LL_PROXY_H_EXEC);
+	tx->last_ll_ts_idx_read = idx;
+
+	spin_unlock_irqrestore(&params->atqbal_wq.lock, flags);
+}
+
+/**
+ * ice_ptp_complete_tx_single_tstamp - Complete Tx timestamp for a port
+ * @tx: the PTP Tx timestamp tracker
+ */
+void ice_ptp_complete_tx_single_tstamp(struct ice_ptp_tx *tx)
+{
+	struct skb_shared_hwtstamps shhwtstamps = {};
+	u8 idx = tx->last_ll_ts_idx_read;
+	struct ice_e810_params *params;
+	struct ice_ptp_port *ptp_port;
+	u64 raw_tstamp, tstamp;
+	bool drop_ts = false;
+	struct sk_buff *skb;
+	unsigned long flags;
+	struct device *dev;
+	struct ice_pf *pf;
+	u32 reg_ll_high;
+
+	if (!tx->init || tx->last_ll_ts_idx_read < 0)
+		return;
+
+	ptp_port = container_of(tx, struct ice_ptp_port, tx);
+	pf = ptp_port_to_pf(ptp_port);
+	dev = ice_pf_to_dev(pf);
+	params = &pf->hw.ptp.phy.e810;
+
+	ice_trace(tx_tstamp_fw_done, tx->tstamps[idx].skb, idx);
+
+	spin_lock_irqsave(&params->atqbal_wq.lock, flags);
+
+	if (!(params->atqbal_flags & ATQBAL_FLAGS_INTR_IN_PROGRESS))
+		dev_dbg(dev, "%s: low latency interrupt request not in progress?\n",
+			__func__);
+
+	/* Read the low 32 bit value */
+	raw_tstamp = rd32(&pf->hw, REG_LL_PROXY_L);
+	/* Read the status together with high TS part */
+	reg_ll_high = rd32(&pf->hw, REG_LL_PROXY_H);
+
+	/* Wake up threads waiting on low latency interface */
+	params->atqbal_flags &= ~ATQBAL_FLAGS_INTR_IN_PROGRESS;
+
+	wake_up_locked(&params->atqbal_wq);
+
+	spin_unlock_irqrestore(&params->atqbal_wq.lock, flags);
+
+	/* When the bit is cleared, the TS is ready in the register */
+	if (reg_ll_high & REG_LL_PROXY_H_EXEC) {
+		dev_err(ice_pf_to_dev(pf), "Failed to get the Tx tstamp - FW not ready");
+		return;
+	}
+
+	/* High 8 bit value of the TS is on the bits 16:23 */
+	raw_tstamp |= ((u64)FIELD_GET(REG_LL_PROXY_H_TS_HIGH, reg_ll_high)) << 32;
+
+	/* Devices using this interface always verify the timestamp differs
+	 * relative to the last cached timestamp value.
+	 */
+	if (raw_tstamp == tx->tstamps[idx].cached_tstamp)
+		return;
+
+	tx->tstamps[idx].cached_tstamp = raw_tstamp;
+	clear_bit(idx, tx->in_use);
+	skb = tx->tstamps[idx].skb;
+	tx->tstamps[idx].skb = NULL;
+	if (test_and_clear_bit(idx, tx->stale))
+		drop_ts = true;
+
+	if (!skb)
+		return;
+
+	if (drop_ts) {
+		dev_kfree_skb_any(skb);
+		return;
+	}
+
+	/* Extend the timestamp using cached PHC time */
+	tstamp = ice_ptp_extend_40b_ts(pf, raw_tstamp);
+	if (tstamp) {
+		shhwtstamps.hwtstamp = ns_to_ktime(tstamp);
+		ice_trace(tx_tstamp_complete, skb, idx);
+	}
+
+	skb_tstamp_tx(skb, &shhwtstamps);
+	dev_kfree_skb_any(skb);
+}
+
+/**
  * ice_ptp_process_tx_tstamp - Process Tx timestamps for a port
  * @tx: the PTP Tx timestamp tracker
  *
@@ -667,6 +643,7 @@ ice_ptp_is_tx_tracker_up(struct ice_ptp_tx *tx)
 static void ice_ptp_process_tx_tstamp(struct ice_ptp_tx *tx)
 {
 	struct ice_ptp_port *ptp_port;
+	unsigned long flags;
 	struct ice_pf *pf;
 	struct ice_hw *hw;
 	u64 tstamp_ready;
@@ -674,17 +651,16 @@ static void ice_ptp_process_tx_tstamp(struct ice_ptp_tx *tx)
 	int err;
 	u8 idx;
 
-	if (!tx->init)
-		return;
-
 	ptp_port = container_of(tx, struct ice_ptp_port, tx);
 	pf = ptp_port_to_pf(ptp_port);
 	hw = &pf->hw;
 
 	/* Read the Tx ready status first */
-	err = ice_get_phy_tx_tstamp_ready(hw, tx->block, &tstamp_ready);
-	if (err)
-		return;
+	if (tx->has_ready_bitmap) {
+		err = ice_get_phy_tx_tstamp_ready(hw, tx->block, &tstamp_ready);
+		if (err)
+			return;
+	}
 
 	/* Drop packets if the link went down */
 	link_up = ptp_port->link_up;
@@ -712,7 +688,8 @@ static void ice_ptp_process_tx_tstamp(struct ice_ptp_tx *tx)
 		 * If we do not, the hardware logic for generating a new
 		 * interrupt can get stuck on some devices.
 		 */
-		if (!(tstamp_ready & BIT_ULL(phy_idx))) {
+		if (tx->has_ready_bitmap &&
+		    !(tstamp_ready & BIT_ULL(phy_idx))) {
 			if (drop_ts)
 				goto skip_ts_read;
 
@@ -732,7 +709,7 @@ static void ice_ptp_process_tx_tstamp(struct ice_ptp_tx *tx)
 		 * from the last cached timestamp. If it is not, skip this for
 		 * now assuming it hasn't yet been captured by hardware.
 		 */
-		if (!drop_ts && tx->verify_cached &&
+		if (!drop_ts && !tx->has_ready_bitmap &&
 		    raw_tstamp == tx->tstamps[idx].cached_tstamp)
 			continue;
 
@@ -741,15 +718,15 @@ static void ice_ptp_process_tx_tstamp(struct ice_ptp_tx *tx)
 			drop_ts = true;
 
 skip_ts_read:
-		spin_lock(&tx->lock);
-		if (tx->verify_cached && raw_tstamp)
+		spin_lock_irqsave(&tx->lock, flags);
+		if (!tx->has_ready_bitmap && raw_tstamp)
 			tx->tstamps[idx].cached_tstamp = raw_tstamp;
 		clear_bit(idx, tx->in_use);
 		skb = tx->tstamps[idx].skb;
 		tx->tstamps[idx].skb = NULL;
 		if (test_and_clear_bit(idx, tx->stale))
 			drop_ts = true;
-		spin_unlock(&tx->lock);
+		spin_unlock_irqrestore(&tx->lock, flags);
 
 		/* It is unlikely but possible that the SKB will have been
 		 * flushed at this point due to link change or teardown.
@@ -775,6 +752,41 @@ skip_ts_read:
 }
 
 /**
+ * ice_ptp_tx_tstamp_owner - Process Tx timestamps for all ports on the device
+ * @pf: Board private structure
+ */
+static enum ice_tx_tstamp_work ice_ptp_tx_tstamp_owner(struct ice_pf *pf)
+{
+	struct ice_ptp_port *port;
+	unsigned int i;
+
+	mutex_lock(&pf->adapter->ports.lock);
+	list_for_each_entry(port, &pf->adapter->ports.ports, list_node) {
+		struct ice_ptp_tx *tx = &port->tx;
+
+		if (!tx || !tx->init)
+			continue;
+
+		ice_ptp_process_tx_tstamp(tx);
+	}
+	mutex_unlock(&pf->adapter->ports.lock);
+
+	for (i = 0; i < ICE_GET_QUAD_NUM(pf->hw.ptp.num_lports); i++) {
+		u64 tstamp_ready;
+		int err;
+
+		/* Read the Tx ready status first */
+		err = ice_get_phy_tx_tstamp_ready(&pf->hw, i, &tstamp_ready);
+		if (err)
+			break;
+		else if (tstamp_ready)
+			return ICE_TX_TSTAMP_WORK_PENDING;
+	}
+
+	return ICE_TX_TSTAMP_WORK_DONE;
+}
+
+/**
  * ice_ptp_tx_tstamp - Process Tx timestamps for this function.
  * @tx: Tx tracking structure to initialize
  *
@@ -784,6 +796,7 @@ skip_ts_read:
 static enum ice_tx_tstamp_work ice_ptp_tx_tstamp(struct ice_ptp_tx *tx)
 {
 	bool more_timestamps;
+	unsigned long flags;
 
 	if (!tx->init)
 		return ICE_TX_TSTAMP_WORK_DONE;
@@ -792,9 +805,9 @@ static enum ice_tx_tstamp_work ice_ptp_tx_tstamp(struct ice_ptp_tx *tx)
 	ice_ptp_process_tx_tstamp(tx);
 
 	/* Check if there are outstanding Tx timestamps */
-	spin_lock(&tx->lock);
+	spin_lock_irqsave(&tx->lock, flags);
 	more_timestamps = tx->init && !bitmap_empty(tx->in_use, tx->len);
-	spin_unlock(&tx->lock);
+	spin_unlock_irqrestore(&tx->lock, flags);
 
 	if (more_timestamps)
 		return ICE_TX_TSTAMP_WORK_PENDING;
@@ -831,6 +844,7 @@ ice_ptp_alloc_tx_tracker(struct ice_ptp_tx *tx)
 	tx->in_use = in_use;
 	tx->stale = stale;
 	tx->init = 1;
+	tx->last_ll_ts_idx_read = -1;
 
 	spin_lock_init(&tx->lock);
 
@@ -848,6 +862,7 @@ static void
 ice_ptp_flush_tx_tracker(struct ice_pf *pf, struct ice_ptp_tx *tx)
 {
 	struct ice_hw *hw = &pf->hw;
+	unsigned long flags;
 	u64 tstamp_ready;
 	int err;
 	u8 idx;
@@ -871,12 +886,12 @@ ice_ptp_flush_tx_tracker(struct ice_pf *pf, struct ice_ptp_tx *tx)
 		if (!hw->reset_ongoing && (tstamp_ready & BIT_ULL(phy_idx)))
 			ice_clear_phy_tstamp(hw, tx->block, phy_idx);
 
-		spin_lock(&tx->lock);
+		spin_lock_irqsave(&tx->lock, flags);
 		skb = tx->tstamps[idx].skb;
 		tx->tstamps[idx].skb = NULL;
 		clear_bit(idx, tx->in_use);
 		clear_bit(idx, tx->stale);
-		spin_unlock(&tx->lock);
+		spin_unlock_irqrestore(&tx->lock, flags);
 
 		/* Count the number of Tx timestamps flushed */
 		pf->ptp.tx_hwtstamp_flushed++;
@@ -900,9 +915,27 @@ ice_ptp_flush_tx_tracker(struct ice_pf *pf, struct ice_ptp_tx *tx)
 static void
 ice_ptp_mark_tx_tracker_stale(struct ice_ptp_tx *tx)
 {
-	spin_lock(&tx->lock);
+	unsigned long flags;
+
+	spin_lock_irqsave(&tx->lock, flags);
 	bitmap_or(tx->stale, tx->stale, tx->in_use, tx->len);
-	spin_unlock(&tx->lock);
+	spin_unlock_irqrestore(&tx->lock, flags);
+}
+
+/**
+ * ice_ptp_flush_all_tx_tracker - Flush all timestamp trackers on this clock
+ * @pf: Board private structure
+ *
+ * Called by the clock owner to flush all the Tx timestamp trackers associated
+ * with the clock.
+ */
+static void
+ice_ptp_flush_all_tx_tracker(struct ice_pf *pf)
+{
+	struct ice_ptp_port *port;
+
+	list_for_each_entry(port, &pf->adapter->ports.ports, list_node)
+		ice_ptp_flush_tx_tracker(ptp_port_to_pf(port), &port->tx);
 }
 
 /**
@@ -915,9 +948,11 @@ ice_ptp_mark_tx_tracker_stale(struct ice_ptp_tx *tx)
 static void
 ice_ptp_release_tx_tracker(struct ice_pf *pf, struct ice_ptp_tx *tx)
 {
-	spin_lock(&tx->lock);
+	unsigned long flags;
+
+	spin_lock_irqsave(&tx->lock, flags);
 	tx->init = 0;
-	spin_unlock(&tx->lock);
+	spin_unlock_irqrestore(&tx->lock, flags);
 
 	/* wait for potentially outstanding interrupt to complete */
 	synchronize_irq(pf->oicr_irq.virq);
@@ -937,7 +972,29 @@ ice_ptp_release_tx_tracker(struct ice_pf *pf, struct ice_ptp_tx *tx)
 }
 
 /**
- * ice_ptp_init_tx_e822 - Initialize tracking for Tx timestamps
+ * ice_ptp_init_tx_eth56g - Initialize tracking for Tx timestamps
+ * @pf: Board private structure
+ * @tx: the Tx tracking structure to initialize
+ * @port: the port this structure tracks
+ *
+ * Initialize the Tx timestamp tracker for this port. ETH56G PHYs
+ * have independent memory blocks for all ports.
+ *
+ * Return: 0 for success, -ENOMEM when failed to allocate Tx tracker
+ */
+static int ice_ptp_init_tx_eth56g(struct ice_pf *pf, struct ice_ptp_tx *tx,
+				  u8 port)
+{
+	tx->block = port;
+	tx->offset = 0;
+	tx->len = INDEX_PER_PORT_ETH56G;
+	tx->has_ready_bitmap = 1;
+
+	return ice_ptp_alloc_tx_tracker(tx);
+}
+
+/**
+ * ice_ptp_init_tx_e82x - Initialize tracking for Tx timestamps
  * @pf: Board private structure
  * @tx: the Tx tracking structure to initialize
  * @port: the port this structure tracks
@@ -948,12 +1005,12 @@ ice_ptp_release_tx_tracker(struct ice_pf *pf, struct ice_ptp_tx *tx)
  * registers into chunks based on the port number.
  */
 static int
-ice_ptp_init_tx_e822(struct ice_pf *pf, struct ice_ptp_tx *tx, u8 port)
+ice_ptp_init_tx_e82x(struct ice_pf *pf, struct ice_ptp_tx *tx, u8 port)
 {
-	tx->block = port / ICE_PORTS_PER_QUAD;
-	tx->offset = (port % ICE_PORTS_PER_QUAD) * INDEX_PER_PORT_E822;
-	tx->len = INDEX_PER_PORT_E822;
-	tx->verify_cached = 0;
+	tx->block = ICE_GET_QUAD_NUM(port);
+	tx->offset = (port % ICE_PORTS_PER_QUAD) * INDEX_PER_PORT_E82X;
+	tx->len = INDEX_PER_PORT_E82X;
+	tx->has_ready_bitmap = 1;
 
 	return ice_ptp_alloc_tx_tracker(tx);
 }
@@ -976,7 +1033,7 @@ ice_ptp_init_tx_e810(struct ice_pf *pf, struct ice_ptp_tx *tx)
 	 * verify new timestamps against cached copy of the last read
 	 * timestamp.
 	 */
-	tx->verify_cached = 1;
+	tx->has_ready_bitmap = 0;
 
 	return ice_ptp_alloc_tx_tracker(tx);
 }
@@ -1090,26 +1147,6 @@ static void ice_ptp_reset_cached_phctime(struct ice_pf *pf)
 }
 
 /**
- * ice_ptp_read_time - Read the time from the device
- * @pf: Board private structure
- * @ts: timespec structure to hold the current time value
- * @sts: Optional parameter for holding a pair of system timestamps from
- *       the system clock. Will be ignored if NULL is given.
- *
- * This function reads the source clock registers and stores them in a timespec.
- * However, since the registers are 64 bits of nanoseconds, we must convert the
- * result to a timespec before we can return.
- */
-static void
-ice_ptp_read_time(struct ice_pf *pf, struct timespec64 *ts,
-		  struct ptp_system_timestamp *sts)
-{
-	u64 time_ns = ice_ptp_read_src_clk_reg(pf, sts);
-
-	*ts = ns_to_timespec64(time_ns);
-}
-
-/**
  * ice_ptp_write_init - Set PHC time to provided value
  * @pf: Board private structure
  * @ts: timespec structure that holds the new time value
@@ -1153,12 +1190,7 @@ static u64 ice_base_incval(struct ice_pf *pf)
 	struct ice_hw *hw = &pf->hw;
 	u64 incval;
 
-	if (ice_is_e810(hw))
-		incval = ICE_PTP_NOMINAL_INCVAL_E810;
-	else if (ice_e822_time_ref(hw) < NUM_ICE_TIME_REF_FREQ)
-		incval = ice_e822_nominal_incval(ice_e822_time_ref(hw));
-	else
-		incval = UNKNOWN_INCVAL_E822;
+	incval = ice_get_base_incval(hw);
 
 	dev_dbg(ice_pf_to_dev(pf), "PTP: using base increment value of 0x%016llx\n",
 		incval);
@@ -1172,8 +1204,8 @@ static u64 ice_base_incval(struct ice_pf *pf)
  */
 static int ice_ptp_check_tx_fifo(struct ice_ptp_port *port)
 {
-	int quad = port->port_num / ICE_PORTS_PER_QUAD;
 	int offs = port->port_num % ICE_PORTS_PER_QUAD;
+	int quad = ICE_GET_QUAD_NUM(port->port_num);
 	struct ice_pf *pf;
 	struct ice_hw *hw;
 	u32 val, phy_sts;
@@ -1187,10 +1219,10 @@ static int ice_ptp_check_tx_fifo(struct ice_ptp_port *port)
 
 	/* need to read FIFO state */
 	if (offs == 0 || offs == 1)
-		err = ice_read_quad_reg_e822(hw, quad, Q_REG_FIFO01_STATUS,
+		err = ice_read_quad_reg_e82x(hw, quad, Q_REG_FIFO01_STATUS,
 					     &val);
 	else
-		err = ice_read_quad_reg_e822(hw, quad, Q_REG_FIFO23_STATUS,
+		err = ice_read_quad_reg_e82x(hw, quad, Q_REG_FIFO23_STATUS,
 					     &val);
 
 	if (err) {
@@ -1200,9 +1232,9 @@ static int ice_ptp_check_tx_fifo(struct ice_ptp_port *port)
 	}
 
 	if (offs & 0x1)
-		phy_sts = (val & Q_REG_FIFO13_M) >> Q_REG_FIFO13_S;
+		phy_sts = FIELD_GET(Q_REG_FIFO13_M, val);
 	else
-		phy_sts = (val & Q_REG_FIFO02_M) >> Q_REG_FIFO02_S;
+		phy_sts = FIELD_GET(Q_REG_FIFO02_M, val);
 
 	if (phy_sts & FIFO_EMPTY) {
 		port->tx_fifo_busy_cnt = FIFO_OK;
@@ -1218,7 +1250,7 @@ static int ice_ptp_check_tx_fifo(struct ice_ptp_port *port)
 		dev_dbg(ice_pf_to_dev(pf),
 			"Port %d Tx FIFO still not empty; resetting quad %d\n",
 			port->port_num, quad);
-		ice_ptp_reset_ts_memory_quad_e822(hw, quad);
+		ice_ptp_reset_ts_memory_quad_e82x(hw, quad);
 		port->tx_fifo_busy_cnt = FIFO_OK;
 		return 0;
 	}
@@ -1263,8 +1295,8 @@ static void ice_ptp_wait_for_offsets(struct kthread_work *work)
 
 	tx_err = ice_ptp_check_tx_fifo(port);
 	if (!tx_err)
-		tx_err = ice_phy_cfg_tx_offset_e822(hw, port->port_num);
-	rx_err = ice_phy_cfg_rx_offset_e822(hw, port->port_num);
+		tx_err = ice_phy_cfg_tx_offset_e82x(hw, port->port_num);
+	rx_err = ice_phy_cfg_rx_offset_e82x(hw, port->port_num);
 	if (tx_err || rx_err) {
 		/* Tx and/or Rx offset not yet configured, try again later */
 		kthread_queue_delayed_work(pf->ptp.kworker,
@@ -1291,10 +1323,19 @@ ice_ptp_port_phy_stop(struct ice_ptp_port *ptp_port)
 
 	mutex_lock(&ptp_port->ps_lock);
 
-	kthread_cancel_delayed_work_sync(&ptp_port->ov_work);
+	switch (ice_get_phy_model(hw)) {
+	case ICE_PHY_ETH56G:
+		err = ice_stop_phy_timer_eth56g(hw, port, true);
+		break;
+	case ICE_PHY_E82X:
+		kthread_cancel_delayed_work_sync(&ptp_port->ov_work);
 
-	err = ice_stop_phy_timer_e822(hw, port, true);
-	if (err)
+		err = ice_stop_phy_timer_e82x(hw, port, true);
+		break;
+	default:
+		err = -ENODEV;
+	}
+	if (err && err != -EBUSY)
 		dev_err(ice_pf_to_dev(pf), "PTP failed to set PHY port %d down, err %d\n",
 			port, err);
 
@@ -1317,6 +1358,7 @@ ice_ptp_port_phy_restart(struct ice_ptp_port *ptp_port)
 	struct ice_pf *pf = ptp_port_to_pf(ptp_port);
 	u8 port = ptp_port->port_num;
 	struct ice_hw *hw = &pf->hw;
+	unsigned long flags;
 	int err;
 
 	if (ice_is_e810(hw))
@@ -1327,27 +1369,39 @@ ice_ptp_port_phy_restart(struct ice_ptp_port *ptp_port)
 
 	mutex_lock(&ptp_port->ps_lock);
 
-	kthread_cancel_delayed_work_sync(&ptp_port->ov_work);
+	switch (ice_get_phy_model(hw)) {
+	case ICE_PHY_ETH56G:
+		err = ice_start_phy_timer_eth56g(hw, port);
+		break;
+	case ICE_PHY_E82X:
+		/* Start the PHY timer in Vernier mode */
+		kthread_cancel_delayed_work_sync(&ptp_port->ov_work);
 
-	/* temporarily disable Tx timestamps while calibrating PHY offset */
-	spin_lock(&ptp_port->tx.lock);
-	ptp_port->tx.calibrating = true;
-	spin_unlock(&ptp_port->tx.lock);
-	ptp_port->tx_fifo_busy_cnt = 0;
+		/* temporarily disable Tx timestamps while calibrating
+		 * PHY offset
+		 */
+		spin_lock_irqsave(&ptp_port->tx.lock, flags);
+		ptp_port->tx.calibrating = true;
+		spin_unlock_irqrestore(&ptp_port->tx.lock, flags);
+		ptp_port->tx_fifo_busy_cnt = 0;
 
-	/* Start the PHY timer in Vernier mode */
-	err = ice_start_phy_timer_e822(hw, port);
-	if (err)
-		goto out_unlock;
+		/* Start the PHY timer in Vernier mode */
+		err = ice_start_phy_timer_e82x(hw, port);
+		if (err)
+			break;
 
-	/* Enable Tx timestamps right away */
-	spin_lock(&ptp_port->tx.lock);
-	ptp_port->tx.calibrating = false;
-	spin_unlock(&ptp_port->tx.lock);
+		/* Enable Tx timestamps right away */
+		spin_lock_irqsave(&ptp_port->tx.lock, flags);
+		ptp_port->tx.calibrating = false;
+		spin_unlock_irqrestore(&ptp_port->tx.lock, flags);
 
-	kthread_queue_delayed_work(pf->ptp.kworker, &ptp_port->ov_work, 0);
+		kthread_queue_delayed_work(pf->ptp.kworker, &ptp_port->ov_work,
+					   0);
+		break;
+	default:
+		err = -ENODEV;
+	}
 
-out_unlock:
 	if (err)
 		dev_err(ice_pf_to_dev(pf), "PTP failed to set PHY port %d up, err %d\n",
 			port, err);
@@ -1360,75 +1414,99 @@ out_unlock:
 /**
  * ice_ptp_link_change - Reconfigure PTP after link status change
  * @pf: Board private structure
- * @port: Port for which the PHY start is set
  * @linkup: Link is up or down
  */
-void ice_ptp_link_change(struct ice_pf *pf, u8 port, bool linkup)
+void ice_ptp_link_change(struct ice_pf *pf, bool linkup)
 {
 	struct ice_ptp_port *ptp_port;
+	struct ice_hw *hw = &pf->hw;
 
-	if (!test_bit(ICE_FLAG_PTP, pf->flags))
-		return;
-
-	if (WARN_ON_ONCE(port >= ICE_NUM_EXTERNAL_PORTS))
+	if (pf->ptp.state != ICE_PTP_READY)
 		return;
 
 	ptp_port = &pf->ptp.port;
-	if (WARN_ON_ONCE(ptp_port->port_num != port))
-		return;
 
 	/* Update cached link status for this port immediately */
 	ptp_port->link_up = linkup;
 
-	/* E810 devices do not need to reconfigure the PHY */
-	if (ice_is_e810(&pf->hw))
+	/* Skip HW writes if reset is in progress */
+	if (pf->hw.reset_ongoing)
 		return;
-
-	ice_ptp_port_phy_restart(ptp_port);
+	switch (ice_get_phy_model(hw)) {
+	case ICE_PHY_E810:
+		/* Do not reconfigure E810 PHY */
+		return;
+	case ICE_PHY_ETH56G:
+	case ICE_PHY_E82X:
+		ice_ptp_port_phy_restart(ptp_port);
+		return;
+	default:
+		dev_warn(ice_pf_to_dev(pf), "%s: Unknown PHY type\n", __func__);
+	}
 }
 
 /**
- * ice_ptp_tx_ena_intr - Enable or disable the Tx timestamp interrupt
+ * ice_ptp_cfg_phy_interrupt - Configure PHY interrupt settings
  * @pf: PF private structure
  * @ena: bool value to enable or disable interrupt
  * @threshold: Minimum number of packets at which intr is triggered
  *
- * Utility function to enable or disable Tx timestamp interrupt and threshold
+ * Utility function to configure all the PHY interrupt settings, including
+ * whether the PHY interrupt is enabled, and what threshold to use. Also
+ * configures The E82X timestamp owner to react to interrupts from all PHYs.
+ *
+ * Return: 0 on success, -EOPNOTSUPP when PHY model incorrect, other error codes
+ * when failed to configure PHY interrupt for E82X
  */
-static int ice_ptp_tx_ena_intr(struct ice_pf *pf, bool ena, u32 threshold)
+static int ice_ptp_cfg_phy_interrupt(struct ice_pf *pf, bool ena, u32 threshold)
 {
+	struct device *dev = ice_pf_to_dev(pf);
 	struct ice_hw *hw = &pf->hw;
-	int err = 0;
-	int quad;
-	u32 val;
 
 	ice_ptp_reset_ts_memory(hw);
 
-	for (quad = 0; quad < ICE_MAX_QUAD; quad++) {
-		err = ice_read_quad_reg_e822(hw, quad, Q_REG_TX_MEM_GBL_CFG,
-					     &val);
-		if (err)
-			break;
+	switch (ice_get_phy_model(hw)) {
+	case ICE_PHY_ETH56G: {
+		int port;
 
-		if (ena) {
-			val |= Q_REG_TX_MEM_GBL_CFG_INTR_ENA_M;
-			val &= ~Q_REG_TX_MEM_GBL_CFG_INTR_THR_M;
-			val |= ((threshold << Q_REG_TX_MEM_GBL_CFG_INTR_THR_S) &
-				Q_REG_TX_MEM_GBL_CFG_INTR_THR_M);
-		} else {
-			val &= ~Q_REG_TX_MEM_GBL_CFG_INTR_ENA_M;
+		for (port = 0; port < hw->ptp.num_lports; port++) {
+			int err;
+
+			err = ice_phy_cfg_intr_eth56g(hw, port, ena, threshold);
+			if (err) {
+				dev_err(dev, "Failed to configure PHY interrupt for port %d, err %d\n",
+					port, err);
+				return err;
+			}
 		}
 
-		err = ice_write_quad_reg_e822(hw, quad, Q_REG_TX_MEM_GBL_CFG,
-					      val);
-		if (err)
-			break;
+		return 0;
 	}
+	case ICE_PHY_E82X: {
+		int quad;
 
-	if (err)
-		dev_err(ice_pf_to_dev(pf), "PTP failed in intr ena, err %d\n",
-			err);
-	return err;
+		for (quad = 0; quad < ICE_GET_QUAD_NUM(hw->ptp.num_lports);
+		     quad++) {
+			int err;
+
+			err = ice_phy_cfg_intr_e82x(hw, quad, ena, threshold);
+			if (err) {
+				dev_err(dev, "Failed to configure PHY interrupt for quad %d, err %d\n",
+					quad, err);
+				return err;
+			}
+		}
+
+		return 0;
+	}
+	case ICE_PHY_E810:
+		return 0;
+	case ICE_PHY_UNSUP:
+	default:
+		dev_warn(dev, "%s: Unexpected PHY model %d\n", __func__,
+			 ice_get_phy_model(hw));
+		return -EOPNOTSUPP;
+	}
 }
 
 /**
@@ -1438,6 +1516,24 @@ static int ice_ptp_tx_ena_intr(struct ice_pf *pf, bool ena, u32 threshold)
 static void ice_ptp_reset_phy_timestamping(struct ice_pf *pf)
 {
 	ice_ptp_port_phy_restart(&pf->ptp.port);
+}
+
+/**
+ * ice_ptp_restart_all_phy - Restart all PHYs to recalibrate timestamping
+ * @pf: Board private structure
+ */
+static void ice_ptp_restart_all_phy(struct ice_pf *pf)
+{
+	struct list_head *entry;
+
+	list_for_each(entry, &pf->adapter->ports.ports) {
+		struct ice_ptp_port *port = list_entry(entry,
+						       struct ice_ptp_port,
+						       list_node);
+
+		if (port->link_up)
+			ice_ptp_port_phy_restart(port);
+	}
 }
 
 /**
@@ -1477,6 +1573,10 @@ void ice_ptp_extts_event(struct ice_pf *pf)
 	u8 chan, tmr_idx;
 	u32 hi, lo;
 
+	/* Don't process timestamp events if PTP is not ready */
+	if (pf->ptp.state != ICE_PTP_READY)
+		return;
+
 	tmr_idx = hw->func_caps.ts_func_info.tmr_index_owned;
 	/* Event time is captured by one of the two matched registers
 	 *      GLTSYN_EVNT_L: 32 LSB of sampled time event
@@ -1484,45 +1584,70 @@ void ice_ptp_extts_event(struct ice_pf *pf)
 	 * Event is defined in GLTSYN_EVNT_0 register
 	 */
 	for (chan = 0; chan < GLTSYN_EVNT_H_IDX_MAX; chan++) {
-		/* Check if channel is enabled */
-		if (pf->ptp.ext_ts_irq & (1 << chan)) {
-			lo = rd32(hw, GLTSYN_EVNT_L(chan, tmr_idx));
-			hi = rd32(hw, GLTSYN_EVNT_H(chan, tmr_idx));
-			event.timestamp = (((u64)hi) << 32) | lo;
-			event.type = PTP_CLOCK_EXTTS;
-			event.index = chan;
+		int pin_desc_idx;
 
-			/* Fire event */
-			ptp_clock_event(pf->ptp.clock, &event);
-			pf->ptp.ext_ts_irq &= ~(1 << chan);
+		/* Check if channel is enabled */
+		if (!(pf->ptp.ext_ts_irq & (1 << chan)))
+			continue;
+
+		lo = rd32(hw, GLTSYN_EVNT_L(chan, tmr_idx));
+		hi = rd32(hw, GLTSYN_EVNT_H(chan, tmr_idx));
+		event.timestamp = (u64)hi << 32 | lo;
+
+		/* Add delay compensation */
+		pin_desc_idx = ice_ptp_find_pin_idx(pf, PTP_PF_EXTTS, chan);
+		if (pin_desc_idx >= 0) {
+			const struct ice_ptp_pin_desc *desc;
+
+			desc = &pf->ptp.ice_pin_desc[pin_desc_idx];
+			event.timestamp -= desc->delay[0];
 		}
+
+		event.type = PTP_CLOCK_EXTTS;
+		event.index = chan;
+		pf->ptp.ext_ts_irq &= ~(1 << chan);
+		ptp_clock_event(pf->ptp.clock, &event);
 	}
 }
 
 /**
  * ice_ptp_cfg_extts - Configure EXTTS pin and channel
  * @pf: Board private structure
- * @ena: true to enable; false to disable
- * @chan: GPIO channel (0-3)
- * @gpio_pin: GPIO pin
- * @extts_flags: request flags from the ptp_extts_request.flags
+ * @rq: External timestamp request
+ * @on: Enable/disable flag
+ *
+ * Configure an external timestamp event on the requested channel.
+ *
+ * Return: 0 on success, negative error code otherwise
  */
-static int
-ice_ptp_cfg_extts(struct ice_pf *pf, bool ena, unsigned int chan, u32 gpio_pin,
-		  unsigned int extts_flags)
+static int ice_ptp_cfg_extts(struct ice_pf *pf, struct ptp_extts_request *rq,
+			     int on)
 {
-	u32 func, aux_reg, gpio_reg, irq_reg;
+	u32 aux_reg, gpio_reg, irq_reg;
 	struct ice_hw *hw = &pf->hw;
+	unsigned int chan, gpio_pin;
+	int pin_desc_idx;
 	u8 tmr_idx;
 
-	if (chan > (unsigned int)pf->ptp.info.n_ext_ts)
-		return -EINVAL;
+	/* Reject requests with unsupported flags */
+
+	if (rq->flags & ~(PTP_ENABLE_FEATURE |
+			  PTP_RISING_EDGE |
+			  PTP_FALLING_EDGE |
+			  PTP_STRICT_FLAGS))
+		return -EOPNOTSUPP;
 
 	tmr_idx = hw->func_caps.ts_func_info.tmr_index_owned;
+	chan = rq->index;
 
+	pin_desc_idx = ice_ptp_find_pin_idx(pf, PTP_PF_EXTTS, chan);
+	if (pin_desc_idx < 0)
+		return -EIO;
+
+	gpio_pin = pf->ptp.ice_pin_desc[pin_desc_idx].gpio[0];
 	irq_reg = rd32(hw, PFINT_OICR_ENA);
 
-	if (ena) {
+	if (on) {
 		/* Enable the interrupt */
 		irq_reg |= PFINT_OICR_TSYN_EVNT_M;
 		aux_reg = GLTSYN_AUX_IN_0_INT_ENA_M;
@@ -1531,25 +1656,32 @@ ice_ptp_cfg_extts(struct ice_pf *pf, bool ena, unsigned int chan, u32 gpio_pin,
 #define GLTSYN_AUX_IN_0_EVNTLVL_FALLING_EDGE	BIT(1)
 
 		/* set event level to requested edge */
-		if (extts_flags & PTP_FALLING_EDGE)
+		if (rq->flags & PTP_FALLING_EDGE)
 			aux_reg |= GLTSYN_AUX_IN_0_EVNTLVL_FALLING_EDGE;
-		if (extts_flags & PTP_RISING_EDGE)
+		if (rq->flags & PTP_RISING_EDGE)
 			aux_reg |= GLTSYN_AUX_IN_0_EVNTLVL_RISING_EDGE;
 
 		/* Write GPIO CTL reg.
 		 * 0x1 is input sampled by EVENT register(channel)
 		 * + num_in_channels * tmr_idx
 		 */
-		func = 1 + chan + (tmr_idx * 3);
-		gpio_reg = ((func << GLGEN_GPIO_CTL_PIN_FUNC_S) &
-			    GLGEN_GPIO_CTL_PIN_FUNC_M);
-		pf->ptp.ext_ts_chan |= (1 << chan);
+		gpio_reg = FIELD_PREP(GLGEN_GPIO_CTL_PIN_FUNC_M,
+				      1 + chan + (tmr_idx * 3));
 	} else {
+		bool last_enabled = true;
+
 		/* clear the values we set to reset defaults */
 		aux_reg = 0;
 		gpio_reg = 0;
-		pf->ptp.ext_ts_chan &= ~(1 << chan);
-		if (!pf->ptp.ext_ts_chan)
+
+		for (unsigned int i = 0; i < pf->ptp.info.n_ext_ts; i++)
+			if ((pf->ptp.extts_rqs[i].flags &
+			     PTP_ENABLE_FEATURE) &&
+			    i != chan) {
+				last_enabled = false;
+			}
+
+		if (last_enabled)
 			irq_reg &= ~PFINT_OICR_TSYN_EVNT_M;
 	}
 
@@ -1561,253 +1693,348 @@ ice_ptp_cfg_extts(struct ice_pf *pf, bool ena, unsigned int chan, u32 gpio_pin,
 }
 
 /**
- * ice_ptp_cfg_clkout - Configure clock to generate periodic wave
+ * ice_ptp_disable_all_extts - Disable all EXTTS channels
  * @pf: Board private structure
- * @chan: GPIO channel (0-3)
- * @config: desired periodic clk configuration. NULL will disable channel
- * @store: If set to true the values will be stored
- *
- * Configure the internal clock generator modules to generate the clock wave of
- * specified period.
  */
-static int ice_ptp_cfg_clkout(struct ice_pf *pf, unsigned int chan,
-			      struct ice_perout_channel *config, bool store)
+static void ice_ptp_disable_all_extts(struct ice_pf *pf)
 {
-	u64 current_time, period, start_time, phase;
-	struct ice_hw *hw = &pf->hw;
-	u32 func, val, gpio_pin;
-	u8 tmr_idx;
+	for (unsigned int i = 0; i < pf->ptp.info.n_ext_ts ; i++)
+		if (pf->ptp.extts_rqs[i].flags & PTP_ENABLE_FEATURE)
+			ice_ptp_cfg_extts(pf, &pf->ptp.extts_rqs[i],
+					  false);
 
-	tmr_idx = hw->func_caps.ts_func_info.tmr_index_owned;
+	synchronize_irq(pf->oicr_irq.virq);
+}
+
+/**
+ * ice_ptp_enable_all_extts - Enable all EXTTS channels
+ * @pf: Board private structure
+ *
+ * Called during reset to restore user configuration.
+ */
+static void ice_ptp_enable_all_extts(struct ice_pf *pf)
+{
+	for (unsigned int i = 0; i < pf->ptp.info.n_ext_ts ; i++)
+		if (pf->ptp.extts_rqs[i].flags & PTP_ENABLE_FEATURE)
+			ice_ptp_cfg_extts(pf, &pf->ptp.extts_rqs[i],
+					  true);
+}
+
+/**
+ * ice_ptp_write_perout - Write periodic wave parameters to HW
+ * @hw: pointer to the HW struct
+ * @chan: target channel
+ * @gpio_pin: target GPIO pin
+ * @start: target time to start periodic output
+ * @period: target period
+ *
+ * Return: 0 on success, negative error code otherwise
+ */
+static int ice_ptp_write_perout(struct ice_hw *hw, unsigned int chan,
+				unsigned int gpio_pin, u64 start, u64 period)
+{
+
+	u8 tmr_idx = hw->func_caps.ts_func_info.tmr_index_owned;
+	u32 val = 0;
 
 	/* 0. Reset mode & out_en in AUX_OUT */
 	wr32(hw, GLTSYN_AUX_OUT(chan, tmr_idx), 0);
 
-	/* If we're disabling the output, clear out CLKO and TGT and keep
-	 * output level low
+	if (ice_is_e825c(hw)) {
+		int err;
+
+		/* Enable/disable CGU 1PPS output for E825C */
+		err = ice_cgu_cfg_pps_out(hw, !!period);
+		if (err)
+			return err;
+	}
+
+	/* 1. Write perout with half of required period value.
+	 * HW toggles output when source clock hits the TGT and then adds
+	 * GLTSYN_CLKO value to the target, so it ends up with 50% duty cycle.
 	 */
-	if (!config || !config->ena) {
-		wr32(hw, GLTSYN_CLKO(chan, tmr_idx), 0);
-		wr32(hw, GLTSYN_TGT_L(chan, tmr_idx), 0);
-		wr32(hw, GLTSYN_TGT_H(chan, tmr_idx), 0);
-
-		val = GLGEN_GPIO_CTL_PIN_DIR_M;
-		gpio_pin = pf->ptp.perout_channels[chan].gpio_pin;
-		wr32(hw, GLGEN_GPIO_CTL(gpio_pin), val);
-
-		/* Store the value if requested */
-		if (store)
-			memset(&pf->ptp.perout_channels[chan], 0,
-			       sizeof(struct ice_perout_channel));
-
-		return 0;
-	}
-	period = config->period;
-	start_time = config->start_time;
-	div64_u64_rem(start_time, period, &phase);
-	gpio_pin = config->gpio_pin;
-
-	/* 1. Write clkout with half of required period value */
-	if (period & 0x1) {
-		dev_err(ice_pf_to_dev(pf), "CLK Period must be an even value\n");
-		goto err;
-	}
-
 	period >>= 1;
 
-	/* For proper operation, the GLTSYN_CLKO must be larger than clock tick
+	/* For proper operation, GLTSYN_CLKO must be larger than clock tick and
+	 * period has to fit in 32 bit register.
 	 */
 #define MIN_PULSE 3
-	if (period <= MIN_PULSE || period > U32_MAX) {
-		dev_err(ice_pf_to_dev(pf), "CLK Period must be > %d && < 2^33",
-			MIN_PULSE * 2);
-		goto err;
+	if (!!period && (period <= MIN_PULSE || period > U32_MAX)) {
+		dev_err(ice_hw_to_dev(hw), "CLK period ticks must be >= %d && <= 2^32",
+			MIN_PULSE);
+		return -EIO;
 	}
 
 	wr32(hw, GLTSYN_CLKO(chan, tmr_idx), lower_32_bits(period));
 
-	/* Allow time for programming before start_time is hit */
-	current_time = ice_ptp_read_src_clk_reg(pf, NULL);
-
-	/* if start time is in the past start the timer at the nearest second
-	 * maintaining phase
-	 */
-	if (start_time < current_time)
-		start_time = div64_u64(current_time + NSEC_PER_SEC - 1,
-				       NSEC_PER_SEC) * NSEC_PER_SEC + phase;
-
-	if (ice_is_e810(hw))
-		start_time -= E810_OUT_PROP_DELAY_NS;
-	else
-		start_time -= ice_e822_pps_delay(ice_e822_time_ref(hw));
-
 	/* 2. Write TARGET time */
-	wr32(hw, GLTSYN_TGT_L(chan, tmr_idx), lower_32_bits(start_time));
-	wr32(hw, GLTSYN_TGT_H(chan, tmr_idx), upper_32_bits(start_time));
+	wr32(hw, GLTSYN_TGT_L(chan, tmr_idx), lower_32_bits(start));
+	wr32(hw, GLTSYN_TGT_H(chan, tmr_idx), upper_32_bits(start));
 
 	/* 3. Write AUX_OUT register */
-	val = GLTSYN_AUX_OUT_0_OUT_ENA_M | GLTSYN_AUX_OUT_0_OUTMOD_M;
+	if (!!period)
+		val = GLTSYN_AUX_OUT_0_OUT_ENA_M | GLTSYN_AUX_OUT_0_OUTMOD_M;
 	wr32(hw, GLTSYN_AUX_OUT(chan, tmr_idx), val);
 
 	/* 4. write GPIO CTL reg */
-	func = 8 + chan + (tmr_idx * 4);
-	val = GLGEN_GPIO_CTL_PIN_DIR_M |
-	      ((func << GLGEN_GPIO_CTL_PIN_FUNC_S) & GLGEN_GPIO_CTL_PIN_FUNC_M);
+	val = GLGEN_GPIO_CTL_PIN_DIR_M;
+	if (!!period)
+		val |= FIELD_PREP(GLGEN_GPIO_CTL_PIN_FUNC_M,
+				  8 + chan + (tmr_idx * 4));
+
 	wr32(hw, GLGEN_GPIO_CTL(gpio_pin), val);
 
-	/* Store the value if requested */
-	if (store) {
-		memcpy(&pf->ptp.perout_channels[chan], config,
-		       sizeof(struct ice_perout_channel));
-		pf->ptp.perout_channels[chan].start_time = phase;
+	return 0;
+}
+
+/**
+ * ice_ptp_cfg_perout - Configure clock to generate periodic wave
+ * @pf: Board private structure
+ * @rq: Periodic output request
+ * @on: Enable/disable flag
+ *
+ * Configure the internal clock generator modules to generate the clock wave of
+ * specified period.
+ *
+ * Return: 0 on success, negative error code otherwise
+ */
+static int ice_ptp_cfg_perout(struct ice_pf *pf, struct ptp_perout_request *rq,
+			      int on)
+{
+	unsigned int gpio_pin, prop_delay_ns;
+	u64 clk, period, start, phase;
+	struct ice_hw *hw = &pf->hw;
+	int pin_desc_idx;
+
+	if (rq->flags & ~PTP_PEROUT_PHASE)
+		return -EOPNOTSUPP;
+
+	pin_desc_idx = ice_ptp_find_pin_idx(pf, PTP_PF_PEROUT, rq->index);
+	if (pin_desc_idx < 0)
+		return -EIO;
+
+	gpio_pin = pf->ptp.ice_pin_desc[pin_desc_idx].gpio[1];
+	prop_delay_ns = pf->ptp.ice_pin_desc[pin_desc_idx].delay[1];
+	period = rq->period.sec * NSEC_PER_SEC + rq->period.nsec;
+
+	/* If we're disabling the output or period is 0, clear out CLKO and TGT
+	 * and keep output level low.
+	 */
+	if (!on || !period)
+		return ice_ptp_write_perout(hw, rq->index, gpio_pin, 0, 0);
+
+	if (strncmp(pf->ptp.pin_desc[pin_desc_idx].name, "1PPS", 64) == 0 &&
+	    period != NSEC_PER_SEC && hw->ptp.phy_model == ICE_PHY_E82X) {
+		dev_err(ice_pf_to_dev(pf), "1PPS pin supports only 1 s period\n");
+		return -EOPNOTSUPP;
 	}
 
-	return 0;
-err:
-	dev_err(ice_pf_to_dev(pf), "PTP failed to cfg per_clk\n");
-	return -EFAULT;
+	if (period & 0x1) {
+		dev_err(ice_pf_to_dev(pf), "CLK Period must be an even value\n");
+		return -EIO;
+	}
+
+	start = rq->start.sec * NSEC_PER_SEC + rq->start.nsec;
+
+	/* If PTP_PEROUT_PHASE is set, rq has phase instead of start time */
+	if (rq->flags & PTP_PEROUT_PHASE)
+		phase = start;
+	else
+		div64_u64_rem(start, period, &phase);
+
+	/* If we have only phase or start time is in the past, start the timer
+	 * at the next multiple of period, maintaining phase.
+	 */
+	clk = ice_ptp_read_src_clk_reg(pf, NULL);
+	if (rq->flags & PTP_PEROUT_PHASE || start <= clk - prop_delay_ns)
+		start = div64_u64(clk + period - 1, period) * period + phase;
+
+	/* Compensate for propagation delay from the generator to the pin. */
+	start -= prop_delay_ns;
+
+	return ice_ptp_write_perout(hw, rq->index, gpio_pin, start, period);
 }
 
 /**
- * ice_ptp_disable_all_clkout - Disable all currently configured outputs
- * @pf: pointer to the PF structure
+ * ice_ptp_disable_all_perout - Disable all currently configured outputs
+ * @pf: Board private structure
  *
  * Disable all currently configured clock outputs. This is necessary before
- * certain changes to the PTP hardware clock. Use ice_ptp_enable_all_clkout to
+ * certain changes to the PTP hardware clock. Use ice_ptp_enable_all_perout to
  * re-enable the clocks again.
  */
-static void ice_ptp_disable_all_clkout(struct ice_pf *pf)
+static void ice_ptp_disable_all_perout(struct ice_pf *pf)
 {
-	uint i;
-
-	for (i = 0; i < pf->ptp.info.n_per_out; i++)
-		if (pf->ptp.perout_channels[i].ena)
-			ice_ptp_cfg_clkout(pf, i, NULL, false);
-}
-
-/**
- * ice_ptp_enable_all_clkout - Enable all configured periodic clock outputs
- * @pf: pointer to the PF structure
- *
- * Enable all currently configured clock outputs. Use this after
- * ice_ptp_disable_all_clkout to reconfigure the output signals according to
- * their configuration.
- */
-static void ice_ptp_enable_all_clkout(struct ice_pf *pf)
-{
-	uint i;
-
-	for (i = 0; i < pf->ptp.info.n_per_out; i++)
-		if (pf->ptp.perout_channels[i].ena)
-			ice_ptp_cfg_clkout(pf, i, &pf->ptp.perout_channels[i],
+	for (unsigned int i = 0; i < pf->ptp.info.n_per_out; i++)
+		if (pf->ptp.perout_rqs[i].period.sec ||
+		    pf->ptp.perout_rqs[i].period.nsec)
+			ice_ptp_cfg_perout(pf, &pf->ptp.perout_rqs[i],
 					   false);
 }
 
 /**
- * ice_ptp_gpio_enable_e810 - Enable/disable ancillary features of PHC
- * @info: the driver's PTP info structure
- * @rq: The requested feature to change
- * @on: Enable/disable flag
+ * ice_ptp_enable_all_perout - Enable all configured periodic clock outputs
+ * @pf: Board private structure
+ *
+ * Enable all currently configured clock outputs. Use this after
+ * ice_ptp_disable_all_perout to reconfigure the output signals according to
+ * their configuration.
  */
-static int
-ice_ptp_gpio_enable_e810(struct ptp_clock_info *info,
-			 struct ptp_clock_request *rq, int on)
+static void ice_ptp_enable_all_perout(struct ice_pf *pf)
 {
-	struct ice_pf *pf = ptp_info_to_pf(info);
-	struct ice_perout_channel clk_cfg = {0};
-	bool sma_pres = false;
-	unsigned int chan;
-	u32 gpio_pin;
-	int err;
-
-	if (ice_is_feature_supported(pf, ICE_F_SMA_CTRL))
-		sma_pres = true;
-
-	switch (rq->type) {
-	case PTP_CLK_REQ_PEROUT:
-		chan = rq->perout.index;
-		if (sma_pres) {
-			if (chan == ice_pin_desc_e810t[SMA1].chan)
-				clk_cfg.gpio_pin = GPIO_20;
-			else if (chan == ice_pin_desc_e810t[SMA2].chan)
-				clk_cfg.gpio_pin = GPIO_22;
-			else
-				return -1;
-		} else if (ice_is_e810t(&pf->hw)) {
-			if (chan == 0)
-				clk_cfg.gpio_pin = GPIO_20;
-			else
-				clk_cfg.gpio_pin = GPIO_22;
-		} else if (chan == PPS_CLK_GEN_CHAN) {
-			clk_cfg.gpio_pin = PPS_PIN_INDEX;
-		} else {
-			clk_cfg.gpio_pin = chan;
-		}
-
-		clk_cfg.period = ((rq->perout.period.sec * NSEC_PER_SEC) +
-				   rq->perout.period.nsec);
-		clk_cfg.start_time = ((rq->perout.start.sec * NSEC_PER_SEC) +
-				       rq->perout.start.nsec);
-		clk_cfg.ena = !!on;
-
-		err = ice_ptp_cfg_clkout(pf, chan, &clk_cfg, true);
-		break;
-	case PTP_CLK_REQ_EXTTS:
-		chan = rq->extts.index;
-		if (sma_pres) {
-			if (chan < ice_pin_desc_e810t[SMA2].chan)
-				gpio_pin = GPIO_21;
-			else
-				gpio_pin = GPIO_23;
-		} else if (ice_is_e810t(&pf->hw)) {
-			if (chan == 0)
-				gpio_pin = GPIO_21;
-			else
-				gpio_pin = GPIO_23;
-		} else {
-			gpio_pin = chan;
-		}
-
-		err = ice_ptp_cfg_extts(pf, !!on, chan, gpio_pin,
-					rq->extts.flags);
-		break;
-	default:
-		return -EOPNOTSUPP;
-	}
-
-	return err;
+	for (unsigned int i = 0; i < pf->ptp.info.n_per_out; i++)
+		if (pf->ptp.perout_rqs[i].period.sec ||
+		    pf->ptp.perout_rqs[i].period.nsec)
+			ice_ptp_cfg_perout(pf, &pf->ptp.perout_rqs[i],
+					   true);
 }
 
 /**
- * ice_ptp_gpio_enable_e823 - Enable/disable ancillary features of PHC
- * @info: the driver's PTP info structure
- * @rq: The requested feature to change
- * @on: Enable/disable flag
+ * ice_ptp_disable_shared_pin - Disable enabled pin that shares GPIO
+ * @pf: Board private structure
+ * @pin: Pin index
+ * @func: Assigned function
+ *
+ * Return: 0 on success, negative error code otherwise
  */
-static int ice_ptp_gpio_enable_e823(struct ptp_clock_info *info,
-				    struct ptp_clock_request *rq, int on)
+static int ice_ptp_disable_shared_pin(struct ice_pf *pf, unsigned int pin,
+				      enum ptp_pin_function func)
 {
-	struct ice_pf *pf = ptp_info_to_pf(info);
-	struct ice_perout_channel clk_cfg = {0};
-	int err;
+	unsigned int gpio_pin;
 
-	switch (rq->type) {
-	case PTP_CLK_REQ_PPS:
-		clk_cfg.gpio_pin = PPS_PIN_INDEX;
-		clk_cfg.period = NSEC_PER_SEC;
-		clk_cfg.ena = !!on;
-
-		err = ice_ptp_cfg_clkout(pf, PPS_CLK_GEN_CHAN, &clk_cfg, true);
+	switch (func) {
+	case PTP_PF_PEROUT:
+		gpio_pin = pf->ptp.ice_pin_desc[pin].gpio[1];
 		break;
-	case PTP_CLK_REQ_EXTTS:
-		err = ice_ptp_cfg_extts(pf, !!on, rq->extts.index,
-					TIME_SYNC_PIN_INDEX, rq->extts.flags);
+	case PTP_PF_EXTTS:
+		gpio_pin = pf->ptp.ice_pin_desc[pin].gpio[0];
 		break;
 	default:
 		return -EOPNOTSUPP;
 	}
 
-	return err;
+	for (unsigned int i = 0; i < pf->ptp.info.n_pins; i++) {
+		struct ptp_pin_desc *pin_desc = &pf->ptp.pin_desc[i];
+		unsigned int chan = pin_desc->chan;
+
+		/* Skip pin idx from the request */
+		if (i == pin)
+			continue;
+
+		if (pin_desc->func == PTP_PF_PEROUT &&
+		    pf->ptp.ice_pin_desc[i].gpio[1] == gpio_pin) {
+			pf->ptp.perout_rqs[chan].period.sec = 0;
+			pf->ptp.perout_rqs[chan].period.nsec = 0;
+			pin_desc->func = PTP_PF_NONE;
+			pin_desc->chan = 0;
+			dev_dbg(ice_pf_to_dev(pf), "Disabling pin %u with shared output GPIO pin %u\n",
+				i, gpio_pin);
+			return ice_ptp_cfg_perout(pf, &pf->ptp.perout_rqs[chan],
+						  false);
+		} else if (pf->ptp.pin_desc->func == PTP_PF_EXTTS &&
+			   pf->ptp.ice_pin_desc[i].gpio[0] == gpio_pin) {
+			pf->ptp.extts_rqs[chan].flags &= ~PTP_ENABLE_FEATURE;
+			pin_desc->func = PTP_PF_NONE;
+			pin_desc->chan = 0;
+			dev_dbg(ice_pf_to_dev(pf), "Disabling pin %u with shared input GPIO pin %u\n",
+				i, gpio_pin);
+			return ice_ptp_cfg_extts(pf, &pf->ptp.extts_rqs[chan],
+						 false);
+		}
+	}
+
+	return 0;
+}
+
+/**
+ * ice_verify_pin - verify if pin supports requested pin function
+ * @info: the driver's PTP info structure
+ * @pin: Pin index
+ * @func: Assigned function
+ * @chan: Assigned channel
+ *
+ * Return: 0 on success, -EOPNOTSUPP when function is not supported.
+ */
+static int ice_verify_pin(struct ptp_clock_info *info, unsigned int pin,
+			  enum ptp_pin_function func, unsigned int chan)
+{
+	struct ice_pf *pf = ptp_info_to_pf(info);
+	const struct ice_ptp_pin_desc *pin_desc;
+
+	pin_desc = &pf->ptp.ice_pin_desc[pin];
+
+	/* Is assigned function allowed? */
+	switch (func) {
+	case PTP_PF_EXTTS:
+		if (pin_desc->gpio[0] < 0)
+			return -EOPNOTSUPP;
+		break;
+	case PTP_PF_PEROUT:
+		if (pin_desc->gpio[1] < 0)
+			return -EOPNOTSUPP;
+		break;
+	case PTP_PF_NONE:
+		break;
+	case PTP_PF_PHYSYNC:
+	default:
+		return -EOPNOTSUPP;
+	}
+
+	/* On adapters with SMA_CTRL disable other pins that share same GPIO */
+	if (ice_is_feature_supported(pf, ICE_F_SMA_CTRL)) {
+		ice_ptp_disable_shared_pin(pf, pin, func);
+		pf->ptp.pin_desc[pin].func = func;
+		pf->ptp.pin_desc[pin].chan = chan;
+		return ice_ptp_set_sma_cfg(pf);
+	}
+
+	return 0;
+}
+
+/**
+ * ice_ptp_gpio_enable - Enable/disable ancillary features of PHC
+ * @info: The driver's PTP info structure
+ * @rq: The requested feature to change
+ * @on: Enable/disable flag
+ *
+ * Return: 0 on success, negative error code otherwise
+ */
+static int ice_ptp_gpio_enable(struct ptp_clock_info *info,
+			       struct ptp_clock_request *rq, int on)
+{
+	struct ice_pf *pf = ptp_info_to_pf(info);
+	int err;
+
+	switch (rq->type) {
+	case PTP_CLK_REQ_PEROUT:
+	{
+		struct ptp_perout_request *cached =
+			&pf->ptp.perout_rqs[rq->perout.index];
+
+		err = ice_ptp_cfg_perout(pf, &rq->perout, on);
+		if (!err) {
+			*cached = rq->perout;
+		} else {
+			cached->period.sec = 0;
+			cached->period.nsec = 0;
+		}
+		return err;
+	}
+	case PTP_CLK_REQ_EXTTS:
+	{
+		struct ptp_extts_request *cached =
+			&pf->ptp.extts_rqs[rq->extts.index];
+
+		err = ice_ptp_cfg_extts(pf, &rq->extts, on);
+		if (!err)
+			*cached = rq->extts;
+		else
+			cached->flags &= ~PTP_ENABLE_FEATURE;
+		return err;
+	}
+	default:
+		return -EOPNOTSUPP;
+	}
 }
 
 /**
@@ -1825,16 +2052,10 @@ ice_ptp_gettimex64(struct ptp_clock_info *info, struct timespec64 *ts,
 		   struct ptp_system_timestamp *sts)
 {
 	struct ice_pf *pf = ptp_info_to_pf(info);
-	struct ice_hw *hw = &pf->hw;
+	u64 time_ns;
 
-	if (!ice_ptp_lock(hw)) {
-		dev_err(ice_pf_to_dev(pf), "PTP failed to get time\n");
-		return -EBUSY;
-	}
-
-	ice_ptp_read_time(pf, ts, sts);
-	ice_ptp_unlock(hw);
-
+	time_ns = ice_ptp_read_src_clk_reg(pf, sts);
+	*ts = ns_to_timespec64(time_ns);
 	return 0;
 }
 
@@ -1854,11 +2075,14 @@ ice_ptp_settime64(struct ptp_clock_info *info, const struct timespec64 *ts)
 	struct ice_hw *hw = &pf->hw;
 	int err;
 
-	/* For Vernier mode, we need to recalibrate after new settime
-	 * Start with disabling timestamp block
+	/* For Vernier mode on E82X, we need to recalibrate after new settime.
+	 * Start with marking timestamps as invalid.
 	 */
-	if (pf->ptp.port.link_up)
-		ice_ptp_port_phy_stop(&pf->ptp.port);
+	if (ice_get_phy_model(hw) == ICE_PHY_E82X) {
+		err = ice_ptp_clear_phy_offset_ready_e82x(hw);
+		if (err)
+			dev_warn(ice_pf_to_dev(pf), "Failed to mark timestamps as invalid before settime\n");
+	}
 
 	if (!ice_ptp_lock(hw)) {
 		err = -EBUSY;
@@ -1866,7 +2090,7 @@ ice_ptp_settime64(struct ptp_clock_info *info, const struct timespec64 *ts)
 	}
 
 	/* Disable periodic outputs */
-	ice_ptp_disable_all_clkout(pf);
+	ice_ptp_disable_all_perout(pf);
 
 	err = ice_ptp_write_init(pf, &ts64);
 	ice_ptp_unlock(hw);
@@ -1875,11 +2099,11 @@ ice_ptp_settime64(struct ptp_clock_info *info, const struct timespec64 *ts)
 		ice_ptp_reset_cached_phctime(pf);
 
 	/* Reenable periodic outputs */
-	ice_ptp_enable_all_clkout(pf);
+	ice_ptp_enable_all_perout(pf);
 
-	/* Recalibrate and re-enable timestamp block */
-	if (pf->ptp.port.link_up)
-		ice_ptp_port_phy_restart(&pf->ptp.port);
+	/* Recalibrate and re-enable timestamp blocks for E822/E823 */
+	if (ice_get_phy_model(hw) == ICE_PHY_E82X)
+		ice_ptp_restart_all_phy(pf);
 exit:
 	if (err) {
 		dev_err(ice_pf_to_dev(pf), "PTP failed to set time %d\n", err);
@@ -1937,12 +2161,12 @@ static int ice_ptp_adjtime(struct ptp_clock_info *info, s64 delta)
 	}
 
 	/* Disable periodic outputs */
-	ice_ptp_disable_all_clkout(pf);
+	ice_ptp_disable_all_perout(pf);
 
 	err = ice_ptp_write_adj(pf, delta);
 
 	/* Reenable periodic outputs */
-	ice_ptp_enable_all_clkout(pf);
+	ice_ptp_enable_all_perout(pf);
 
 	ice_ptp_unlock(hw);
 
@@ -1976,21 +2200,32 @@ ice_ptp_get_syncdevicetime(ktime_t *device,
 	u32 hh_lock, hh_art_ctl;
 	int i;
 
-	/* Get the HW lock */
-	hh_lock = rd32(hw, PFHH_SEM + (PFTSYN_SEM_BYTES * hw->pf_id));
+#define MAX_HH_HW_LOCK_TRIES	5
+#define MAX_HH_CTL_LOCK_TRIES	100
+
+	for (i = 0; i < MAX_HH_HW_LOCK_TRIES; i++) {
+		/* Get the HW lock */
+		hh_lock = rd32(hw, PFHH_SEM + (PFTSYN_SEM_BYTES * hw->pf_id));
+		if (hh_lock & PFHH_SEM_BUSY_M) {
+			usleep_range(10000, 15000);
+			continue;
+		}
+		break;
+	}
 	if (hh_lock & PFHH_SEM_BUSY_M) {
 		dev_err(ice_pf_to_dev(pf), "PTP failed to get hh lock\n");
-		return -EFAULT;
+		return -EBUSY;
 	}
+
+	/* Program cmd to master timer */
+	ice_ptp_src_cmd(hw, ICE_PTP_READ_TIME);
 
 	/* Start the ART and device clock sync sequence */
 	hh_art_ctl = rd32(hw, GLHH_ART_CTL);
 	hh_art_ctl = hh_art_ctl | GLHH_ART_CTL_ACTIVE_M;
 	wr32(hw, GLHH_ART_CTL, hh_art_ctl);
 
-#define MAX_HH_LOCK_TRIES 100
-
-	for (i = 0; i < MAX_HH_LOCK_TRIES; i++) {
+	for (i = 0; i < MAX_HH_CTL_LOCK_TRIES; i++) {
 		/* Wait for sync to complete */
 		hh_art_ctl = rd32(hw, GLHH_ART_CTL);
 		if (hh_art_ctl & GLHH_ART_CTL_ACTIVE_M) {
@@ -2005,7 +2240,8 @@ ice_ptp_get_syncdevicetime(ktime_t *device,
 			hh_ts_lo = rd32(hw, GLHH_ART_TIME_L);
 			hh_ts_hi = rd32(hw, GLHH_ART_TIME_H);
 			hh_ts = ((u64)hh_ts_hi << 32) | hh_ts_lo;
-			*system = convert_art_ns_to_tsc(hh_ts);
+			system->cycles = hh_ts;
+			system->cs_id = CSID_X86_ART;
 			/* Read Device source clock time */
 			hh_ts_lo = rd32(hw, GLTSYN_HHTIME_L(tmr_idx));
 			hh_ts_hi = rd32(hw, GLTSYN_HHTIME_H(tmr_idx));
@@ -2014,19 +2250,23 @@ ice_ptp_get_syncdevicetime(ktime_t *device,
 			break;
 		}
 	}
+
+	/* Clear the master timer */
+	ice_ptp_src_cmd(hw, ICE_PTP_NOP);
+
 	/* Release HW lock */
 	hh_lock = rd32(hw, PFHH_SEM + (PFTSYN_SEM_BYTES * hw->pf_id));
 	hh_lock = hh_lock & ~PFHH_SEM_BUSY_M;
 	wr32(hw, PFHH_SEM + (PFTSYN_SEM_BYTES * hw->pf_id), hh_lock);
 
-	if (i == MAX_HH_LOCK_TRIES)
+	if (i == MAX_HH_CTL_LOCK_TRIES)
 		return -ETIMEDOUT;
 
 	return 0;
 }
 
 /**
- * ice_ptp_getcrosststamp_e822 - Capture a device cross timestamp
+ * ice_ptp_getcrosststamp_e82x - Capture a device cross timestamp
  * @info: the driver's PTP info structure
  * @cts: The memory to fill the cross timestamp info
  *
@@ -2034,14 +2274,14 @@ ice_ptp_get_syncdevicetime(ktime_t *device,
  * clock. Fill the cross timestamp information and report it back to the
  * caller.
  *
- * This is only valid for E822 devices which have support for generating the
- * cross timestamp via PCIe PTM.
+ * This is only valid for E822 and E823 devices which have support for
+ * generating the cross timestamp via PCIe PTM.
  *
  * In order to correctly correlate the ART timestamp back to the TSC time, the
  * CPU must have X86_FEATURE_TSC_KNOWN_FREQ.
  */
 static int
-ice_ptp_getcrosststamp_e822(struct ptp_clock_info *info,
+ice_ptp_getcrosststamp_e82x(struct ptp_clock_info *info,
 			    struct system_device_crosststamp *cts)
 {
 	struct ice_pf *pf = ptp_info_to_pf(info);
@@ -2062,7 +2302,7 @@ int ice_ptp_get_ts_config(struct ice_pf *pf, struct ifreq *ifr)
 {
 	struct hwtstamp_config *config;
 
-	if (!test_bit(ICE_FLAG_PTP, pf->flags))
+	if (pf->ptp.state != ICE_PTP_READY)
 		return -EIO;
 
 	config = &pf->ptp.tstamp_config;
@@ -2081,10 +2321,10 @@ ice_ptp_set_timestamp_mode(struct ice_pf *pf, struct hwtstamp_config *config)
 {
 	switch (config->tx_type) {
 	case HWTSTAMP_TX_OFF:
-		ice_set_tx_tstamp(pf, false);
+		pf->ptp.tstamp_config.tx_type = HWTSTAMP_TX_OFF;
 		break;
 	case HWTSTAMP_TX_ON:
-		ice_set_tx_tstamp(pf, true);
+		pf->ptp.tstamp_config.tx_type = HWTSTAMP_TX_ON;
 		break;
 	default:
 		return -ERANGE;
@@ -2092,7 +2332,7 @@ ice_ptp_set_timestamp_mode(struct ice_pf *pf, struct hwtstamp_config *config)
 
 	switch (config->rx_filter) {
 	case HWTSTAMP_FILTER_NONE:
-		ice_set_rx_tstamp(pf, false);
+		pf->ptp.tstamp_config.rx_filter = HWTSTAMP_FILTER_NONE;
 		break;
 	case HWTSTAMP_FILTER_PTP_V1_L4_EVENT:
 	case HWTSTAMP_FILTER_PTP_V1_L4_SYNC:
@@ -2108,11 +2348,14 @@ ice_ptp_set_timestamp_mode(struct ice_pf *pf, struct hwtstamp_config *config)
 	case HWTSTAMP_FILTER_PTP_V2_L4_DELAY_REQ:
 	case HWTSTAMP_FILTER_NTP_ALL:
 	case HWTSTAMP_FILTER_ALL:
-		ice_set_rx_tstamp(pf, true);
+		pf->ptp.tstamp_config.rx_filter = HWTSTAMP_FILTER_ALL;
 		break;
 	default:
 		return -ERANGE;
 	}
+
+	/* Immediately update the device timestamping mode */
+	ice_ptp_restore_timestamp_mode(pf);
 
 	return 0;
 }
@@ -2129,7 +2372,7 @@ int ice_ptp_set_ts_config(struct ice_pf *pf, struct ifreq *ifr)
 	struct hwtstamp_config config;
 	int err;
 
-	if (!test_bit(ICE_FLAG_PTP, pf->flags))
+	if (pf->ptp.state != ICE_PTP_READY)
 		return -EAGAIN;
 
 	if (copy_from_user(&config, ifr->ifr_data, sizeof(config)))
@@ -2147,30 +2390,26 @@ int ice_ptp_set_ts_config(struct ice_pf *pf, struct ifreq *ifr)
 }
 
 /**
- * ice_ptp_rx_hwtstamp - Check for an Rx timestamp
- * @rx_ring: Ring to get the VSI info
+ * ice_ptp_get_rx_hwts - Get packet Rx timestamp in ns
  * @rx_desc: Receive descriptor
- * @skb: Particular skb to send timestamp with
+ * @pkt_ctx: Packet context to get the cached time
  *
  * The driver receives a notification in the receive descriptor with timestamp.
- * The timestamp is in ns, so we must convert the result first.
  */
-void
-ice_ptp_rx_hwtstamp(struct ice_rx_ring *rx_ring,
-		    union ice_32b_rx_flex_desc *rx_desc, struct sk_buff *skb)
+u64 ice_ptp_get_rx_hwts(const union ice_32b_rx_flex_desc *rx_desc,
+			const struct ice_pkt_ctx *pkt_ctx)
 {
-	struct skb_shared_hwtstamps *hwtstamps;
 	u64 ts_ns, cached_time;
 	u32 ts_high;
 
 	if (!(rx_desc->wb.time_stamp_low & ICE_PTP_TS_VALID))
-		return;
+		return 0;
 
-	cached_time = READ_ONCE(rx_ring->cached_phctime);
+	cached_time = READ_ONCE(pkt_ctx->cached_phctime);
 
 	/* Do not report a timestamp if we don't have a cached PHC time */
 	if (!cached_time)
-		return;
+		return 0;
 
 	/* Use ice_ptp_extend_32b_ts directly, using the ring-specific cached
 	 * PHC value, rather than accessing the PF. This also allows us to
@@ -2181,26 +2420,45 @@ ice_ptp_rx_hwtstamp(struct ice_rx_ring *rx_ring,
 	ts_high = le32_to_cpu(rx_desc->wb.flex_ts.ts_high);
 	ts_ns = ice_ptp_extend_32b_ts(cached_time, ts_high);
 
-	hwtstamps = skb_hwtstamps(skb);
-	memset(hwtstamps, 0, sizeof(*hwtstamps));
-	hwtstamps->hwtstamp = ns_to_ktime(ts_ns);
+	return ts_ns;
 }
 
 /**
- * ice_ptp_disable_sma_pins_e810t - Disable E810-T SMA pins
+ * ice_ptp_setup_pin_cfg - setup PTP pin_config structure
+ * @pf: Board private structure
+ */
+static void ice_ptp_setup_pin_cfg(struct ice_pf *pf)
+{
+	for (unsigned int i = 0; i < pf->ptp.info.n_pins; i++) {
+		const struct ice_ptp_pin_desc *desc = &pf->ptp.ice_pin_desc[i];
+		struct ptp_pin_desc *pin = &pf->ptp.pin_desc[i];
+		const char *name = NULL;
+
+		if (!ice_is_feature_supported(pf, ICE_F_SMA_CTRL))
+			name = ice_pin_names[desc->name_idx];
+		else if (desc->name_idx != GPIO_NA)
+			name = ice_pin_names_nvm[desc->name_idx];
+		if (name)
+			strscpy(pin->name, name, sizeof(pin->name));
+
+		pin->index = i;
+	}
+
+	pf->ptp.info.pin_config = pf->ptp.pin_desc;
+}
+
+/**
+ * ice_ptp_disable_pins - Disable PTP pins
  * @pf: pointer to the PF structure
- * @info: PTP clock info structure
  *
  * Disable the OS access to the SMA pins. Called to clear out the OS
- * indications of pin support when we fail to setup the E810-T SMA control
- * register.
+ * indications of pin support when we fail to setup the SMA control register.
  */
-static void
-ice_ptp_disable_sma_pins_e810t(struct ice_pf *pf, struct ptp_clock_info *info)
+static void ice_ptp_disable_pins(struct ice_pf *pf)
 {
-	struct device *dev = ice_pf_to_dev(pf);
+	struct ptp_clock_info *info = &pf->ptp.info;
 
-	dev_warn(dev, "Failed to configure E810-T SMA pin control\n");
+	dev_warn(ice_pf_to_dev(pf), "Failed to configure PTP pin control\n");
 
 	info->enable = NULL;
 	info->verify = NULL;
@@ -2210,122 +2468,158 @@ ice_ptp_disable_sma_pins_e810t(struct ice_pf *pf, struct ptp_clock_info *info)
 }
 
 /**
- * ice_ptp_setup_sma_pins_e810t - Setup the SMA pins
+ * ice_ptp_parse_sdp_entries - update ice_ptp_pin_desc structure from NVM
  * @pf: pointer to the PF structure
- * @info: PTP clock info structure
+ * @entries: SDP connection section from NVM
+ * @num_entries: number of valid entries in sdp_entries
+ * @pins: PTP pins array to update
  *
- * Finish setting up the SMA pins by allocating pin_config, and setting it up
- * according to the current status of the SMA. On failure, disable all of the
- * extended SMA pin support.
+ * Return: 0 on success, negative error code otherwise.
  */
-static void
-ice_ptp_setup_sma_pins_e810t(struct ice_pf *pf, struct ptp_clock_info *info)
+static int ice_ptp_parse_sdp_entries(struct ice_pf *pf, __le16 *entries,
+				     unsigned int num_entries,
+				     struct ice_ptp_pin_desc *pins)
 {
-	struct device *dev = ice_pf_to_dev(pf);
-	int err;
+	unsigned int n_pins = 0;
+	unsigned int i;
 
-	/* Allocate memory for kernel pins interface */
-	info->pin_config = devm_kcalloc(dev, info->n_pins,
-					sizeof(*info->pin_config), GFP_KERNEL);
-	if (!info->pin_config) {
-		ice_ptp_disable_sma_pins_e810t(pf, info);
-		return;
+	/* Setup ice_pin_desc array */
+	for (i = 0; i < ICE_N_PINS_MAX; i++) {
+		pins[i].name_idx = -1;
+		pins[i].gpio[0] = -1;
+		pins[i].gpio[1] = -1;
 	}
 
-	/* Read current SMA status */
-	err = ice_get_sma_config_e810t(&pf->hw, info->pin_config);
-	if (err)
-		ice_ptp_disable_sma_pins_e810t(pf, info);
-}
+	for (i = 0; i < num_entries; i++) {
+		u16 entry = le16_to_cpu(entries[i]);
+		DECLARE_BITMAP(bitmap, GPIO_NA);
+		unsigned int bitmap_idx;
+		bool dir;
+		u16 gpio;
 
-/**
- * ice_ptp_setup_pins_e810 - Setup PTP pins in sysfs
- * @pf: pointer to the PF instance
- * @info: PTP clock capabilities
- */
-static void
-ice_ptp_setup_pins_e810(struct ice_pf *pf, struct ptp_clock_info *info)
-{
-	info->n_per_out = N_PER_OUT_E810;
+		*bitmap = FIELD_GET(ICE_AQC_NVM_SDP_AC_PIN_M, entry);
+		dir = !!FIELD_GET(ICE_AQC_NVM_SDP_AC_DIR_M, entry);
+		gpio = FIELD_GET(ICE_AQC_NVM_SDP_AC_SDP_NUM_M, entry);
+		for_each_set_bit(bitmap_idx, bitmap, GPIO_NA + 1) {
+			unsigned int idx;
 
-	if (ice_is_feature_supported(pf, ICE_F_PTP_EXTTS))
-		info->n_ext_ts = N_EXT_TS_E810;
+			/* Check if entry's pin bit is valid */
+			if (bitmap_idx >= NUM_PTP_PINS_NVM &&
+			    bitmap_idx != GPIO_NA)
+				continue;
 
-	if (ice_is_feature_supported(pf, ICE_F_SMA_CTRL)) {
-		info->n_ext_ts = N_EXT_TS_E810;
-		info->n_pins = NUM_PTP_PINS_E810T;
-		info->verify = ice_verify_pin_e810t;
+			/* Check if pin already exists */
+			for (idx = 0; idx < ICE_N_PINS_MAX; idx++)
+				if (pins[idx].name_idx == bitmap_idx)
+					break;
 
-		/* Complete setup of the SMA pins */
-		ice_ptp_setup_sma_pins_e810t(pf, info);
+			if (idx == ICE_N_PINS_MAX) {
+				/* Pin not found, setup its entry and name */
+				idx = n_pins++;
+				pins[idx].name_idx = bitmap_idx;
+				if (bitmap_idx == GPIO_NA)
+					strscpy(pf->ptp.pin_desc[idx].name,
+						ice_pin_names[gpio],
+						sizeof(pf->ptp.pin_desc[idx]
+							       .name));
+			}
+
+			/* Setup in/out GPIO number */
+			pins[idx].gpio[dir] = gpio;
+		}
 	}
+
+	for (i = 0; i < n_pins; i++) {
+		dev_dbg(ice_pf_to_dev(pf),
+			"NVM pin entry[%d] : name_idx %d gpio_out %d gpio_in %d\n",
+			i, pins[i].name_idx, pins[i].gpio[1], pins[i].gpio[0]);
+	}
+
+	pf->ptp.info.n_pins = n_pins;
+	return 0;
 }
 
 /**
- * ice_ptp_setup_pins_e823 - Setup PTP pins in sysfs
- * @pf: pointer to the PF instance
- * @info: PTP clock capabilities
- */
-static void
-ice_ptp_setup_pins_e823(struct ice_pf *pf, struct ptp_clock_info *info)
-{
-	info->pps = 1;
-	info->n_per_out = 0;
-	info->n_ext_ts = 1;
-}
-
-/**
- * ice_ptp_set_funcs_e822 - Set specialized functions for E822 support
+ * ice_ptp_set_funcs_e82x - Set specialized functions for E82X support
  * @pf: Board private structure
- * @info: PTP info to fill
  *
- * Assign functions to the PTP capabiltiies structure for E822 devices.
+ * Assign functions to the PTP capabilities structure for E82X devices.
  * Functions which operate across all device families should be set directly
- * in ice_ptp_set_caps. Only add functions here which are distinct for E822
+ * in ice_ptp_set_caps. Only add functions here which are distinct for E82X
  * devices.
  */
-static void
-ice_ptp_set_funcs_e822(struct ice_pf *pf, struct ptp_clock_info *info)
+static void ice_ptp_set_funcs_e82x(struct ice_pf *pf)
 {
 #ifdef CONFIG_ICE_HWTS
 	if (boot_cpu_has(X86_FEATURE_ART) &&
 	    boot_cpu_has(X86_FEATURE_TSC_KNOWN_FREQ))
-		info->getcrosststamp = ice_ptp_getcrosststamp_e822;
+		pf->ptp.info.getcrosststamp = ice_ptp_getcrosststamp_e82x;
+
 #endif /* CONFIG_ICE_HWTS */
+	if (ice_is_e825c(&pf->hw)) {
+		pf->ptp.ice_pin_desc = ice_pin_desc_e825c;
+		pf->ptp.info.n_pins = ICE_PIN_DESC_ARR_LEN(ice_pin_desc_e825c);
+	} else {
+		pf->ptp.ice_pin_desc = ice_pin_desc_e82x;
+		pf->ptp.info.n_pins = ICE_PIN_DESC_ARR_LEN(ice_pin_desc_e82x);
+	}
+	ice_ptp_setup_pin_cfg(pf);
 }
 
 /**
  * ice_ptp_set_funcs_e810 - Set specialized functions for E810 support
  * @pf: Board private structure
- * @info: PTP info to fill
  *
  * Assign functions to the PTP capabiltiies structure for E810 devices.
  * Functions which operate across all device families should be set directly
- * in ice_ptp_set_caps. Only add functions here which are distinct for e810
+ * in ice_ptp_set_caps. Only add functions here which are distinct for E810
  * devices.
  */
-static void
-ice_ptp_set_funcs_e810(struct ice_pf *pf, struct ptp_clock_info *info)
+static void ice_ptp_set_funcs_e810(struct ice_pf *pf)
 {
-	info->enable = ice_ptp_gpio_enable_e810;
-	ice_ptp_setup_pins_e810(pf, info);
-}
+	__le16 entries[ICE_AQC_NVM_SDP_AC_MAX_SIZE];
+	struct ice_ptp_pin_desc *desc = NULL;
+	struct ice_ptp *ptp = &pf->ptp;
+	unsigned int num_entries;
+	int err;
 
-/**
- * ice_ptp_set_funcs_e823 - Set specialized functions for E823 support
- * @pf: Board private structure
- * @info: PTP info to fill
- *
- * Assign functions to the PTP capabiltiies structure for E823 devices.
- * Functions which operate across all device families should be set directly
- * in ice_ptp_set_caps. Only add functions here which are distinct for e823
- * devices.
- */
-static void
-ice_ptp_set_funcs_e823(struct ice_pf *pf, struct ptp_clock_info *info)
-{
-	info->enable = ice_ptp_gpio_enable_e823;
-	ice_ptp_setup_pins_e823(pf, info);
+	err = ice_ptp_read_sdp_ac(&pf->hw, entries, &num_entries);
+	if (err) {
+		/* SDP section does not exist in NVM or is corrupted */
+		if (ice_is_feature_supported(pf, ICE_F_SMA_CTRL)) {
+			ptp->ice_pin_desc = ice_pin_desc_e810_sma;
+			ptp->info.n_pins =
+				ICE_PIN_DESC_ARR_LEN(ice_pin_desc_e810_sma);
+		} else {
+			pf->ptp.ice_pin_desc = ice_pin_desc_e810;
+			pf->ptp.info.n_pins =
+				ICE_PIN_DESC_ARR_LEN(ice_pin_desc_e810);
+			err = 0;
+		}
+	} else {
+		desc = devm_kcalloc(ice_pf_to_dev(pf), ICE_N_PINS_MAX,
+				    sizeof(struct ice_ptp_pin_desc),
+				    GFP_KERNEL);
+		if (!desc)
+			goto err;
+
+		err = ice_ptp_parse_sdp_entries(pf, entries, num_entries, desc);
+		if (err)
+			goto err;
+
+		ptp->ice_pin_desc = (const struct ice_ptp_pin_desc *)desc;
+	}
+
+	ptp->info.pin_config = ptp->pin_desc;
+	ice_ptp_setup_pin_cfg(pf);
+
+	if (ice_is_feature_supported(pf, ICE_F_SMA_CTRL))
+		err = ice_ptp_set_sma_cfg(pf);
+err:
+	if (err) {
+		devm_kfree(ice_pf_to_dev(pf), desc);
+		ice_ptp_disable_pins(pf);
+	}
 }
 
 /**
@@ -2345,13 +2639,15 @@ static void ice_ptp_set_caps(struct ice_pf *pf)
 	info->adjfine = ice_ptp_adjfine;
 	info->gettimex64 = ice_ptp_gettimex64;
 	info->settime64 = ice_ptp_settime64;
+	info->n_per_out = GLTSYN_TGT_H_IDX_MAX;
+	info->n_ext_ts = GLTSYN_EVNT_H_IDX_MAX;
+	info->enable = ice_ptp_gpio_enable;
+	info->verify = ice_verify_pin;
 
 	if (ice_is_e810(&pf->hw))
-		ice_ptp_set_funcs_e810(pf, info);
-	else if (ice_is_e823(&pf->hw))
-		ice_ptp_set_funcs_e823(pf, info);
+		ice_ptp_set_funcs_e810(pf);
 	else
-		ice_ptp_set_funcs_e822(pf, info);
+		ice_ptp_set_funcs_e82x(pf);
 }
 
 /**
@@ -2366,7 +2662,6 @@ static void ice_ptp_set_caps(struct ice_pf *pf)
 static long ice_ptp_create_clock(struct ice_pf *pf)
 {
 	struct ptp_clock_info *info;
-	struct ptp_clock *clock;
 	struct device *dev;
 
 	/* No need to create a clock device if we already have one */
@@ -2379,11 +2674,11 @@ static long ice_ptp_create_clock(struct ice_pf *pf)
 	dev = ice_pf_to_dev(pf);
 
 	/* Attempt to register the clock before enabling the hardware. */
-	clock = ptp_clock_register(info, dev);
-	if (IS_ERR(clock))
-		return PTR_ERR(clock);
-
-	pf->ptp.clock = clock;
+	pf->ptp.clock = ptp_clock_register(info, dev);
+	if (IS_ERR(pf->ptp.clock)) {
+		dev_err(ice_pf_to_dev(pf), "Failed to register PTP clock device");
+		return PTR_ERR(pf->ptp.clock);
+	}
 
 	return 0;
 }
@@ -2395,18 +2690,23 @@ static long ice_ptp_create_clock(struct ice_pf *pf)
  */
 s8 ice_ptp_request_ts(struct ice_ptp_tx *tx, struct sk_buff *skb)
 {
+	unsigned long flags;
 	u8 idx;
 
-	spin_lock(&tx->lock);
+	spin_lock_irqsave(&tx->lock, flags);
 
 	/* Check that this tracker is accepting new timestamp requests */
 	if (!ice_ptp_is_tx_tracker_up(tx)) {
-		spin_unlock(&tx->lock);
+		spin_unlock_irqrestore(&tx->lock, flags);
 		return -1;
 	}
 
 	/* Find and set the first available index */
-	idx = find_first_zero_bit(tx->in_use, tx->len);
+	idx = find_next_zero_bit(tx->in_use, tx->len,
+				 tx->last_ll_ts_idx_read + 1);
+	if (idx == tx->len)
+		idx = find_first_zero_bit(tx->in_use, tx->len);
+
 	if (idx < tx->len) {
 		/* We got a valid index that no other thread could have set. Store
 		 * a reference to the skb and the start time to allow discarding old
@@ -2420,7 +2720,7 @@ s8 ice_ptp_request_ts(struct ice_ptp_tx *tx, struct sk_buff *skb)
 		ice_trace(tx_tstamp_request, skb, idx);
 	}
 
-	spin_unlock(&tx->lock);
+	spin_unlock_irqrestore(&tx->lock, flags);
 
 	/* return the appropriate PHY timestamp register index, -1 if no
 	 * indexes were available.
@@ -2440,7 +2740,69 @@ s8 ice_ptp_request_ts(struct ice_ptp_tx *tx, struct sk_buff *skb)
  */
 enum ice_tx_tstamp_work ice_ptp_process_ts(struct ice_pf *pf)
 {
-	return ice_ptp_tx_tstamp(&pf->ptp.port.tx);
+	switch (pf->ptp.tx_interrupt_mode) {
+	case ICE_PTP_TX_INTERRUPT_NONE:
+		/* This device has the clock owner handle timestamps for it */
+		return ICE_TX_TSTAMP_WORK_DONE;
+	case ICE_PTP_TX_INTERRUPT_SELF:
+		/* This device handles its own timestamps */
+		return ice_ptp_tx_tstamp(&pf->ptp.port.tx);
+	case ICE_PTP_TX_INTERRUPT_ALL:
+		/* This device handles timestamps for all ports */
+		return ice_ptp_tx_tstamp_owner(pf);
+	default:
+		WARN_ONCE(1, "Unexpected Tx timestamp interrupt mode %u\n",
+			  pf->ptp.tx_interrupt_mode);
+		return ICE_TX_TSTAMP_WORK_DONE;
+	}
+}
+
+/**
+ * ice_ptp_maybe_trigger_tx_interrupt - Trigger Tx timstamp interrupt
+ * @pf: Board private structure
+ *
+ * The device PHY issues Tx timestamp interrupts to the driver for processing
+ * timestamp data from the PHY. It will not interrupt again until all
+ * current timestamp data is read. In rare circumstances, it is possible that
+ * the driver fails to read all outstanding data.
+ *
+ * To avoid getting permanently stuck, periodically check if the PHY has
+ * outstanding timestamp data. If so, trigger an interrupt from software to
+ * process this data.
+ */
+static void ice_ptp_maybe_trigger_tx_interrupt(struct ice_pf *pf)
+{
+	struct device *dev = ice_pf_to_dev(pf);
+	struct ice_hw *hw = &pf->hw;
+	bool trigger_oicr = false;
+	unsigned int i;
+
+	if (ice_is_e810(hw))
+		return;
+
+	if (!ice_pf_src_tmr_owned(pf))
+		return;
+
+	for (i = 0; i < ICE_GET_QUAD_NUM(hw->ptp.num_lports); i++) {
+		u64 tstamp_ready;
+		int err;
+
+		err = ice_get_phy_tx_tstamp_ready(&pf->hw, i, &tstamp_ready);
+		if (!err && tstamp_ready) {
+			trigger_oicr = true;
+			break;
+		}
+	}
+
+	if (trigger_oicr) {
+		/* Trigger a software interrupt, to ensure this data
+		 * gets processed.
+		 */
+		dev_dbg(dev, "PTP periodic task detected waiting timestamps. Triggering Tx timestamp interrupt now.\n");
+
+		wr32(hw, PFINT_OICR, PFINT_OICR_TSYN_TX_M);
+		ice_flush(hw);
+	}
 }
 
 static void ice_ptp_periodic_work(struct kthread_work *work)
@@ -2449,10 +2811,12 @@ static void ice_ptp_periodic_work(struct kthread_work *work)
 	struct ice_pf *pf = container_of(ptp, struct ice_pf, ptp);
 	int err;
 
-	if (!test_bit(ICE_FLAG_PTP, pf->flags))
+	if (pf->ptp.state != ICE_PTP_READY)
 		return;
 
 	err = ice_ptp_update_cached_phctime(pf);
+
+	ice_ptp_maybe_trigger_tx_interrupt(pf);
 
 	/* Run twice a second or reschedule if phc update failed */
 	kthread_queue_delayed_work(ptp->kworker, &ptp->work,
@@ -2460,39 +2824,71 @@ static void ice_ptp_periodic_work(struct kthread_work *work)
 }
 
 /**
- * ice_ptp_reset - Initialize PTP hardware clock support after reset
+ * ice_ptp_prepare_for_reset - Prepare PTP for reset
  * @pf: Board private structure
+ * @reset_type: the reset type being performed
  */
-void ice_ptp_reset(struct ice_pf *pf)
+void ice_ptp_prepare_for_reset(struct ice_pf *pf, enum ice_reset_req reset_type)
+{
+	struct ice_ptp *ptp = &pf->ptp;
+	u8 src_tmr;
+
+	if (ptp->state != ICE_PTP_READY)
+		return;
+
+	ptp->state = ICE_PTP_RESETTING;
+
+	/* Disable timestamping for both Tx and Rx */
+	ice_ptp_disable_timestamp_mode(pf);
+
+	kthread_cancel_delayed_work_sync(&ptp->work);
+
+	if (reset_type == ICE_RESET_PFR)
+		return;
+
+	ice_ptp_release_tx_tracker(pf, &pf->ptp.port.tx);
+
+	/* Disable periodic outputs */
+	ice_ptp_disable_all_perout(pf);
+
+	src_tmr = ice_get_ptp_src_clock_index(&pf->hw);
+
+	/* Disable source clock */
+	wr32(&pf->hw, GLTSYN_ENA(src_tmr), (u32)~GLTSYN_ENA_TSYN_ENA_M);
+
+	/* Acquire PHC and system timer to restore after reset */
+	ptp->reset_time = ktime_get_real_ns();
+}
+
+/**
+ * ice_ptp_rebuild_owner - Initialize PTP clock owner after reset
+ * @pf: Board private structure
+ *
+ * Companion function for ice_ptp_rebuild() which handles tasks that only the
+ * PTP clock owner instance should perform.
+ */
+static int ice_ptp_rebuild_owner(struct ice_pf *pf)
 {
 	struct ice_ptp *ptp = &pf->ptp;
 	struct ice_hw *hw = &pf->hw;
 	struct timespec64 ts;
-	int err, itr = 1;
 	u64 time_diff;
-
-	if (test_bit(ICE_PFR_REQ, pf->state))
-		goto pfr;
-
-	if (!hw->func_caps.ts_func_info.src_tmr_owned)
-		goto reset_ts;
+	int err;
 
 	err = ice_ptp_init_phc(hw);
 	if (err)
-		goto err;
+		return err;
 
 	/* Acquire the global hardware lock */
 	if (!ice_ptp_lock(hw)) {
 		err = -EBUSY;
-		goto err;
+		return err;
 	}
 
 	/* Write the increment time value to PHY and LAN */
 	err = ice_ptp_write_incval(hw, ice_base_incval(pf));
-	if (err) {
-		ice_ptp_unlock(hw);
-		goto err;
-	}
+	if (err)
+		goto err_unlock;
 
 	/* Write the initial Time value to PHY and LAN using the cached PHC
 	 * time before the reset and time difference between stopping and
@@ -2505,39 +2901,62 @@ void ice_ptp_reset(struct ice_pf *pf)
 		ts = ktime_to_timespec64(ktime_get_real());
 	}
 	err = ice_ptp_write_init(pf, &ts);
-	if (err) {
-		ice_ptp_unlock(hw);
-		goto err;
-	}
+	if (err)
+		goto err_unlock;
 
 	/* Release the global hardware lock */
 	ice_ptp_unlock(hw);
 
+	/* Flush software tracking of any outstanding timestamps since we're
+	 * about to flush the PHY timestamp block.
+	 */
+	ice_ptp_flush_all_tx_tracker(pf);
+
 	if (!ice_is_e810(hw)) {
 		/* Enable quad interrupts */
-		err = ice_ptp_tx_ena_intr(pf, true, itr);
+		err = ice_ptp_cfg_phy_interrupt(pf, true, 1);
+		if (err)
+			return err;
+
+		ice_ptp_restart_all_phy(pf);
+	}
+
+	/* Re-enable all periodic outputs and external timestamp events */
+	ice_ptp_enable_all_perout(pf);
+	ice_ptp_enable_all_extts(pf);
+
+	return 0;
+
+err_unlock:
+	ice_ptp_unlock(hw);
+	return err;
+}
+
+/**
+ * ice_ptp_rebuild - Initialize PTP hardware clock support after reset
+ * @pf: Board private structure
+ * @reset_type: the reset type being performed
+ */
+void ice_ptp_rebuild(struct ice_pf *pf, enum ice_reset_req reset_type)
+{
+	struct ice_ptp *ptp = &pf->ptp;
+	int err;
+
+	if (ptp->state == ICE_PTP_READY) {
+		ice_ptp_prepare_for_reset(pf, reset_type);
+	} else if (ptp->state != ICE_PTP_RESETTING) {
+		err = -EINVAL;
+		dev_err(ice_pf_to_dev(pf), "PTP was not initialized\n");
+		goto err;
+	}
+
+	if (ice_pf_src_tmr_owned(pf) && reset_type != ICE_RESET_PFR) {
+		err = ice_ptp_rebuild_owner(pf);
 		if (err)
 			goto err;
 	}
 
-reset_ts:
-	/* Restart the PHY timestamping block */
-	ice_ptp_reset_phy_timestamping(pf);
-
-pfr:
-	/* Init Tx structures */
-	if (ice_is_e810(&pf->hw)) {
-		err = ice_ptp_init_tx_e810(pf, &ptp->port.tx);
-	} else {
-		kthread_init_delayed_work(&ptp->port.ov_work,
-					  ice_ptp_wait_for_offsets);
-		err = ice_ptp_init_tx_e822(pf, &ptp->port.tx,
-					   ptp->port.port_num);
-	}
-	if (err)
-		goto err;
-
-	set_bit(ICE_FLAG_PTP, pf->flags);
+	ptp->state = ICE_PTP_READY;
 
 	/* Start periodic work going */
 	kthread_queue_delayed_work(ptp->kworker, &ptp->work, 0);
@@ -2546,40 +2965,72 @@ pfr:
 	return;
 
 err:
+	ptp->state = ICE_PTP_ERROR;
 	dev_err(ice_pf_to_dev(pf), "PTP reset failed %d\n", err);
 }
 
-/**
- * ice_ptp_prepare_for_reset - Prepare PTP for reset
- * @pf: Board private structure
- */
-void ice_ptp_prepare_for_reset(struct ice_pf *pf)
+static bool ice_is_primary(struct ice_hw *hw)
+{
+	return ice_is_e825c(hw) && ice_is_dual(hw) ?
+		!!(hw->dev_caps.nac_topo.mode & ICE_NAC_TOPO_PRIMARY_M) : true;
+}
+
+static int ice_ptp_setup_adapter(struct ice_pf *pf)
+{
+	if (!ice_pf_src_tmr_owned(pf) || !ice_is_primary(&pf->hw))
+		return -EPERM;
+
+	pf->adapter->ctrl_pf = pf;
+
+	return 0;
+}
+
+static int ice_ptp_setup_pf(struct ice_pf *pf)
+{
+	struct ice_ptp *ctrl_ptp = ice_get_ctrl_ptp(pf);
+	struct ice_ptp *ptp = &pf->ptp;
+
+	if (WARN_ON(!ctrl_ptp) || ice_get_phy_model(&pf->hw) == ICE_PHY_UNSUP)
+		return -ENODEV;
+
+	INIT_LIST_HEAD(&ptp->port.list_node);
+	mutex_lock(&pf->adapter->ports.lock);
+
+	list_add(&ptp->port.list_node,
+		 &pf->adapter->ports.ports);
+	mutex_unlock(&pf->adapter->ports.lock);
+
+	return 0;
+}
+
+static void ice_ptp_cleanup_pf(struct ice_pf *pf)
 {
 	struct ice_ptp *ptp = &pf->ptp;
-	u8 src_tmr;
 
-	clear_bit(ICE_FLAG_PTP, pf->flags);
+	if (ice_get_phy_model(&pf->hw) != ICE_PHY_UNSUP) {
+		mutex_lock(&pf->adapter->ports.lock);
+		list_del(&ptp->port.list_node);
+		mutex_unlock(&pf->adapter->ports.lock);
+	}
+}
 
-	/* Disable timestamping for both Tx and Rx */
-	ice_ptp_cfg_timestamp(pf, false);
+/**
+ * ice_ptp_clock_index - Get the PTP clock index for this device
+ * @pf: Board private structure
+ *
+ * Returns: the PTP clock index associated with this PF, or -1 if no PTP clock
+ * is associated.
+ */
+int ice_ptp_clock_index(struct ice_pf *pf)
+{
+	struct ice_ptp *ctrl_ptp = ice_get_ctrl_ptp(pf);
+	struct ptp_clock *clock;
 
-	kthread_cancel_delayed_work_sync(&ptp->work);
+	if (!ctrl_ptp)
+		return -1;
+	clock = ctrl_ptp->clock;
 
-	if (test_bit(ICE_PFR_REQ, pf->state))
-		return;
-
-	ice_ptp_release_tx_tracker(pf, &pf->ptp.port.tx);
-
-	/* Disable periodic outputs */
-	ice_ptp_disable_all_clkout(pf);
-
-	src_tmr = ice_get_ptp_src_clock_index(&pf->hw);
-
-	/* Disable source clock */
-	wr32(&pf->hw, GLTSYN_ENA(src_tmr), (u32)~GLTSYN_ENA_TSYN_ENA_M);
-
-	/* Acquire PHC and system timer to restore after reset */
-	ptp->reset_time = ktime_get_real_ns();
+	return clock ? ptp_clock_index(clock) : -1;
 }
 
 /**
@@ -2594,7 +3045,7 @@ static int ice_ptp_init_owner(struct ice_pf *pf)
 {
 	struct ice_hw *hw = &pf->hw;
 	struct timespec64 ts;
-	int err, itr = 1;
+	int err;
 
 	err = ice_ptp_init_phc(hw);
 	if (err) {
@@ -2611,42 +3062,36 @@ static int ice_ptp_init_owner(struct ice_pf *pf)
 
 	/* Write the increment time value to PHY and LAN */
 	err = ice_ptp_write_incval(hw, ice_base_incval(pf));
-	if (err) {
-		ice_ptp_unlock(hw);
-		goto err_exit;
-	}
+	if (err)
+		goto err_unlock;
 
 	ts = ktime_to_timespec64(ktime_get_real());
 	/* Write the initial Time value to PHY and LAN */
 	err = ice_ptp_write_init(pf, &ts);
-	if (err) {
-		ice_ptp_unlock(hw);
-		goto err_exit;
-	}
+	if (err)
+		goto err_unlock;
 
 	/* Release the global hardware lock */
 	ice_ptp_unlock(hw);
 
-	if (!ice_is_e810(hw)) {
-		/* Enable quad interrupts */
-		err = ice_ptp_tx_ena_intr(pf, true, itr);
-		if (err)
-			goto err_exit;
-	}
+	/* Configure PHY interrupt settings */
+	err = ice_ptp_cfg_phy_interrupt(pf, true, 1);
+	if (err)
+		goto err_exit;
 
 	/* Ensure we have a clock device */
 	err = ice_ptp_create_clock(pf);
 	if (err)
 		goto err_clk;
 
-	/* Store the PTP clock index for other PFs */
-	ice_set_ptp_clock_index(pf);
-
 	return 0;
-
 err_clk:
 	pf->ptp.clock = NULL;
 err_exit:
+	return err;
+
+err_unlock:
+	ice_ptp_unlock(hw);
 	return err;
 }
 
@@ -2665,7 +3110,7 @@ static int ice_ptp_init_work(struct ice_pf *pf, struct ice_ptp *ptp)
 	/* Allocate a kworker for handling work required for the ports
 	 * connected to the PTP hardware clock.
 	 */
-	kworker = kthread_create_worker(0, "ice-ptp-%s",
+	kworker = kthread_run_worker(0, "ice-ptp-%s",
 					dev_name(ice_pf_to_dev(pf)));
 	if (IS_ERR(kworker))
 		return PTR_ERR(kworker);
@@ -2685,14 +3130,52 @@ static int ice_ptp_init_work(struct ice_pf *pf, struct ice_ptp *ptp)
  */
 static int ice_ptp_init_port(struct ice_pf *pf, struct ice_ptp_port *ptp_port)
 {
+	struct ice_hw *hw = &pf->hw;
+
 	mutex_init(&ptp_port->ps_lock);
 
-	if (ice_is_e810(&pf->hw))
+	switch (ice_get_phy_model(hw)) {
+	case ICE_PHY_ETH56G:
+		return ice_ptp_init_tx_eth56g(pf, &ptp_port->tx,
+					      ptp_port->port_num);
+	case ICE_PHY_E810:
 		return ice_ptp_init_tx_e810(pf, &ptp_port->tx);
+	case ICE_PHY_E82X:
+		kthread_init_delayed_work(&ptp_port->ov_work,
+					  ice_ptp_wait_for_offsets);
 
-	kthread_init_delayed_work(&ptp_port->ov_work,
-				  ice_ptp_wait_for_offsets);
-	return ice_ptp_init_tx_e822(pf, &ptp_port->tx, ptp_port->port_num);
+		return ice_ptp_init_tx_e82x(pf, &ptp_port->tx,
+					    ptp_port->port_num);
+	default:
+		return -ENODEV;
+	}
+}
+
+/**
+ * ice_ptp_init_tx_interrupt_mode - Initialize device Tx interrupt mode
+ * @pf: Board private structure
+ *
+ * Initialize the Tx timestamp interrupt mode for this device. For most device
+ * types, each PF processes the interrupt and manages its own timestamps. For
+ * E822-based devices, only the clock owner processes the timestamps. Other
+ * PFs disable the interrupt and do not process their own timestamps.
+ */
+static void ice_ptp_init_tx_interrupt_mode(struct ice_pf *pf)
+{
+	switch (ice_get_phy_model(&pf->hw)) {
+	case ICE_PHY_E82X:
+		/* E822 based PHY has the clock owner process the interrupt
+		 * for all ports.
+		 */
+		if (ice_pf_src_tmr_owned(pf))
+			pf->ptp.tx_interrupt_mode = ICE_PTP_TX_INTERRUPT_ALL;
+		else
+			pf->ptp.tx_interrupt_mode = ICE_PTP_TX_INTERRUPT_NONE;
+		break;
+	default:
+		/* other PHY types handle their own Tx interrupt */
+		pf->ptp.tx_interrupt_mode = ICE_PTP_TX_INTERRUPT_SELF;
+	}
 }
 
 /**
@@ -2711,40 +3194,63 @@ void ice_ptp_init(struct ice_pf *pf)
 {
 	struct ice_ptp *ptp = &pf->ptp;
 	struct ice_hw *hw = &pf->hw;
-	int err;
+	int lane_num, err;
+
+	ptp->state = ICE_PTP_INITIALIZING;
+
+	lane_num = ice_get_phy_lane_number(hw);
+	if (lane_num < 0) {
+		err = lane_num;
+		goto err_exit;
+	}
+
+	ptp->port.port_num = (u8)lane_num;
+	ice_ptp_init_hw(hw);
+
+	ice_ptp_init_tx_interrupt_mode(pf);
 
 	/* If this function owns the clock hardware, it must allocate and
 	 * configure the PTP clock device to represent it.
 	 */
-	if (hw->func_caps.ts_func_info.src_tmr_owned) {
+	if (ice_pf_src_tmr_owned(pf) && ice_is_primary(hw)) {
+		err = ice_ptp_setup_adapter(pf);
+		if (err)
+			goto err_exit;
 		err = ice_ptp_init_owner(pf);
 		if (err)
-			goto err;
+			goto err_exit;
 	}
 
-	ptp->port.port_num = hw->pf_id;
+	err = ice_ptp_setup_pf(pf);
+	if (err)
+		goto err_exit;
+
 	err = ice_ptp_init_port(pf, &ptp->port);
 	if (err)
-		goto err;
+		goto err_exit;
 
 	/* Start the PHY timestamping block */
 	ice_ptp_reset_phy_timestamping(pf);
 
-	set_bit(ICE_FLAG_PTP, pf->flags);
+	/* Configure initial Tx interrupt settings */
+	ice_ptp_cfg_tx_interrupt(pf);
+
+	ptp->state = ICE_PTP_READY;
+
 	err = ice_ptp_init_work(pf, ptp);
 	if (err)
-		goto err;
+		goto err_exit;
 
 	dev_info(ice_pf_to_dev(pf), "PTP init successful\n");
 	return;
 
-err:
+err_exit:
 	/* If we registered a PTP clock, release it */
 	if (pf->ptp.clock) {
 		ptp_clock_unregister(ptp->clock);
 		pf->ptp.clock = NULL;
 	}
-	clear_bit(ICE_FLAG_PTP, pf->flags);
+	ptp->state = ICE_PTP_ERROR;
 	dev_err(ice_pf_to_dev(pf), "PTP failed %d\n", err);
 }
 
@@ -2757,15 +3263,19 @@ err:
  */
 void ice_ptp_release(struct ice_pf *pf)
 {
-	if (!test_bit(ICE_FLAG_PTP, pf->flags))
+	if (pf->ptp.state != ICE_PTP_READY)
 		return;
 
+	pf->ptp.state = ICE_PTP_UNINIT;
+
 	/* Disable timestamping for both Tx and Rx */
-	ice_ptp_cfg_timestamp(pf, false);
+	ice_ptp_disable_timestamp_mode(pf);
+
+	ice_ptp_cleanup_pf(pf);
 
 	ice_ptp_release_tx_tracker(pf, &pf->ptp.port.tx);
 
-	clear_bit(ICE_FLAG_PTP, pf->flags);
+	ice_ptp_disable_all_extts(pf);
 
 	kthread_cancel_delayed_work_sync(&pf->ptp.work);
 
@@ -2780,9 +3290,8 @@ void ice_ptp_release(struct ice_pf *pf)
 		return;
 
 	/* Disable periodic outputs */
-	ice_ptp_disable_all_clkout(pf);
+	ice_ptp_disable_all_perout(pf);
 
-	ice_clear_ptp_clock_index(pf);
 	ptp_clock_unregister(pf->ptp.clock);
 	pf->ptp.clock = NULL;
 

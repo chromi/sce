@@ -143,7 +143,8 @@ static irqreturn_t arcmsr_interrupt(struct AdapterControlBlock *acb);
 static void arcmsr_free_irq(struct pci_dev *, struct AdapterControlBlock *);
 static void arcmsr_wait_firmware_ready(struct AdapterControlBlock *acb);
 static void arcmsr_set_iop_datetime(struct timer_list *);
-static int arcmsr_slave_config(struct scsi_device *sdev);
+static int arcmsr_sdev_configure(struct scsi_device *sdev,
+				 struct queue_limits *lim);
 static int arcmsr_adjust_disk_queue_depth(struct scsi_device *sdev, int queue_depth)
 {
 	if (queue_depth > ARCMSR_MAX_CMD_PERLUN)
@@ -160,7 +161,7 @@ static const struct scsi_host_template arcmsr_scsi_host_template = {
 	.eh_abort_handler	= arcmsr_abort,
 	.eh_bus_reset_handler	= arcmsr_bus_reset,
 	.bios_param		= arcmsr_bios_param,
-	.slave_configure	= arcmsr_slave_config,
+	.sdev_configure		= arcmsr_sdev_configure,
 	.change_queue_depth	= arcmsr_adjust_disk_queue_depth,
 	.can_queue		= ARCMSR_DEFAULT_OUTSTANDING_CMD,
 	.this_id		= ARCMSR_SCSI_INITIATOR_ID,
@@ -171,7 +172,7 @@ static const struct scsi_host_template arcmsr_scsi_host_template = {
 	.no_write_same		= 1,
 };
 
-static struct pci_device_id arcmsr_device_id_table[] = {
+static const struct pci_device_id arcmsr_device_id_table[] = {
 	{PCI_DEVICE(PCI_VENDOR_ID_ARECA, PCI_DEVICE_ID_ARECA_1110),
 		.driver_data = ACB_ADAPTER_TYPE_A},
 	{PCI_DEVICE(PCI_VENDOR_ID_ARECA, PCI_DEVICE_ID_ARECA_1120),
@@ -214,8 +215,12 @@ static struct pci_device_id arcmsr_device_id_table[] = {
 		.driver_data = ACB_ADAPTER_TYPE_A},
 	{PCI_DEVICE(PCI_VENDOR_ID_ARECA, PCI_DEVICE_ID_ARECA_1880),
 		.driver_data = ACB_ADAPTER_TYPE_C},
+	{PCI_DEVICE(PCI_VENDOR_ID_ARECA, PCI_DEVICE_ID_ARECA_1883),
+		.driver_data = ACB_ADAPTER_TYPE_C},
 	{PCI_DEVICE(PCI_VENDOR_ID_ARECA, PCI_DEVICE_ID_ARECA_1884),
 		.driver_data = ACB_ADAPTER_TYPE_E},
+	{PCI_DEVICE(PCI_VENDOR_ID_ARECA, PCI_DEVICE_ID_ARECA_1886_0),
+		.driver_data = ACB_ADAPTER_TYPE_F},
 	{PCI_DEVICE(PCI_VENDOR_ID_ARECA, PCI_DEVICE_ID_ARECA_1886),
 		.driver_data = ACB_ADAPTER_TYPE_F},
 	{0, 0}, /* Terminating entry */
@@ -747,6 +752,57 @@ static bool arcmsr_alloc_io_queue(struct AdapterControlBlock *acb)
 	return rtn;
 }
 
+static int arcmsr_alloc_xor_buffer(struct AdapterControlBlock *acb)
+{
+	int rc = 0;
+	struct pci_dev *pdev = acb->pdev;
+	void *dma_coherent;
+	dma_addr_t dma_coherent_handle;
+	int i, xor_ram;
+	struct Xor_sg *pXorPhys;
+	void **pXorVirt;
+	struct HostRamBuf *pRamBuf;
+
+	// allocate 1 MB * N physically continuous memory for XOR engine.
+	xor_ram = (acb->firm_PicStatus >> 24) & 0x0f;
+	acb->xor_mega = (xor_ram - 1) * 32 + 128 + 3;
+	acb->init2cfg_size = sizeof(struct HostRamBuf) +
+		(sizeof(struct XorHandle) * acb->xor_mega);
+	dma_coherent = dma_alloc_coherent(&pdev->dev, acb->init2cfg_size,
+		&dma_coherent_handle, GFP_KERNEL);
+	acb->xorVirt = dma_coherent;
+	acb->xorPhys = dma_coherent_handle;
+	pXorPhys = (struct Xor_sg *)((unsigned long)dma_coherent +
+		sizeof(struct HostRamBuf));
+	acb->xorVirtOffset = sizeof(struct HostRamBuf) +
+		(sizeof(struct Xor_sg) * acb->xor_mega);
+	pXorVirt = (void **)((unsigned long)dma_coherent +
+		(unsigned long)acb->xorVirtOffset);
+	for (i = 0; i < acb->xor_mega; i++) {
+		dma_coherent = dma_alloc_coherent(&pdev->dev,
+			ARCMSR_XOR_SEG_SIZE,
+			&dma_coherent_handle, GFP_KERNEL);
+		if (dma_coherent) {
+			pXorPhys->xorPhys = dma_coherent_handle;
+			pXorPhys->xorBufLen = ARCMSR_XOR_SEG_SIZE;
+			*pXorVirt = dma_coherent;
+			pXorPhys++;
+			pXorVirt++;
+		} else {
+			pr_info("arcmsr%d: alloc max XOR buffer = 0x%x MB\n",
+				acb->host->host_no, i);
+			rc = -ENOMEM;
+			break;
+		}
+	}
+	pRamBuf = (struct HostRamBuf *)acb->xorVirt;
+	pRamBuf->hrbSignature = 0x53425248;	//HRBS
+	pRamBuf->hrbSize = i * ARCMSR_XOR_SEG_SIZE;
+	pRamBuf->hrbRes[0] = 0;
+	pRamBuf->hrbRes[1] = 0;
+	return rc;
+}
+
 static int arcmsr_alloc_ccb_pool(struct AdapterControlBlock *acb)
 {
 	struct pci_dev *pdev = acb->pdev;
@@ -836,7 +892,11 @@ static int arcmsr_alloc_ccb_pool(struct AdapterControlBlock *acb)
 		acb->completionQ_entry = acb->ioqueue_size / sizeof(struct deliver_completeQ);
 		acb->doneq_index = 0;
 		break;
-	}	
+	}
+	if ((acb->firm_PicStatus >> 24) & 0x0f) {
+		if (arcmsr_alloc_xor_buffer(acb))
+			return -ENOMEM;
+	}
 	return 0;
 }
 
@@ -948,7 +1008,7 @@ msi_int0:
 				goto msi_int1;
 			}
 		}
-		nvec = pci_alloc_irq_vectors(pdev, 1, 1, PCI_IRQ_LEGACY);
+		nvec = pci_alloc_irq_vectors(pdev, 1, 1, PCI_IRQ_INTX);
 		if (nvec < 1)
 			return FAILED;
 msi_int1:
@@ -985,7 +1045,7 @@ static void arcmsr_init_get_devmap_timer(struct AdapterControlBlock *pacb)
 static void arcmsr_init_set_datetime_timer(struct AdapterControlBlock *pacb)
 {
 	timer_setup(&pacb->refresh_timer, arcmsr_set_iop_datetime, 0);
-	pacb->refresh_timer.expires = jiffies + msecs_to_jiffies(60 * 1000);
+	pacb->refresh_timer.expires = jiffies + secs_to_jiffies(60);
 	add_timer(&pacb->refresh_timer);
 }
 
@@ -2022,6 +2082,29 @@ static void arcmsr_stop_adapter_bgrb(struct AdapterControlBlock *acb)
 
 static void arcmsr_free_ccb_pool(struct AdapterControlBlock *acb)
 {
+	if (acb->xor_mega) {
+		struct Xor_sg *pXorPhys;
+		void **pXorVirt;
+		int i;
+
+		pXorPhys = (struct Xor_sg *)(acb->xorVirt +
+			sizeof(struct HostRamBuf));
+		pXorVirt = (void **)((unsigned long)acb->xorVirt +
+			(unsigned long)acb->xorVirtOffset);
+		for (i = 0; i < acb->xor_mega; i++) {
+			if (pXorPhys->xorPhys) {
+				dma_free_coherent(&acb->pdev->dev,
+					ARCMSR_XOR_SEG_SIZE,
+					*pXorVirt, pXorPhys->xorPhys);
+				pXorPhys->xorPhys = 0;
+				*pXorVirt = NULL;
+			}
+			pXorPhys++;
+			pXorVirt++;
+		}
+		dma_free_coherent(&acb->pdev->dev, acb->init2cfg_size,
+			acb->xorVirt, acb->xorPhys);
+	}
 	dma_free_coherent(&acb->pdev->dev, acb->uncache_size, acb->dma_coherent, acb->dma_coherent_handle);
 }
 
@@ -3262,7 +3345,8 @@ static int arcmsr_queue_command_lck(struct scsi_cmnd *cmd)
 
 static DEF_SCSI_QCMD(arcmsr_queue_command)
 
-static int arcmsr_slave_config(struct scsi_device *sdev)
+static int arcmsr_sdev_configure(struct scsi_device *sdev,
+				 struct queue_limits *lim)
 {
 	unsigned int	dev_timeout;
 
@@ -3309,6 +3393,10 @@ static void arcmsr_get_adapter_config(struct AdapterControlBlock *pACB, uint32_t
 	pACB->firm_sdram_size = readl(&rwbuffer[3]);
 	pACB->firm_hd_channels = readl(&rwbuffer[4]);
 	pACB->firm_cfg_version = readl(&rwbuffer[25]);
+	if (pACB->adapter_type == ACB_ADAPTER_TYPE_F)
+		pACB->firm_PicStatus = readl(&rwbuffer[30]);
+	else
+		pACB->firm_PicStatus = 0;
 	pr_notice("Areca RAID Controller%d: Model %s, F/W %s\n",
 		pACB->host->host_no,
 		pACB->firm_model,
@@ -4096,6 +4184,12 @@ static int arcmsr_iop_confirm(struct AdapterControlBlock *acb)
 		acb->msgcode_rwbuffer[5] = lower_32_bits(acb->dma_coherent_handle2);
 		acb->msgcode_rwbuffer[6] = upper_32_bits(acb->dma_coherent_handle2);
 		acb->msgcode_rwbuffer[7] = acb->completeQ_size;
+		if (acb->xor_mega) {
+			acb->msgcode_rwbuffer[8] = 0x455AA;	//Linux init 2
+			acb->msgcode_rwbuffer[9] = 0;
+			acb->msgcode_rwbuffer[10] = lower_32_bits(acb->xorPhys);
+			acb->msgcode_rwbuffer[11] = upper_32_bits(acb->xorPhys);
+		}
 		writel(ARCMSR_INBOUND_MESG0_SET_CONFIG, &reg->inbound_msgaddr0);
 		acb->out_doorbell ^= ARCMSR_HBEMU_DRV2IOP_MESSAGE_CMD_DONE;
 		writel(acb->out_doorbell, &reg->iobound_doorbell);
@@ -4706,9 +4800,11 @@ static const char *arcmsr_info(struct Scsi_Host *host)
 	case PCI_DEVICE_ID_ARECA_1680:
 	case PCI_DEVICE_ID_ARECA_1681:
 	case PCI_DEVICE_ID_ARECA_1880:
+	case PCI_DEVICE_ID_ARECA_1883:
 	case PCI_DEVICE_ID_ARECA_1884:
 		type = "SAS/SATA";
 		break;
+	case PCI_DEVICE_ID_ARECA_1886_0:
 	case PCI_DEVICE_ID_ARECA_1886:
 		type = "NVMe/SAS/SATA";
 		break;

@@ -27,7 +27,7 @@ struct aa_perms allperms = { .allow = ALL_PERMS_MASK,
 
 /**
  * aa_free_str_table - free entries str table
- * @str: the string table to free  (MAYBE NULL)
+ * @t: the string table to free  (MAYBE NULL)
  */
 void aa_free_str_table(struct aa_str_table *t)
 {
@@ -41,50 +41,14 @@ void aa_free_str_table(struct aa_str_table *t)
 			kfree_sensitive(t->table[i]);
 		kfree_sensitive(t->table);
 		t->table = NULL;
+		t->size = 0;
 	}
-}
-
-/**
- * aa_split_fqname - split a fqname into a profile and namespace name
- * @fqname: a full qualified name in namespace profile format (NOT NULL)
- * @ns_name: pointer to portion of the string containing the ns name (NOT NULL)
- *
- * Returns: profile name or NULL if one is not specified
- *
- * Split a namespace name from a profile name (see policy.c for naming
- * description).  If a portion of the name is missing it returns NULL for
- * that portion.
- *
- * NOTE: may modify the @fqname string.  The pointers returned point
- *       into the @fqname string.
- */
-char *aa_split_fqname(char *fqname, char **ns_name)
-{
-	char *name = strim(fqname);
-
-	*ns_name = NULL;
-	if (name[0] == ':') {
-		char *split = strchr(&name[1], ':');
-		*ns_name = skip_spaces(&name[1]);
-		if (split) {
-			/* overwrite ':' with \0 */
-			*split++ = 0;
-			if (strncmp(split, "//", 2) == 0)
-				split += 2;
-			name = skip_spaces(split);
-		} else
-			/* a ns name without a following profile is allowed */
-			name = NULL;
-	}
-	if (name && *name == 0)
-		name = NULL;
-
-	return name;
 }
 
 /**
  * skipn_spaces - Removes leading whitespace from @str.
  * @str: The string to be stripped.
+ * @n: length of str to parse, will stop at \0 if encountered before n
  *
  * Returns a pointer to the first non-whitespace character in @str.
  * if all whitespace will return NULL
@@ -143,10 +107,10 @@ const char *aa_splitn_fqname(const char *fqname, size_t n, const char **ns_name,
 void aa_info_message(const char *str)
 {
 	if (audit_enabled) {
-		DEFINE_AUDIT_DATA(sa, LSM_AUDIT_DATA_NONE, AA_CLASS_NONE, NULL);
+		DEFINE_AUDIT_DATA(ad, LSM_AUDIT_DATA_NONE, AA_CLASS_NONE, NULL);
 
-		aad(&sa)->info = str;
-		aa_audit_msg(AUDIT_APPARMOR_STATUS, &sa, NULL);
+		ad.info = str;
+		aa_audit_msg(AUDIT_APPARMOR_STATUS, &ad, NULL);
 	}
 	printk(KERN_INFO "AppArmor: %s\n", str);
 }
@@ -274,32 +238,6 @@ void aa_audit_perm_mask(struct audit_buffer *ab, u32 mask, const char *chrs,
 }
 
 /**
- * aa_audit_perms_cb - generic callback fn for auditing perms
- * @ab: audit buffer (NOT NULL)
- * @va: audit struct to audit values of (NOT NULL)
- */
-static void aa_audit_perms_cb(struct audit_buffer *ab, void *va)
-{
-	struct common_audit_data *sa = va;
-
-	if (aad(sa)->request) {
-		audit_log_format(ab, " requested_mask=");
-		aa_audit_perm_mask(ab, aad(sa)->request, aa_file_perm_chrs,
-				   PERMS_CHRS_MASK, aa_file_perm_names,
-				   PERMS_NAMES_MASK);
-	}
-	if (aad(sa)->denied) {
-		audit_log_format(ab, "denied_mask=");
-		aa_audit_perm_mask(ab, aad(sa)->denied, aa_file_perm_chrs,
-				   PERMS_CHRS_MASK, aa_file_perm_names,
-				   PERMS_NAMES_MASK);
-	}
-	audit_log_format(ab, " peer=");
-	aa_label_xaudit(ab, labels_ns(aad(sa)->label), aad(sa)->peer,
-				      FLAGS_NONE, GFP_ATOMIC);
-}
-
-/**
  * aa_apply_modes_to_perms - apply namespace and profile flags to perms
  * @profile: that perms where computed from
  * @perms: perms to apply mode modifiers to
@@ -339,40 +277,19 @@ void aa_profile_match_label(struct aa_profile *profile,
 	/* TODO: doesn't yet handle extended types */
 	aa_state_t state;
 
-	state = aa_dfa_next(rules->policy.dfa,
-			    rules->policy.start[AA_CLASS_LABEL],
+	state = aa_dfa_next(rules->policy->dfa,
+			    rules->policy->start[AA_CLASS_LABEL],
 			    type);
 	aa_label_match(profile, rules, label, state, false, request, perms);
 }
 
-
-/* currently unused */
-int aa_profile_label_perm(struct aa_profile *profile, struct aa_profile *target,
-			  u32 request, int type, u32 *deny,
-			  struct common_audit_data *sa)
-{
-	struct aa_ruleset *rules = list_first_entry(&profile->rules,
-						    typeof(*rules), list);
-	struct aa_perms perms;
-
-	aad(sa)->label = &profile->label;
-	aad(sa)->peer = &target->label;
-	aad(sa)->request = request;
-
-	aa_profile_match_label(profile, rules, &target->label, type, request,
-			       &perms);
-	aa_apply_modes_to_perms(profile, &perms);
-	*deny |= request & perms.deny;
-	return aa_check_perms(profile, &perms, request, sa, aa_audit_perms_cb);
-}
 
 /**
  * aa_check_perms - do audit mode selection based on perms set
  * @profile: profile being checked
  * @perms: perms computed for the request
  * @request: requested perms
- * @deny: Returns: explicit deny set
- * @sa: initialized audit structure (MAY BE NULL if not auditing)
+ * @ad: initialized audit structure (MAY BE NULL if not auditing)
  * @cb: callback fn for type specific fields (MAY BE NULL)
  *
  * Returns: 0 if permission else error code
@@ -385,7 +302,7 @@ int aa_profile_label_perm(struct aa_profile *profile, struct aa_profile *target,
  *	 with a positive value.
  */
 int aa_check_perms(struct aa_profile *profile, struct aa_perms *perms,
-		   u32 request, struct common_audit_data *sa,
+		   u32 request, struct apparmor_audit_data *ad,
 		   void (*cb)(struct audit_buffer *, void *))
 {
 	int type, error;
@@ -394,7 +311,7 @@ int aa_check_perms(struct aa_profile *profile, struct aa_perms *perms,
 	if (likely(!denied)) {
 		/* mask off perms that are not being force audited */
 		request &= perms->audit;
-		if (!request || !sa)
+		if (!request || !ad)
 			return 0;
 
 		type = AUDIT_APPARMOR_AUDIT;
@@ -413,16 +330,16 @@ int aa_check_perms(struct aa_profile *profile, struct aa_perms *perms,
 			error = -ENOENT;
 
 		denied &= ~perms->quiet;
-		if (!sa || !denied)
+		if (!ad || !denied)
 			return error;
 	}
 
-	if (sa) {
-		aad(sa)->label = &profile->label;
-		aad(sa)->request = request;
-		aad(sa)->denied = denied;
-		aad(sa)->error = error;
-		aa_audit_msg(type, sa, cb);
+	if (ad) {
+		ad->subj_label = &profile->label;
+		ad->request = request;
+		ad->denied = denied;
+		ad->error = error;
+		aa_audit_msg(type, ad, cb);
 	}
 
 	if (type == AUDIT_APPARMOR_ALLOWED)

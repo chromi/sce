@@ -324,14 +324,12 @@ static int b53_mmap_probe(struct platform_device *pdev)
 	return b53_switch_register(dev);
 }
 
-static int b53_mmap_remove(struct platform_device *pdev)
+static void b53_mmap_remove(struct platform_device *pdev)
 {
 	struct b53_device *dev = platform_get_drvdata(pdev);
 
 	if (dev)
 		b53_switch_remove(dev);
-
-	return 0;
 }
 
 static void b53_mmap_shutdown(struct platform_device *pdev)

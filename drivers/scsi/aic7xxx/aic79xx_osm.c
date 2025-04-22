@@ -536,13 +536,18 @@ ahd_linux_unmap_scb(struct ahd_softc *ahd, struct scb *scb)
 	struct scsi_cmnd *cmd;
 
 	cmd = scb->io_ctx;
-	ahd_sync_sglist(ahd, scb, BUS_DMASYNC_POSTWRITE);
-	scsi_dma_unmap(cmd);
+	if (cmd) {
+		ahd_sync_sglist(ahd, scb, BUS_DMASYNC_POSTWRITE);
+		scsi_dma_unmap(cmd);
+	}
 }
 
 /******************************** Macros **************************************/
-#define BUILD_SCSIID(ahd, cmd)						\
-	(((scmd_id(cmd) << TID_SHIFT) & TID) | (ahd)->our_id)
+static inline unsigned int ahd_build_scsiid(struct ahd_softc *ahd,
+					    struct scsi_device *sdev)
+{
+	return ((sdev_id(sdev) << TID_SHIFT) & TID) | (ahd)->our_id;
+}
 
 /*
  * Return a string describing the driver.
@@ -667,7 +672,7 @@ ahd_linux_target_destroy(struct scsi_target *starget)
 }
 
 static int
-ahd_linux_slave_alloc(struct scsi_device *sdev)
+ahd_linux_sdev_init(struct scsi_device *sdev)
 {
 	struct	ahd_softc *ahd =
 		*((struct ahd_softc **)sdev->host->hostdata);
@@ -696,7 +701,7 @@ ahd_linux_slave_alloc(struct scsi_device *sdev)
 }
 
 static int
-ahd_linux_slave_configure(struct scsi_device *sdev)
+ahd_linux_sdev_configure(struct scsi_device *sdev, struct queue_limits *lim)
 {
 	if (bootverbose)
 		sdev_printk(KERN_INFO, sdev, "Slave Configure\n");
@@ -811,14 +816,14 @@ ahd_linux_dev_reset(struct scsi_cmnd *cmd)
 
 	tinfo = ahd_fetch_transinfo(ahd, 'A', ahd->our_id,
 				    cmd->device->id, &tstate);
-	reset_scb->io_ctx = cmd;
+	reset_scb->io_ctx = NULL;
 	reset_scb->platform_data->dev = dev;
 	reset_scb->sg_count = 0;
 	ahd_set_residual(reset_scb, 0);
 	ahd_set_sense_residual(reset_scb, 0);
 	reset_scb->platform_data->xfer_len = 0;
 	reset_scb->hscb->control = 0;
-	reset_scb->hscb->scsiid = BUILD_SCSIID(ahd,cmd);
+	reset_scb->hscb->scsiid = ahd_build_scsiid(ahd, cmd->device);
 	reset_scb->hscb->lun = cmd->device->lun;
 	reset_scb->hscb->cdb_len = 0;
 	reset_scb->hscb->task_management = SIU_TASKMGMT_LUN_RESET;
@@ -901,8 +906,8 @@ struct scsi_host_template aic79xx_driver_template = {
 	.this_id		= -1,
 	.max_sectors		= 8192,
 	.cmd_per_lun		= 2,
-	.slave_alloc		= ahd_linux_slave_alloc,
-	.slave_configure	= ahd_linux_slave_configure,
+	.sdev_init		= ahd_linux_sdev_init,
+	.sdev_configure		= ahd_linux_sdev_configure,
 	.target_alloc		= ahd_linux_target_alloc,
 	.target_destroy		= ahd_linux_target_destroy,
 };
@@ -1577,7 +1582,7 @@ ahd_linux_run_command(struct ahd_softc *ahd, struct ahd_linux_device *dev,
 	 * Fill out basics of the HSCB.
 	 */
 	hscb->control = 0;
-	hscb->scsiid = BUILD_SCSIID(ahd, cmd);
+	hscb->scsiid = ahd_build_scsiid(ahd, cmd->device);
 	hscb->lun = cmd->device->lun;
 	scb->hscb->task_management = 0;
 	mask = SCB_GET_TARGET_MASK(ahd, scb);
@@ -1766,9 +1771,16 @@ ahd_done(struct ahd_softc *ahd, struct scb *scb)
 	dev = scb->platform_data->dev;
 	dev->active--;
 	dev->openings++;
-	if ((cmd->result & (CAM_DEV_QFRZN << 16)) != 0) {
-		cmd->result &= ~(CAM_DEV_QFRZN << 16);
-		dev->qfrozen--;
+	if (cmd) {
+		if ((cmd->result & (CAM_DEV_QFRZN << 16)) != 0) {
+			cmd->result &= ~(CAM_DEV_QFRZN << 16);
+			dev->qfrozen--;
+		}
+	} else if (scb->flags & SCB_DEVICE_RESET) {
+		if (ahd->platform_data->eh_done)
+			complete(ahd->platform_data->eh_done);
+		ahd_free_scb(ahd, scb);
+		return;
 	}
 	ahd_linux_unmap_scb(ahd, scb);
 
@@ -1822,7 +1834,8 @@ ahd_done(struct ahd_softc *ahd, struct scb *scb)
 		} else {
 			ahd_set_transaction_status(scb, CAM_REQ_CMP);
 		}
-	} else if (ahd_get_transaction_status(scb) == CAM_SCSI_STATUS_ERROR) {
+	} else if (cmd &&
+		   ahd_get_transaction_status(scb) == CAM_SCSI_STATUS_ERROR) {
 		ahd_linux_handle_scsi_status(ahd, cmd->device, scb);
 	}
 
@@ -1856,7 +1869,8 @@ ahd_done(struct ahd_softc *ahd, struct scb *scb)
 	}
 
 	ahd_free_scb(ahd, scb);
-	ahd_linux_queue_cmd_complete(ahd, cmd);
+	if (cmd)
+		ahd_linux_queue_cmd_complete(ahd, cmd);
 }
 
 static void

@@ -964,7 +964,7 @@ list_del:
 	return rc;
 }
 
-static int kmb_ocs_ecc_remove(struct platform_device *pdev)
+static void kmb_ocs_ecc_remove(struct platform_device *pdev)
 {
 	struct ocs_ecc_dev *ecc_dev;
 
@@ -978,8 +978,6 @@ static int kmb_ocs_ecc_remove(struct platform_device *pdev)
 	spin_unlock(&ocs_ecc.lock);
 
 	crypto_engine_exit(ecc_dev->engine);
-
-	return 0;
 }
 
 /* Device tree driver match. */

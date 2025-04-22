@@ -16,13 +16,18 @@
 #define AER_CORRECTABLE			2
 #define DPC_FATAL			3
 
+/*
+ * AER and DPC capabilities TLP Logging register sizes (PCIe r6.2, sec 7.8.4
+ * & 7.9.14).
+ */
+#define PCIE_STD_NUM_TLP_HEADERLOG     4
+#define PCIE_STD_MAX_TLP_PREFIXLOG     4
+
 struct pci_dev;
 
-struct aer_header_log_regs {
-	unsigned int dw0;
-	unsigned int dw1;
-	unsigned int dw2;
-	unsigned int dw3;
+struct pcie_tlp_log {
+	u32 dw[PCIE_STD_NUM_TLP_HEADERLOG];
+	u32 prefix[PCIE_STD_MAX_TLP_PREFIXLOG];
 };
 
 struct aer_capability_regs {
@@ -33,7 +38,7 @@ struct aer_capability_regs {
 	u32 cor_status;
 	u32 cor_mask;
 	u32 cap_control;
-	struct aer_header_log_regs header_log;
+	struct pcie_tlp_log header_log;
 	u32 root_command;
 	u32 root_status;
 	u16 cor_err_source;
@@ -51,7 +56,7 @@ static inline int pci_aer_clear_nonfatal_status(struct pci_dev *dev)
 static inline int pcie_aer_is_native(struct pci_dev *dev) { return 0; }
 #endif
 
-void cper_print_aer(struct pci_dev *dev, int aer_severity,
+void pci_print_aer(struct pci_dev *dev, int aer_severity,
 		    struct aer_capability_regs *aer);
 int cper_severity_to_aer(int cper_severity);
 void aer_recover_queue(int domain, unsigned int bus, unsigned int devfn,

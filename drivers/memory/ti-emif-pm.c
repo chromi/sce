@@ -315,15 +315,13 @@ fail_free_sram:
 	return ret;
 }
 
-static int ti_emif_remove(struct platform_device *pdev)
+static void ti_emif_remove(struct platform_device *pdev)
 {
 	struct ti_emif_data *emif_data = emif_instance;
 
 	emif_instance = NULL;
 
 	ti_emif_free_sram(emif_data);
-
-	return 0;
 }
 
 static const struct dev_pm_ops ti_emif_pm_ops = {

@@ -115,7 +115,7 @@ out_rst_assert:
 	return ret;
 }
 
-static int uniphier_regulator_remove(struct platform_device *pdev)
+static void uniphier_regulator_remove(struct platform_device *pdev)
 {
 	struct uniphier_regulator_priv *priv = platform_get_drvdata(pdev);
 	int i;
@@ -124,8 +124,6 @@ static int uniphier_regulator_remove(struct platform_device *pdev)
 		reset_control_assert(priv->rst[i]);
 
 	clk_bulk_disable_unprepare(priv->data->nclks, priv->clk);
-
-	return 0;
 }
 
 /* USB3 controller data */

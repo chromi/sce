@@ -739,7 +739,7 @@ MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Macintosh MACE ethernet driver");
 MODULE_ALIAS("platform:macmace");
 
-static int mac_mace_device_remove(struct platform_device *pdev)
+static void mac_mace_device_remove(struct platform_device *pdev)
 {
 	struct net_device *dev = platform_get_drvdata(pdev);
 	struct mace_data *mp = netdev_priv(dev);
@@ -755,8 +755,6 @@ static int mac_mace_device_remove(struct platform_device *pdev)
 	                  mp->tx_ring, mp->tx_ring_phys);
 
 	free_netdev(dev);
-
-	return 0;
 }
 
 static struct platform_driver mac_mace_driver = {

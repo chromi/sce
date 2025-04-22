@@ -24,7 +24,6 @@
 
 #include <media/i2c/ds90ub9xx.h>
 #include <media/v4l2-ctrls.h>
-#include <media/v4l2-event.h>
 #include <media/v4l2-fwnode.h>
 #include <media/v4l2-mediabus.h>
 #include <media/v4l2-subdev.h>
@@ -65,6 +64,9 @@
 #define UB953_REG_GPIO_INPUT_CTRL		0x0e
 #define UB953_REG_GPIO_INPUT_CTRL_OUT_EN(n)	BIT(4 + (n))
 #define UB953_REG_GPIO_INPUT_CTRL_INPUT_EN(n)	BIT(0 + (n))
+
+#define UB953_REG_BC_CTRL			0x49
+#define UB953_REG_BC_CTRL_CRC_ERR_CLR		BIT(3)
 
 #define UB953_REG_REV_MASK_ID			0x50
 #define UB953_REG_GENERAL_STATUS		0x52
@@ -398,8 +400,13 @@ static int ub953_gpiochip_probe(struct ub953_data *priv)
 	int ret;
 
 	/* Set all GPIOs to local input mode */
-	ub953_write(priv, UB953_REG_LOCAL_GPIO_DATA, 0);
-	ub953_write(priv, UB953_REG_GPIO_INPUT_CTRL, 0xf);
+	ret = ub953_write(priv, UB953_REG_LOCAL_GPIO_DATA, 0);
+	if (ret)
+		return ret;
+
+	ret = ub953_write(priv, UB953_REG_GPIO_INPUT_CTRL, 0xf);
+	if (ret)
+		return ret;
 
 	gc->label = dev_name(dev);
 	gc->parent = dev;
@@ -499,8 +506,6 @@ static int ub953_get_frame_desc(struct v4l2_subdev *sd, unsigned int pad,
 	if (ret)
 		return ret;
 
-	memset(fd, 0, sizeof(*fd));
-
 	fd->type = V4L2_MBUS_FRAME_DESC_TYPE_CSI2;
 
 	state = v4l2_subdev_lock_and_get_active_state(sd);
@@ -560,8 +565,7 @@ static int ub953_set_fmt(struct v4l2_subdev *sd,
 		return v4l2_subdev_get_fmt(sd, state, format);
 
 	/* Set sink format */
-	fmt = v4l2_subdev_state_get_stream_format(state, format->pad,
-						  format->stream);
+	fmt = v4l2_subdev_state_get_format(state, format->pad, format->stream);
 	if (!fmt)
 		return -EINVAL;
 
@@ -578,8 +582,8 @@ static int ub953_set_fmt(struct v4l2_subdev *sd,
 	return 0;
 }
 
-static int ub953_init_cfg(struct v4l2_subdev *sd,
-			  struct v4l2_subdev_state *state)
+static int ub953_init_state(struct v4l2_subdev *sd,
+			    struct v4l2_subdev_state *state)
 {
 	struct v4l2_subdev_route routes[] = {
 		{
@@ -621,6 +625,12 @@ static int ub953_log_status(struct v4l2_subdev *sd)
 	ub953_read(priv, UB953_REG_CRC_ERR_CNT1, &v1);
 	ub953_read(priv, UB953_REG_CRC_ERR_CNT2, &v2);
 	dev_info(dev, "CRC error count %u\n", v1 | (v2 << 8));
+
+	/* Clear CRC error counter */
+	if (v1 || v2)
+		regmap_update_bits(priv->regmap, UB953_REG_BC_CTRL,
+				   UB953_REG_BC_CTRL_CRC_ERR_CLR,
+				   UB953_REG_BC_CTRL_CRC_ERR_CLR);
 
 	ub953_read(priv, UB953_REG_CSI_ERR_CNT, &v);
 	dev_info(dev, "CSI error count %u\n", v);
@@ -716,18 +726,19 @@ static const struct v4l2_subdev_pad_ops ub953_pad_ops = {
 	.get_frame_desc = ub953_get_frame_desc,
 	.get_fmt = v4l2_subdev_get_fmt,
 	.set_fmt = ub953_set_fmt,
-	.init_cfg = ub953_init_cfg,
 };
 
 static const struct v4l2_subdev_core_ops ub953_subdev_core_ops = {
 	.log_status = ub953_log_status,
-	.subscribe_event = v4l2_ctrl_subdev_subscribe_event,
-	.unsubscribe_event = v4l2_event_subdev_unsubscribe,
 };
 
 static const struct v4l2_subdev_ops ub953_subdev_ops = {
 	.core = &ub953_subdev_core_ops,
 	.pad = &ub953_pad_ops,
+};
+
+static const struct v4l2_subdev_internal_ops ub953_internal_ops = {
+	.init_state = ub953_init_state,
 };
 
 static const struct media_entity_operations ub953_entity_ops = {
@@ -961,10 +972,11 @@ static void ub953_calc_clkout_params(struct ub953_data *priv,
 	clkout_data->rate = clkout_rate;
 }
 
-static void ub953_write_clkout_regs(struct ub953_data *priv,
-				    const struct ub953_clkout_data *clkout_data)
+static int ub953_write_clkout_regs(struct ub953_data *priv,
+				   const struct ub953_clkout_data *clkout_data)
 {
 	u8 clkout_ctrl0, clkout_ctrl1;
+	int ret;
 
 	if (priv->hw_data->is_ub971)
 		clkout_ctrl0 = clkout_data->m;
@@ -974,8 +986,15 @@ static void ub953_write_clkout_regs(struct ub953_data *priv,
 
 	clkout_ctrl1 = clkout_data->n;
 
-	ub953_write(priv, UB953_REG_CLKOUT_CTRL0, clkout_ctrl0);
-	ub953_write(priv, UB953_REG_CLKOUT_CTRL1, clkout_ctrl1);
+	ret = ub953_write(priv, UB953_REG_CLKOUT_CTRL0, clkout_ctrl0);
+	if (ret)
+		return ret;
+
+	ret = ub953_write(priv, UB953_REG_CLKOUT_CTRL1, clkout_ctrl1);
+	if (ret)
+		return ret;
+
+	return 0;
 }
 
 static unsigned long ub953_clkout_recalc_rate(struct clk_hw *hw,
@@ -1055,9 +1074,7 @@ static int ub953_clkout_set_rate(struct clk_hw *hw, unsigned long rate,
 	dev_dbg(&priv->client->dev, "%s %lu (requested %lu)\n", __func__,
 		clkout_data.rate, rate);
 
-	ub953_write_clkout_regs(priv, &clkout_data);
-
-	return 0;
+	return ub953_write_clkout_regs(priv, &clkout_data);
 }
 
 static const struct clk_ops ub953_clkout_ops = {
@@ -1082,7 +1099,9 @@ static int ub953_register_clkout(struct ub953_data *priv)
 
 	/* Initialize clkout to 25MHz by default */
 	ub953_calc_clkout_params(priv, UB953_DEFAULT_CLKOUT_RATE, &clkout_data);
-	ub953_write_clkout_regs(priv, &clkout_data);
+	ret = ub953_write_clkout_regs(priv, &clkout_data);
+	if (ret)
+		return ret;
 
 	priv->clkout_clk_hw.init = &init;
 
@@ -1229,10 +1248,15 @@ static int ub953_hw_init(struct ub953_data *priv)
 	if (ret)
 		return dev_err_probe(dev, ret, "i2c init failed\n");
 
-	ub953_write(priv, UB953_REG_GENERAL_CFG,
-		    (priv->non_continous_clk ? 0 : UB953_REG_GENERAL_CFG_CONT_CLK) |
-		    ((priv->num_data_lanes - 1) << UB953_REG_GENERAL_CFG_CSI_LANE_SEL_SHIFT) |
-		    UB953_REG_GENERAL_CFG_CRC_TX_GEN_ENABLE);
+	v = 0;
+	v |= priv->non_continous_clk ? 0 : UB953_REG_GENERAL_CFG_CONT_CLK;
+	v |= (priv->num_data_lanes - 1) <<
+		UB953_REG_GENERAL_CFG_CSI_LANE_SEL_SHIFT;
+	v |= UB953_REG_GENERAL_CFG_CRC_TX_GEN_ENABLE;
+
+	ret = ub953_write(priv, UB953_REG_GENERAL_CFG, v);
+	if (ret)
+		return ret;
 
 	return 0;
 }
@@ -1243,9 +1267,10 @@ static int ub953_subdev_init(struct ub953_data *priv)
 	int ret;
 
 	v4l2_i2c_subdev_init(&priv->sd, priv->client, &ub953_subdev_ops);
+	priv->sd.internal_ops = &ub953_internal_ops;
 
 	priv->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE |
-			  V4L2_SUBDEV_FL_HAS_EVENTS | V4L2_SUBDEV_FL_STREAMS;
+			  V4L2_SUBDEV_FL_STREAMS;
 	priv->sd.entity.function = MEDIA_ENT_F_VID_IF_BRIDGE;
 	priv->sd.entity.ops = &ub953_entity_ops;
 
@@ -1290,7 +1315,6 @@ static void ub953_subdev_uninit(struct ub953_data *priv)
 	v4l2_async_unregister_subdev(&priv->sd);
 	ub953_v4l2_notifier_unregister(priv);
 	v4l2_subdev_cleanup(&priv->sd);
-	fwnode_handle_put(priv->sd.fwnode);
 	media_entity_cleanup(&priv->sd.entity);
 }
 
@@ -1427,4 +1451,4 @@ MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Texas Instruments FPD-Link III/IV CSI-2 Serializers Driver");
 MODULE_AUTHOR("Luca Ceresoli <luca@lucaceresoli.net>");
 MODULE_AUTHOR("Tomi Valkeinen <tomi.valkeinen@ideasonboard.com>");
-MODULE_IMPORT_NS(I2C_ATR);
+MODULE_IMPORT_NS("I2C_ATR");

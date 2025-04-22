@@ -2293,7 +2293,7 @@ static int tegra194_cbb_probe(struct platform_device *pdev)
 	return tegra_cbb_register(&cbb->base);
 }
 
-static int tegra194_cbb_remove(struct platform_device *pdev)
+static void tegra194_cbb_remove(struct platform_device *pdev)
 {
 	struct tegra194_cbb *cbb = platform_get_drvdata(pdev);
 	struct tegra_cbb *noc, *tmp;
@@ -2311,8 +2311,6 @@ static int tegra194_cbb_remove(struct platform_device *pdev)
 	}
 
 	spin_unlock_irqrestore(&cbb_lock, flags);
-
-	return 0;
 }
 
 static int __maybe_unused tegra194_cbb_resume_noirq(struct device *dev)

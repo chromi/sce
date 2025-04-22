@@ -8,10 +8,8 @@
  * (These are defined separately to decouple sched.h from mm_types.h as much as possible.)
  */
 
+#include <linux/align.h>
 #include <linux/types.h>
-#include <linux/threads.h>
-#include <linux/atomic.h>
-#include <linux/cpumask.h>
 
 #include <asm/page.h>
 
@@ -19,9 +17,6 @@
 #include <asm/tlbbatch.h>
 #endif
 
-#define USE_SPLIT_PTE_PTLOCKS	(NR_CPUS >= CONFIG_SPLIT_PTLOCK_CPUS)
-#define USE_SPLIT_PMD_PTLOCKS	(USE_SPLIT_PTE_PTLOCKS && \
-		IS_ENABLED(CONFIG_ARCH_ENABLE_SPLIT_PMD_PTLOCK))
 #define ALLOC_SPLIT_PTLOCKS	(SPINLOCK_SIZE > BITS_PER_LONG/8)
 
 /*
@@ -36,6 +31,8 @@ enum {
 	NR_MM_COUNTERS
 };
 
+struct page;
+
 struct page_frag {
 	struct page *page;
 #if (BITS_PER_LONG > 32) || (PAGE_SIZE >= 65536)
@@ -44,6 +41,26 @@ struct page_frag {
 #else
 	__u16 offset;
 	__u16 size;
+#endif
+};
+
+#define PAGE_FRAG_CACHE_MAX_SIZE	__ALIGN_MASK(32768, ~PAGE_MASK)
+#define PAGE_FRAG_CACHE_MAX_ORDER	get_order(PAGE_FRAG_CACHE_MAX_SIZE)
+struct page_frag_cache {
+	/* encoded_page consists of the virtual address, pfmemalloc bit and
+	 * order of a page.
+	 */
+	unsigned long encoded_page;
+
+	/* we maintain a pagecount bias, so that we dont dirty cache line
+	 * containing page->_refcount every time we allocate a fragment.
+	 */
+#if (PAGE_SIZE < PAGE_FRAG_CACHE_MAX_SIZE) && (BITS_PER_LONG <= 32)
+	__u16 offset;
+	__u16 pagecnt_bias;
+#else
+	__u32 offset;
+	__u32 pagecnt_bias;
 #endif
 };
 

@@ -313,15 +313,13 @@ err0:
 	return ret;
 }
 
-static int pxa2xx_drv_pcmcia_remove(struct platform_device *dev)
+static void pxa2xx_drv_pcmcia_remove(struct platform_device *dev)
 {
 	struct skt_dev_info *sinfo = platform_get_drvdata(dev);
 	int i;
 
 	for (i = 0; i < sinfo->nskt; i++)
 		soc_pcmcia_remove_one(&sinfo->skt[i]);
-
-	return 0;
 }
 
 static int pxa2xx_drv_pcmcia_resume(struct device *dev)

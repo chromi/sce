@@ -200,6 +200,20 @@ bail:
 	return inode;
 }
 
+static int ocfs2_dinode_has_extents(struct ocfs2_dinode *di)
+{
+	/* inodes flagged with other stuff in id2 */
+	if (di->i_flags & (OCFS2_SUPER_BLOCK_FL | OCFS2_LOCAL_ALLOC_FL |
+			   OCFS2_CHAIN_FL | OCFS2_DEALLOC_FL))
+		return 0;
+	/* i_flags doesn't indicate when id2 is a fast symlink */
+	if (S_ISLNK(di->i_mode) && di->i_size && di->i_clusters == 0)
+		return 0;
+	if (di->i_dyn_features & OCFS2_INLINE_DATA_FL)
+		return 0;
+
+	return 1;
+}
 
 /*
  * here's how inodes get read from disk:
@@ -302,10 +316,10 @@ void ocfs2_populate_inode(struct inode *inode, struct ocfs2_dinode *fe,
 		inode->i_blocks = ocfs2_inode_sector_count(inode);
 		inode->i_mapping->a_ops = &ocfs2_aops;
 	}
-	inode->i_atime.tv_sec = le64_to_cpu(fe->i_atime);
-	inode->i_atime.tv_nsec = le32_to_cpu(fe->i_atime_nsec);
-	inode->i_mtime.tv_sec = le64_to_cpu(fe->i_mtime);
-	inode->i_mtime.tv_nsec = le32_to_cpu(fe->i_mtime_nsec);
+	inode_set_atime(inode, le64_to_cpu(fe->i_atime),
+		        le32_to_cpu(fe->i_atime_nsec));
+	inode_set_mtime(inode, le64_to_cpu(fe->i_mtime),
+		        le32_to_cpu(fe->i_mtime_nsec));
 	inode_set_ctime(inode, le64_to_cpu(fe->i_ctime),
 		        le32_to_cpu(fe->i_ctime_nsec));
 
@@ -1122,7 +1136,7 @@ static void ocfs2_clear_inode(struct inode *inode)
 
 	dquot_drop(inode);
 
-	/* To preven remote deletes we hold open lock before, now it
+	/* To prevent remote deletes we hold open lock before, now it
 	 * is time to unlock PR and EX open locks. */
 	ocfs2_open_unlock(inode);
 
@@ -1312,12 +1326,12 @@ int ocfs2_mark_inode_dirty(handle_t *handle,
 	fe->i_uid = cpu_to_le32(i_uid_read(inode));
 	fe->i_gid = cpu_to_le32(i_gid_read(inode));
 	fe->i_mode = cpu_to_le16(inode->i_mode);
-	fe->i_atime = cpu_to_le64(inode->i_atime.tv_sec);
-	fe->i_atime_nsec = cpu_to_le32(inode->i_atime.tv_nsec);
-	fe->i_ctime = cpu_to_le64(inode_get_ctime(inode).tv_sec);
-	fe->i_ctime_nsec = cpu_to_le32(inode_get_ctime(inode).tv_nsec);
-	fe->i_mtime = cpu_to_le64(inode->i_mtime.tv_sec);
-	fe->i_mtime_nsec = cpu_to_le32(inode->i_mtime.tv_nsec);
+	fe->i_atime = cpu_to_le64(inode_get_atime_sec(inode));
+	fe->i_atime_nsec = cpu_to_le32(inode_get_atime_nsec(inode));
+	fe->i_ctime = cpu_to_le64(inode_get_ctime_sec(inode));
+	fe->i_ctime_nsec = cpu_to_le32(inode_get_ctime_nsec(inode));
+	fe->i_mtime = cpu_to_le64(inode_get_mtime_sec(inode));
+	fe->i_mtime_nsec = cpu_to_le32(inode_get_mtime_nsec(inode));
 
 	ocfs2_journal_dirty(handle, bh);
 	ocfs2_update_inode_fsync_trans(handle, inode, 1);
@@ -1348,10 +1362,10 @@ void ocfs2_refresh_inode(struct inode *inode,
 		inode->i_blocks = 0;
 	else
 		inode->i_blocks = ocfs2_inode_sector_count(inode);
-	inode->i_atime.tv_sec = le64_to_cpu(fe->i_atime);
-	inode->i_atime.tv_nsec = le32_to_cpu(fe->i_atime_nsec);
-	inode->i_mtime.tv_sec = le64_to_cpu(fe->i_mtime);
-	inode->i_mtime.tv_nsec = le32_to_cpu(fe->i_mtime_nsec);
+	inode_set_atime(inode, le64_to_cpu(fe->i_atime),
+			le32_to_cpu(fe->i_atime_nsec));
+	inode_set_mtime(inode, le64_to_cpu(fe->i_mtime),
+			le32_to_cpu(fe->i_mtime_nsec));
 	inode_set_ctime(inode, le64_to_cpu(fe->i_ctime),
 			le32_to_cpu(fe->i_ctime_nsec));
 
@@ -1437,7 +1451,7 @@ static int ocfs2_filecheck_validate_inode_block(struct super_block *sb,
 	 * Call ocfs2_validate_meta_ecc() first since it has ecc repair
 	 * function, but we should not return error immediately when ecc
 	 * validation fails, because the reason is quite likely the invalid
-	 * inode number inputed.
+	 * inode number inputted.
 	 */
 	rc = ocfs2_validate_meta_ecc(sb, bh->b_data, &di->i_check);
 	if (rc) {
@@ -1547,6 +1561,16 @@ static int ocfs2_filecheck_repair_inode_block(struct super_block *sb,
 		     le32_to_cpu(di->i_fs_generation));
 	}
 
+	if (ocfs2_dinode_has_extents(di) &&
+	    le16_to_cpu(di->id2.i_list.l_next_free_rec) > le16_to_cpu(di->id2.i_list.l_count)) {
+		di->id2.i_list.l_next_free_rec = di->id2.i_list.l_count;
+		changed = 1;
+		mlog(ML_ERROR,
+		     "Filecheck: reset dinode #%llu: l_next_free_rec to %u\n",
+		     (unsigned long long)bh->b_blocknr,
+		     le16_to_cpu(di->id2.i_list.l_next_free_rec));
+	}
+
 	if (changed || ocfs2_validate_meta_ecc(sb, bh->b_data, &di->i_check)) {
 		ocfs2_compute_meta_ecc(sb, bh->b_data, &di->i_check);
 		mark_buffer_dirty(bh);
@@ -1621,6 +1645,7 @@ static struct super_block *ocfs2_inode_cache_get_super(struct ocfs2_caching_info
 }
 
 static void ocfs2_inode_cache_lock(struct ocfs2_caching_info *ci)
+__acquires(&oi->ip_lock)
 {
 	struct ocfs2_inode_info *oi = cache_info_to_inode(ci);
 
@@ -1628,6 +1653,7 @@ static void ocfs2_inode_cache_lock(struct ocfs2_caching_info *ci)
 }
 
 static void ocfs2_inode_cache_unlock(struct ocfs2_caching_info *ci)
+__releases(&oi->ip_lock)
 {
 	struct ocfs2_inode_info *oi = cache_info_to_inode(ci);
 

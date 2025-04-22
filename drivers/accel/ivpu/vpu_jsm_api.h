@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 /*
- * Copyright (C) 2020-2023 Intel Corporation
+ * Copyright (c) 2020-2024, Intel Corporation.
  */
 
 /**
@@ -22,12 +22,12 @@
 /*
  * Minor version changes when API backward compatibility is preserved.
  */
-#define VPU_JSM_API_VER_MINOR 0
+#define VPU_JSM_API_VER_MINOR 25
 
 /*
  * API header changed (field names, documentation, formatting) but API itself has not been changed
  */
-#define VPU_JSM_API_VER_PATCH 1
+#define VPU_JSM_API_VER_PATCH 0
 
 /*
  * Index in the API version table
@@ -36,15 +36,18 @@
 
 /*
  * Number of Priority Bands for Hardware Scheduling
- * Bands: RealTime, Focus, Normal, Idle
+ * Bands: Idle(0), Normal(1), Focus(2), RealTime(3)
  */
 #define VPU_HWS_NUM_PRIORITY_BANDS 4
 
 /* Max number of impacted contexts that can be dealt with the engine reset command */
 #define VPU_MAX_ENGINE_RESET_IMPACTED_CONTEXTS 3
 
-/** Pack the API structures for now, once alignment issues are fixed this can be removed */
-#pragma pack(push, 1)
+/*
+ * Pack the API structures to enforce binary compatibility
+ * Align to 8 bytes for optimal performance
+ */
+#pragma pack(push, 8)
 
 /*
  * Engine indexes.
@@ -71,6 +74,7 @@
 #define VPU_JSM_STATUS_MVNCI_INTERNAL_ERROR		 0xCU
 /* Job status returned when the job was preempted mid-inference */
 #define VPU_JSM_STATUS_PREEMPTED_MID_INFERENCE		 0xDU
+#define VPU_JSM_STATUS_MVNCI_CONTEXT_VIOLATION_HW	 0xEU
 
 /*
  * Host <-> VPU IPC channels.
@@ -83,16 +87,58 @@
 /*
  * Job flags bit masks.
  */
-#define VPU_JOB_FLAGS_NULL_SUBMISSION_MASK 0x00000001
+enum {
+	/*
+	 * Null submission mask.
+	 * When set, batch buffer's commands are not processed but returned as
+	 * successful immediately, except fences and timestamps.
+	 * When cleared, batch buffer's commands are processed normally.
+	 * Used for testing and profiling purposes.
+	 */
+	VPU_JOB_FLAGS_NULL_SUBMISSION_MASK = (1 << 0U),
+	/*
+	 * Inline command mask.
+	 * When set, the object in job queue is an inline command (see struct vpu_inline_cmd below).
+	 * When cleared, the object in job queue is a job (see struct vpu_job_queue_entry below).
+	 */
+	VPU_JOB_FLAGS_INLINE_CMD_MASK = (1 << 1U),
+	/*
+	 * VPU private data mask.
+	 * Reserved for the VPU to store private data about the job (or inline command)
+	 * while being processed.
+	 */
+	VPU_JOB_FLAGS_PRIVATE_DATA_MASK = 0xFFFF0000U
+};
 
 /*
- * Sizes of the reserved areas in jobs, in bytes.
+ * Job queue flags bit masks.
  */
-#define VPU_JOB_RESERVED_BYTES	     16
-/*
- * Sizes of the reserved areas in job queues, in bytes.
- */
-#define VPU_JOB_QUEUE_RESERVED_BYTES 52
+enum {
+	/*
+	 * No job done notification mask.
+	 * When set, indicates that no job done notification should be sent for any
+	 * job from this queue. When cleared, indicates that job done notification
+	 * should be sent for every job completed from this queue.
+	 */
+	VPU_JOB_QUEUE_FLAGS_NO_JOB_DONE_MASK = (1 << 0U),
+	/*
+	 * Native fence usage mask.
+	 * When set, indicates that job queue uses native fences (as inline commands
+	 * in job queue). Such queues may also use legacy fences (as commands in batch buffers).
+	 * When cleared, indicates the job queue only uses legacy fences.
+	 * NOTE: For queues using native fences, VPU expects that all jobs in the queue
+	 * are immediately followed by an inline command object. This object is expected
+	 * to be a fence signal command in most cases, but can also be a NOP in case the host
+	 * does not need per-job fence signalling. Other inline commands objects can be
+	 * inserted between "job and inline command" pairs.
+	 */
+	VPU_JOB_QUEUE_FLAGS_USE_NATIVE_FENCE_MASK = (1 << 1U),
+
+	/*
+	 * Enable turbo mode for testing NPU performance; not recommended for regular usage.
+	 */
+	VPU_JOB_QUEUE_FLAGS_TURBO_MODE = (1 << 2U)
+};
 
 /*
  * Max length (including trailing NULL char) of trace entity name (e.g., the
@@ -109,17 +155,139 @@
 #define VPU_DYNDBG_CMD_MAX_LEN 96
 
 /*
+ * For HWS command queue scheduling, we can prioritise command queues inside the
+ * same process with a relative in-process priority. Valid values for relative
+ * priority are given below - max and min.
+ */
+#define VPU_HWS_COMMAND_QUEUE_MAX_IN_PROCESS_PRIORITY 7
+#define VPU_HWS_COMMAND_QUEUE_MIN_IN_PROCESS_PRIORITY -7
+
+/*
+ * For HWS priority scheduling, we can have multiple realtime priority bands.
+ * They are numbered 0 to a MAX.
+ */
+#define VPU_HWS_MAX_REALTIME_PRIORITY_LEVEL 31U
+
+/*
+ * vpu_jsm_engine_reset_context flag definitions
+ */
+#define VPU_ENGINE_RESET_CONTEXT_FLAG_COLLATERAL_DAMAGE_MASK BIT(0)
+#define VPU_ENGINE_RESET_CONTEXT_HANG_PRIMARY_CAUSE	     0
+#define VPU_ENGINE_RESET_CONTEXT_COLLATERAL_DAMAGE	     1
+
+/*
+ * Invalid command queue handle identifier. Applies to cmdq_id and cmdq_group
+ * in this API.
+ */
+#define VPU_HWS_INVALID_CMDQ_HANDLE 0ULL
+
+/*
+ * Inline commands types.
+ */
+/*
+ * NOP.
+ * VPU does nothing other than consuming the inline command object.
+ */
+#define VPU_INLINE_CMD_TYPE_NOP		 0x0
+/*
+ * Fence wait.
+ * VPU waits for the fence current value to reach monitored value.
+ * Fence wait operations are executed upon job dispatching. While waiting for
+ * the fence to be satisfied, VPU blocks fetching of the next objects in the queue.
+ * Jobs present in the queue prior to the fence wait object may be processed
+ * concurrently.
+ */
+#define VPU_INLINE_CMD_TYPE_FENCE_WAIT	 0x1
+/*
+ * Fence signal.
+ * VPU sets the fence current value to the provided value. If new current value
+ * is equal to or higher than monitored value, VPU sends fence signalled notification
+ * to the host. Fence signal operations are executed upon completion of all the jobs
+ * present in the queue prior to them, and in-order relative to each other in the queue.
+ * But jobs in-between them may be processed concurrently and may complete out-of-order.
+ */
+#define VPU_INLINE_CMD_TYPE_FENCE_SIGNAL 0x2
+
+/*
+ * Job scheduling priority bands for both hardware scheduling and OS scheduling.
+ */
+enum vpu_job_scheduling_priority_band {
+	VPU_JOB_SCHEDULING_PRIORITY_BAND_IDLE = 0,
+	VPU_JOB_SCHEDULING_PRIORITY_BAND_NORMAL = 1,
+	VPU_JOB_SCHEDULING_PRIORITY_BAND_FOCUS = 2,
+	VPU_JOB_SCHEDULING_PRIORITY_BAND_REALTIME = 3,
+	VPU_JOB_SCHEDULING_PRIORITY_BAND_COUNT = 4,
+};
+
+/*
  * Job format.
+ * Jobs defines the actual workloads to be executed by a given engine.
  */
 struct vpu_job_queue_entry {
-	u64 batch_buf_addr; /**< Address of VPU commands batch buffer */
-	u32 job_id;	  /**< Job ID */
-	u32 flags; /**< Flags bit field, see VPU_JOB_FLAGS_* above */
-	u64 root_page_table_addr; /**< Address of root page table to use for this job */
-	u64 root_page_table_update_counter; /**< Page tables update events counter */
-	u64 preemption_buffer_address; /**< Address of the preemption buffer to use for this job */
-	u64 preemption_buffer_size; /**< Size of the preemption buffer to use for this job */
-	u8 reserved_0[VPU_JOB_RESERVED_BYTES];
+	/**< Address of VPU commands batch buffer */
+	u64 batch_buf_addr;
+	/**< Job ID */
+	u32 job_id;
+	/**< Flags bit field, see VPU_JOB_FLAGS_* above */
+	u32 flags;
+	/**
+	 * Doorbell ring timestamp taken by KMD from SoC's global system clock, in
+	 * microseconds. NPU can convert this value to its own fixed clock's timebase,
+	 * to match other profiling timestamps.
+	 */
+	u64 doorbell_timestamp;
+	/**< Extra id for job tracking, used only in the firmware perf traces */
+	u64 host_tracking_id;
+	/**< Address of the primary preemption buffer to use for this job */
+	u64 primary_preempt_buf_addr;
+	/**< Size of the primary preemption buffer to use for this job */
+	u32 primary_preempt_buf_size;
+	/**< Size of secondary preemption buffer to use for this job */
+	u32 secondary_preempt_buf_size;
+	/**< Address of secondary preemption buffer to use for this job */
+	u64 secondary_preempt_buf_addr;
+	u64 reserved_0;
+};
+
+/*
+ * Inline command format.
+ * Inline commands are the commands executed at scheduler level (typically,
+ * synchronization directives). Inline command and job objects must be of
+ * the same size and have flags field at same offset.
+ */
+struct vpu_inline_cmd {
+	u64 reserved_0;
+	/* Inline command type, see VPU_INLINE_CMD_TYPE_* defines. */
+	u32 type;
+	/* Flags bit field, see VPU_JOB_FLAGS_* above. */
+	u32 flags;
+	/* Inline command payload. Depends on inline command type. */
+	union {
+		/* Fence (wait and signal) commands' payload. */
+		struct {
+			/* Fence object handle. */
+			u64 fence_handle;
+			/* User VA of the current fence value. */
+			u64 current_value_va;
+			/* User VA of the monitored fence value (read-only). */
+			u64 monitored_value_va;
+			/* Value to wait for or write in fence location. */
+			u64 value;
+			/* User VA of the log buffer in which to add log entry on completion. */
+			u64 log_buffer_va;
+		} fence;
+		/* Other commands do not have a payload. */
+		/* Payload definition for future inline commands can be inserted here. */
+		u64 reserved_1[6];
+	} payload;
+};
+
+/*
+ * Job queue slots can be populated either with job objects or inline command objects.
+ */
+union vpu_jobq_slot {
+	struct vpu_job_queue_entry job;
+	struct vpu_inline_cmd inline_cmd;
 };
 
 /*
@@ -129,7 +297,21 @@ struct vpu_job_queue_header {
 	u32 engine_idx;
 	u32 head;
 	u32 tail;
-	u8 reserved_0[VPU_JOB_QUEUE_RESERVED_BYTES];
+	u32 flags;
+	/* Set to 1 to indicate priority_band field is valid */
+	u32 priority_band_valid;
+	/*
+	 * Priority for the work of this job queue, valid only if the HWS is NOT used
+	 * and the `priority_band_valid` is set to 1. It is applied only during
+	 * the VPU_JSM_MSG_REGISTER_DB message processing.
+	 * The device firmware might use the `priority_band` to optimize the power
+	 * management logic, but it will not affect the order of jobs.
+	 * Available priority bands: @see enum vpu_job_scheduling_priority_band
+	 */
+	u32 priority_band;
+	/* Inside realtime band assigns a further priority, limited to 0..31 range */
+	u32 realtime_priority_level;
+	u32 reserved_0[9];
 };
 
 /*
@@ -137,7 +319,7 @@ struct vpu_job_queue_header {
  */
 struct vpu_job_queue {
 	struct vpu_job_queue_header header;
-	struct vpu_job_queue_entry job[];
+	union vpu_jobq_slot slot[];
 };
 
 /**
@@ -153,13 +335,117 @@ enum vpu_trace_entity_type {
 };
 
 /*
+ * HWS specific log buffer header details.
+ * Total size is 32 bytes.
+ */
+struct vpu_hws_log_buffer_header {
+	/* Written by VPU after adding a log entry. Initialised by host to 0. */
+	u32 first_free_entry_index;
+	/* Incremented by VPU every time the VPU writes the 0th entry; initialised by host to 0. */
+	u32 wraparound_count;
+	/*
+	 * This is the number of buffers that can be stored in the log buffer provided by the host.
+	 * It is written by host before passing buffer to VPU. VPU should consider it read-only.
+	 */
+	u64 num_of_entries;
+	u64 reserved[2];
+};
+
+/*
+ * HWS specific log buffer entry details.
+ * Total size is 32 bytes.
+ */
+struct vpu_hws_log_buffer_entry {
+	/* VPU timestamp must be an invariant timer tick (not impacted by DVFS) */
+	u64 vpu_timestamp;
+	/*
+	 * Operation type:
+	 *     0 - context state change
+	 *     1 - queue new work
+	 *     2 - queue unwait sync object
+	 *     3 - queue no more work
+	 *     4 - queue wait sync object
+	 */
+	u32 operation_type;
+	u32 reserved;
+	/* Operation data depends on operation type */
+	u64 operation_data[2];
+};
+
+/* Native fence log buffer types. */
+enum vpu_hws_native_fence_log_type {
+	VPU_HWS_NATIVE_FENCE_LOG_TYPE_WAITS = 1,
+	VPU_HWS_NATIVE_FENCE_LOG_TYPE_SIGNALS = 2
+};
+
+/* HWS native fence log buffer header. */
+struct vpu_hws_native_fence_log_header {
+	union {
+		struct {
+			/* Index of the first free entry in buffer. */
+			u32 first_free_entry_idx;
+			/* Incremented each time NPU wraps around the buffer to write next entry. */
+			u32 wraparound_count;
+		};
+		/* Field allowing atomic update of both fields above. */
+		u64 atomic_wraparound_and_entry_idx;
+	};
+	/* Log buffer type, see enum vpu_hws_native_fence_log_type. */
+	u64 type;
+	/* Allocated number of entries in the log buffer. */
+	u64 entry_nb;
+	u64 reserved[2];
+};
+
+/* Native fence log operation types. */
+enum vpu_hws_native_fence_log_op {
+	VPU_HWS_NATIVE_FENCE_LOG_OP_SIGNAL_EXECUTED = 0,
+	VPU_HWS_NATIVE_FENCE_LOG_OP_WAIT_UNBLOCKED = 1
+};
+
+/* HWS native fence log entry. */
+struct vpu_hws_native_fence_log_entry {
+	/* Newly signaled/unblocked fence value. */
+	u64 fence_value;
+	/* Native fence object handle to which this operation belongs. */
+	u64 fence_handle;
+	/* Operation type, see enum vpu_hws_native_fence_log_op. */
+	u64 op_type;
+	u64 reserved_0;
+	/*
+	 * VPU_HWS_NATIVE_FENCE_LOG_OP_WAIT_UNBLOCKED only: Timestamp at which fence
+	 * wait was started (in NPU SysTime).
+	 */
+	u64 fence_wait_start_ts;
+	u64 reserved_1;
+	/* Timestamp at which fence operation was completed (in NPU SysTime). */
+	u64 fence_end_ts;
+};
+
+/* Native fence log buffer. */
+struct vpu_hws_native_fence_log_buffer {
+	struct vpu_hws_native_fence_log_header header;
+	struct vpu_hws_native_fence_log_entry entry[];
+};
+
+/*
  * Host <-> VPU IPC messages types.
  */
 enum vpu_ipc_msg_type {
 	VPU_JSM_MSG_UNKNOWN = 0xFFFFFFFF,
+
 	/* IPC Host -> Device, Async commands */
 	VPU_JSM_MSG_ASYNC_CMD = 0x1100,
 	VPU_JSM_MSG_ENGINE_RESET = VPU_JSM_MSG_ASYNC_CMD,
+	/**
+	 * Preempt engine. The NPU stops (preempts) all the jobs currently
+	 * executing on the target engine making the engine become idle and ready to
+	 * execute new jobs.
+	 * NOTE: The NPU does not remove unstarted jobs (if any) from job queues of
+	 * the target engine, but it stops processing them (until the queue doorbell
+	 * is rung again); the host is responsible to reset the job queue, either
+	 * after preemption or when resubmitting jobs to the queue.
+	 */
 	VPU_JSM_MSG_ENGINE_PREEMPT = 0x1101,
 	VPU_JSM_MSG_REGISTER_DB = 0x1102,
 	VPU_JSM_MSG_UNREGISTER_DB = 0x1103,
@@ -228,16 +514,42 @@ enum vpu_ipc_msg_type {
 	 * deallocated or reassigned to another context.
 	 */
 	VPU_JSM_MSG_HWS_REGISTER_DB = 0x1117,
+	/** Control command: Log buffer setting */
+	VPU_JSM_MSG_HWS_SET_SCHEDULING_LOG = 0x1118,
+	/* Control command: Suspend command queue. */
+	VPU_JSM_MSG_HWS_SUSPEND_CMDQ = 0x1119,
+	/* Control command: Resume command queue */
+	VPU_JSM_MSG_HWS_RESUME_CMDQ = 0x111a,
+	/* Control command: Resume engine after reset */
+	VPU_JSM_MSG_HWS_ENGINE_RESUME = 0x111b,
+	/* Control command: Enable survivability/DCT mode */
+	VPU_JSM_MSG_DCT_ENABLE = 0x111c,
+	/* Control command: Disable survivability/DCT mode */
+	VPU_JSM_MSG_DCT_DISABLE = 0x111d,
+	/**
+	 * Dump VPU state. To be used for debug purposes only.
+	 * NOTE: Please introduce new ASYNC commands before this one. *
+	 */
+	VPU_JSM_MSG_STATE_DUMP = 0x11FF,
+
 	/* IPC Host -> Device, General commands */
 	VPU_JSM_MSG_GENERAL_CMD = 0x1200,
-	VPU_JSM_MSG_BLOB_DEINIT = VPU_JSM_MSG_GENERAL_CMD,
+	VPU_JSM_MSG_BLOB_DEINIT_DEPRECATED = VPU_JSM_MSG_GENERAL_CMD,
 	/**
 	 * Control dyndbg behavior by executing a dyndbg command; equivalent to
 	 * Linux command: `echo '<dyndbg_cmd>' > <debugfs>/dynamic_debug/control`.
 	 */
 	VPU_JSM_MSG_DYNDBG_CONTROL = 0x1201,
+	/**
+	 * Perform the save procedure for the D0i3 entry
+	 */
+	VPU_JSM_MSG_PWR_D0I3_ENTER = 0x1202,
+
 	/* IPC Device -> Host, Job completion */
 	VPU_JSM_MSG_JOB_DONE = 0x2100,
+	/* IPC Device -> Host, Fence signalled */
+	VPU_JSM_MSG_NATIVE_FENCE_SIGNALLED = 0x2101,
+
 	/* IPC Device -> Host, Async command completion */
 	VPU_JSM_MSG_ASYNC_CMD_DONE = 0x2200,
 	VPU_JSM_MSG_ENGINE_RESET_DONE = VPU_JSM_MSG_ASYNC_CMD_DONE,
@@ -304,11 +616,36 @@ enum vpu_ipc_msg_type {
 	VPU_JSM_MSG_DESTROY_CMD_QUEUE_RSP = 0x2216,
 	/** Response to control command: Set context scheduling properties */
 	VPU_JSM_MSG_SET_CONTEXT_SCHED_PROPERTIES_RSP = 0x2217,
+	/** Response to control command: Log buffer setting */
+	VPU_JSM_MSG_HWS_SET_SCHEDULING_LOG_RSP = 0x2218,
+	/* IPC Device -> Host, HWS notify index entry of log buffer written */
+	VPU_JSM_MSG_HWS_SCHEDULING_LOG_NOTIFICATION = 0x2219,
+	/* IPC Device -> Host, HWS completion of a context suspend request */
+	VPU_JSM_MSG_HWS_SUSPEND_CMDQ_DONE = 0x221a,
+	/* Response to control command: Resume command queue */
+	VPU_JSM_MSG_HWS_RESUME_CMDQ_RSP = 0x221b,
+	/* Response to control command: Resume engine command response */
+	VPU_JSM_MSG_HWS_RESUME_ENGINE_DONE = 0x221c,
+	/* Response to control command: Enable survivability/DCT mode */
+	VPU_JSM_MSG_DCT_ENABLE_DONE = 0x221d,
+	/* Response to control command: Disable survivability/DCT mode */
+	VPU_JSM_MSG_DCT_DISABLE_DONE = 0x221e,
+	/**
+	 * Response to state dump control command.
+	 * NOTE: Please introduce new ASYNC responses before this one. *
+	 */
+	VPU_JSM_MSG_STATE_DUMP_RSP = 0x22FF,
+
 	/* IPC Device -> Host, General command completion */
 	VPU_JSM_MSG_GENERAL_CMD_DONE = 0x2300,
 	VPU_JSM_MSG_BLOB_DEINIT_DONE = VPU_JSM_MSG_GENERAL_CMD_DONE,
 	/** Response to VPU_JSM_MSG_DYNDBG_CONTROL. */
 	VPU_JSM_MSG_DYNDBG_CONTROL_RSP = 0x2301,
+	/**
+	 * Acknowledgment of completion of the save procedure initiated by
+	 * VPU_JSM_MSG_PWR_D0I3_ENTER
+	 */
+	VPU_JSM_MSG_PWR_D0I3_ENTER_DONE = 0x2302,
 };
 
 enum vpu_ipc_msg_status { VPU_JSM_MSG_FREE, VPU_JSM_MSG_ALLOCATED };
@@ -477,11 +814,6 @@ struct vpu_jsm_metric_streamer_update {
 	u64 next_buffer_size;
 };
 
-struct vpu_ipc_msg_payload_blob_deinit {
-	/* 64-bit unique ID for the blob to be de-initialized. */
-	u64 blob_id;
-};
-
 struct vpu_ipc_msg_payload_job_done {
 	/* Engine to which the job was submitted. */
 	u32 engine_idx;
@@ -499,6 +831,21 @@ struct vpu_ipc_msg_payload_job_done {
 	u64 cmdq_id;
 };
 
+/*
+ * Notification message upon native fence signalling.
+ * @see VPU_JSM_MSG_NATIVE_FENCE_SIGNALLED
+ */
+struct vpu_ipc_msg_payload_native_fence_signalled {
+	/* Engine ID. */
+	u32 engine_idx;
+	/* Host SSID. */
+	u32 host_ssid;
+	/* CMDQ ID */
+	u64 cmdq_id;
+	/* Fence object handle. */
+	u64 fence_handle;
+};
+
 struct vpu_jsm_engine_reset_context {
 	/* Host SSID */
 	u32 host_ssid;
@@ -506,7 +853,7 @@ struct vpu_jsm_engine_reset_context {
 	u32 reserved_0;
 	/* Command queue id */
 	u64 cmdq_id;
-	/* Flags: 0: cause of hang; 1: collateral damage of reset */
+	/* See VPU_ENGINE_RESET_CONTEXT_* defines */
 	u64 flags;
 };
 
@@ -577,11 +924,6 @@ struct vpu_ipc_msg_payload_get_power_level_count_done {
 	u8 power_limit[16];
 };
 
-struct vpu_ipc_msg_payload_blob_deinit_done {
-	/* 64-bit unique ID for the blob de-initialized. */
-	u64 blob_id;
-};
-
 /* HWS priority band setup request / response */
 struct vpu_ipc_msg_payload_hws_priority_band_setup {
 	/*
@@ -593,12 +935,12 @@ struct vpu_ipc_msg_payload_hws_priority_band_setup {
 	 * Default quantum in 100ns units for scheduling across processes
 	 * within a priority band
 	 */
-	u64 process_quantum[VPU_HWS_NUM_PRIORITY_BANDS];
+	u32 process_quantum[VPU_HWS_NUM_PRIORITY_BANDS];
 	/*
 	 * Default grace period in 100ns units for processes that preempt each
 	 * other within a priority band
 	 */
-	u64 process_grace_period[VPU_HWS_NUM_PRIORITY_BANDS];
+	u32 process_grace_period[VPU_HWS_NUM_PRIORITY_BANDS];
 	/*
 	 * For normal priority band, specifies the target VPU percentage
 	 * in situations when it's starved by the focus band.
@@ -608,32 +950,47 @@ struct vpu_ipc_msg_payload_hws_priority_band_setup {
 	u32 reserved_0;
 };
 
-/* HWS create command queue request */
+/*
+ * @brief HWS create command queue request.
+ * Host will create a command queue via this command.
+ * Note: Cmdq group is a handle of an object which
+ * may contain one or more command queues.
+ * @see VPU_JSM_MSG_CREATE_CMD_QUEUE
+ * @see VPU_JSM_MSG_CREATE_CMD_QUEUE_RSP
+ */
 struct vpu_ipc_msg_payload_hws_create_cmdq {
 	/* Process id */
 	u64 process_id;
 	/* Host SSID */
 	u32 host_ssid;
-	/* Zero Padding */
-	u32 reserved;
+	/* Engine for which queue is being created */
+	u32 engine_idx;
+	/* Cmdq group: only used for HWS logging of state changes */
+	u64 cmdq_group;
 	/* Command queue id */
 	u64 cmdq_id;
 	/* Command queue base */
 	u64 cmdq_base;
 	/* Command queue size */
 	u32 cmdq_size;
-	/* Reserved */
+	/* Zero padding */
 	u32 reserved_0;
 };
 
-/* HWS create command queue response */
+/*
+ * @brief HWS create command queue response.
+ * @see VPU_JSM_MSG_CREATE_CMD_QUEUE
+ * @see VPU_JSM_MSG_CREATE_CMD_QUEUE_RSP
+ */
 struct vpu_ipc_msg_payload_hws_create_cmdq_rsp {
 	/* Process id */
 	u64 process_id;
 	/* Host SSID */
 	u32 host_ssid;
-	/* Zero Padding */
-	u32 reserved;
+	/* Engine for which queue is being created */
+	u32 engine_idx;
+	/* Command queue group */
+	u64 cmdq_group;
 	/* Command queue id */
 	u64 cmdq_id;
 };
@@ -656,12 +1013,15 @@ struct vpu_ipc_msg_payload_hws_set_context_sched_properties {
 	u32 reserved_0;
 	/* Command queue id */
 	u64 cmdq_id;
-	/* Priority band to assign to work of this context */
+	/*
+	 * Priority band to assign to work of this context.
+	 * Available priority bands: @see enum vpu_job_scheduling_priority_band
+	 */
 	u32 priority_band;
 	/* Inside realtime band assigns a further priority */
 	u32 realtime_priority_level;
 	/* Priority relative to other contexts in the same process */
-	u32 in_process_priority;
+	s32 in_process_priority;
 	/* Zero padding / Reserved */
 	u32 reserved_1;
 	/* Context quantum relative to other contexts of same priority in the same process */
@@ -692,6 +1052,129 @@ struct vpu_jsm_hws_register_db {
 	u64 cmdq_base;
 	/* Size of the command queue in bytes. */
 	u64 cmdq_size;
+};
+
+/*
+ * @brief Structure to set another buffer to be used for scheduling-related logging.
+ * The size of the logging buffer and the number of entries is defined as part of the
+ * buffer itself as described next.
+ * The log buffer received from the host is made up of;
+ *   - header:     32 bytes in size, as shown in 'struct vpu_hws_log_buffer_header'.
+ *                 The header contains the number of log entries in the buffer.
+ *   - log entry:  0 to n-1, each log entry is 32 bytes in size, as shown in
+ *                 'struct vpu_hws_log_buffer_entry'.
+ *                 The entry contains the VPU timestamp, operation type and data.
+ * The host should provide the notify index value of log buffer to VPU. This is a
+ * value defined within the log buffer and when written to will generate the
+ * scheduling log notification.
+ * The host should set engine_idx and vpu_log_buffer_va to 0 to disable logging
+ * for a particular engine.
+ * VPU will handle one log buffer for each of supported engines.
+ * VPU should allow the logging to consume one host_ssid.
+ * @see VPU_JSM_MSG_HWS_SET_SCHEDULING_LOG
+ * @see VPU_JSM_MSG_HWS_SET_SCHEDULING_LOG_RSP
+ * @see VPU_JSM_MSG_HWS_SCHEDULING_LOG_NOTIFICATION
+ */
+struct vpu_ipc_msg_payload_hws_set_scheduling_log {
+	/* Engine ordinal */
+	u32 engine_idx;
+	/* Host SSID */
+	u32 host_ssid;
+	/*
+	 * VPU log buffer virtual address.
+	 * Set to 0 to disable logging for this engine.
+	 */
+	u64 vpu_log_buffer_va;
+	/*
+	 * Notify index of log buffer. VPU_JSM_MSG_HWS_SCHEDULING_LOG_NOTIFICATION
+	 * is generated when an event log is written to this index.
+	 */
+	u64 notify_index;
+	/*
+	 * Field is now deprecated, will be removed when KMD is updated to support removal
+	 */
+	u32 enable_extra_events;
+	/* Zero Padding */
+	u32 reserved_0;
+};
+
+/*
+ * @brief The scheduling log notification is generated by VPU when it writes
+ * an event into the log buffer at the notify_index. VPU notifies host with
+ * VPU_JSM_MSG_HWS_SCHEDULING_LOG_NOTIFICATION. This is an asynchronous
+ * message from VPU to host.
+ * @see VPU_JSM_MSG_HWS_SCHEDULING_LOG_NOTIFICATION
+ * @see VPU_JSM_MSG_HWS_SET_SCHEDULING_LOG
+ */
+struct vpu_ipc_msg_payload_hws_scheduling_log_notification {
+	/* Engine ordinal */
+	u32 engine_idx;
+	/* Zero Padding */
+	u32 reserved_0;
+};
+
+/*
+ * @brief HWS suspend command queue request and done structure.
+ * Host will request the suspend of contexts and VPU will;
+ *   - Suspend all work on this context
+ *   - Preempt any running work
+ *   - Asynchronously perform the above and return success immediately once
+ *     all items above are started successfully
+ *   - Notify the host of completion of these operations via
+ *     VPU_JSM_MSG_HWS_SUSPEND_CMDQ_DONE
+ *   - Reject any other context operations on a context with an in-flight
+ *     suspend request running
+ * Same structure used when VPU notifies host of completion of a context suspend
+ * request. The ids and suspend fence value reported in this command will match
+ * the one in the request from the host to suspend the context. Once suspend is
+ * complete, VPU will not access any data relating to this command queue until
+ * it is resumed.
+ * @see VPU_JSM_MSG_HWS_SUSPEND_CMDQ
+ * @see VPU_JSM_MSG_HWS_SUSPEND_CMDQ_DONE
+ */
+struct vpu_ipc_msg_payload_hws_suspend_cmdq {
+	/* Host SSID */
+	u32 host_ssid;
+	/* Zero Padding */
+	u32 reserved_0;
+	/* Command queue id */
+	u64 cmdq_id;
+	/*
+	 * Suspend fence value - reported by the VPU suspend context
+	 * completed once suspend is complete.
+	 */
+	u64 suspend_fence_value;
+};
+
+/*
+ * @brief HWS Resume command queue request / response structure.
+ * Host will request the resume of a context;
+ *  - VPU will resume all work on this context
+ *  - Scheduler will allow this context to be scheduled
+ * @see VPU_JSM_MSG_HWS_RESUME_CMDQ
+ * @see VPU_JSM_MSG_HWS_RESUME_CMDQ_RSP
+ */
+struct vpu_ipc_msg_payload_hws_resume_cmdq {
+	/* Host SSID */
+	u32 host_ssid;
+	/* Zero Padding */
+	u32 reserved_0;
+	/* Command queue id */
+	u64 cmdq_id;
+};
+
+/*
+ * @brief HWS Resume engine request / response structure.
+ * After a HWS engine reset, all scheduling is stopped on VPU until a engine resume.
+ * Host shall send this command to resume scheduling of any valid queue.
+ * @see VPU_JSM_MSG_HWS_RESUME_ENGINE
+ * @see VPU_JSM_MSG_HWS_RESUME_ENGINE_DONE
+ */
+struct vpu_ipc_msg_payload_hws_resume_engine {
+	/* Engine to be resumed */
+	u32 engine_idx;
+	/* Reserved */
+	u32 reserved_0;
 };
 
 /**
@@ -938,6 +1421,35 @@ struct vpu_ipc_msg_payload_dyndbg_control {
 	char dyndbg_cmd[VPU_DYNDBG_CMD_MAX_LEN];
 };
 
+/**
+ * Payload for VPU_JSM_MSG_PWR_D0I3_ENTER
+ *
+ * This is a bi-directional payload.
+ */
+struct vpu_ipc_msg_payload_pwr_d0i3_enter {
+	/**
+	 * 0: VPU_JSM_MSG_PWR_D0I3_ENTER_DONE is not sent to the host driver
+	 *    The driver will poll for D0i2 Idle state transitions.
+	 * 1: VPU_JSM_MSG_PWR_D0I3_ENTER_DONE is sent after VPU state save is complete
+	 */
+	u32 send_response;
+	u32 reserved_0;
+};
+
+/**
+ * Payload for VPU_JSM_MSG_DCT_ENABLE message.
+ *
+ * Default values for DCT active/inactive times are 5.3ms and 30ms respectively,
+ * corresponding to a 85% duty cycle. This payload allows the host to tune these
+ * values according to application requirements.
+ */
+struct vpu_ipc_msg_payload_pwr_dct_control {
+	/** Duty cycle active time in microseconds */
+	u32 dct_active_us;
+	/** Duty cycle inactive time in microseconds */
+	u32 dct_inactive_us;
+};
+
 /*
  * Payloads union, used to define complete message format.
  */
@@ -951,10 +1463,10 @@ union vpu_ipc_msg_payload {
 	struct vpu_jsm_metric_streamer_start metric_streamer_start;
 	struct vpu_jsm_metric_streamer_stop metric_streamer_stop;
 	struct vpu_jsm_metric_streamer_update metric_streamer_update;
-	struct vpu_ipc_msg_payload_blob_deinit blob_deinit;
 	struct vpu_ipc_msg_payload_ssid_release ssid_release;
 	struct vpu_jsm_hws_register_db hws_register_db;
 	struct vpu_ipc_msg_payload_job_done job_done;
+	struct vpu_ipc_msg_payload_native_fence_signalled native_fence_signalled;
 	struct vpu_ipc_msg_payload_engine_reset_done engine_reset_done;
 	struct vpu_ipc_msg_payload_engine_preempt_done engine_preempt_done;
 	struct vpu_ipc_msg_payload_register_db_done register_db_done;
@@ -962,7 +1474,6 @@ union vpu_ipc_msg_payload {
 	struct vpu_ipc_msg_payload_query_engine_hb_done query_engine_hb_done;
 	struct vpu_ipc_msg_payload_get_power_level_count_done get_power_level_count_done;
 	struct vpu_jsm_metric_streamer_done metric_streamer_done;
-	struct vpu_ipc_msg_payload_blob_deinit_done blob_deinit_done;
 	struct vpu_ipc_msg_payload_trace_config trace_config;
 	struct vpu_ipc_msg_payload_trace_capability_rsp trace_capability;
 	struct vpu_ipc_msg_payload_trace_get_name trace_get_name;
@@ -974,6 +1485,13 @@ union vpu_ipc_msg_payload {
 	struct vpu_ipc_msg_payload_hws_destroy_cmdq hws_destroy_cmdq;
 	struct vpu_ipc_msg_payload_hws_set_context_sched_properties
 		hws_set_context_sched_properties;
+	struct vpu_ipc_msg_payload_hws_set_scheduling_log hws_set_scheduling_log;
+	struct vpu_ipc_msg_payload_hws_scheduling_log_notification hws_scheduling_log_notification;
+	struct vpu_ipc_msg_payload_hws_suspend_cmdq hws_suspend_cmdq;
+	struct vpu_ipc_msg_payload_hws_resume_cmdq hws_resume_cmdq;
+	struct vpu_ipc_msg_payload_hws_resume_engine hws_resume_engine;
+	struct vpu_ipc_msg_payload_pwr_d0i3_enter pwr_d0i3_enter;
+	struct vpu_ipc_msg_payload_pwr_dct_control pwr_dct_control;
 };
 
 /*

@@ -150,7 +150,7 @@ disable_clk:
 	return ret;
 }
 
-static int spear_thermal_exit(struct platform_device *pdev)
+static void spear_thermal_exit(struct platform_device *pdev)
 {
 	unsigned int actual_mask = 0;
 	struct thermal_zone_device *spear_thermal = platform_get_drvdata(pdev);
@@ -163,8 +163,6 @@ static int spear_thermal_exit(struct platform_device *pdev)
 	writel_relaxed(actual_mask & ~stdev->flags, stdev->thermal_base);
 
 	clk_disable(stdev->clk);
-
-	return 0;
 }
 
 static const struct of_device_id spear_thermal_id_table[] = {

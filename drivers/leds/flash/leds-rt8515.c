@@ -367,15 +367,13 @@ static int rt8515_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int rt8515_remove(struct platform_device *pdev)
+static void rt8515_remove(struct platform_device *pdev)
 {
 	struct rt8515 *rt = platform_get_drvdata(pdev);
 
 	rt8515_v4l2_flash_release(rt);
 	del_timer_sync(&rt->powerdown_timer);
 	mutex_destroy(&rt->lock);
-
-	return 0;
 }
 
 static const struct of_device_id rt8515_match[] = {

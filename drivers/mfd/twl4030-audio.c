@@ -258,12 +258,10 @@ static int twl4030_audio_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static int twl4030_audio_remove(struct platform_device *pdev)
+static void twl4030_audio_remove(struct platform_device *pdev)
 {
 	mfd_remove_devices(&pdev->dev);
 	twl4030_audio_dev = NULL;
-
-	return 0;
 }
 
 static const struct of_device_id twl4030_audio_of_match[] = {

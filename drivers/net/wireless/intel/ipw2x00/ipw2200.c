@@ -6463,6 +6463,14 @@ static int ipw_set_rsn_capa(struct ipw_priv *priv,
  * WE-18 support
  */
 
+static int ipw_wx_get_name(struct net_device *dev,
+			   struct iw_request_info *info,
+			   union iwreq_data *wrqu, char *extra)
+{
+	strcpy(wrqu->name, "IEEE 802.11");
+	return 0;
+}
+
 /* SIOCSIWGENIE */
 static int ipw_wx_set_genie(struct net_device *dev,
 			    struct iw_request_info *info,
@@ -6549,7 +6557,7 @@ static int ipw_wx_set_auth(struct net_device *dev,
 	struct ipw_priv *priv = libipw_priv(dev);
 	struct libipw_device *ieee = priv->ieee;
 	struct iw_param *param = &wrqu->param;
-	struct lib80211_crypt_data *crypt;
+	struct libipw_crypt_data *crypt;
 	unsigned long flags;
 	int ret = 0;
 
@@ -6648,7 +6656,7 @@ static int ipw_wx_get_auth(struct net_device *dev,
 {
 	struct ipw_priv *priv = libipw_priv(dev);
 	struct libipw_device *ieee = priv->ieee;
-	struct lib80211_crypt_data *crypt;
+	struct libipw_crypt_data *crypt;
 	struct iw_param *param = &wrqu->param;
 
 	switch (param->flags & IW_AUTH_INDEX) {
@@ -9656,31 +9664,30 @@ static int ipw_wx_get_wireless_mode(struct net_device *dev,
 	mutex_lock(&priv->mutex);
 	switch (priv->ieee->mode) {
 	case IEEE_A:
-		strncpy(extra, "802.11a (1)", MAX_WX_STRING);
+		strscpy_pad(extra, "802.11a (1)", MAX_WX_STRING);
 		break;
 	case IEEE_B:
-		strncpy(extra, "802.11b (2)", MAX_WX_STRING);
+		strscpy_pad(extra, "802.11b (2)", MAX_WX_STRING);
 		break;
 	case IEEE_A | IEEE_B:
-		strncpy(extra, "802.11ab (3)", MAX_WX_STRING);
+		strscpy_pad(extra, "802.11ab (3)", MAX_WX_STRING);
 		break;
 	case IEEE_G:
-		strncpy(extra, "802.11g (4)", MAX_WX_STRING);
+		strscpy_pad(extra, "802.11g (4)", MAX_WX_STRING);
 		break;
 	case IEEE_A | IEEE_G:
-		strncpy(extra, "802.11ag (5)", MAX_WX_STRING);
+		strscpy_pad(extra, "802.11ag (5)", MAX_WX_STRING);
 		break;
 	case IEEE_B | IEEE_G:
-		strncpy(extra, "802.11bg (6)", MAX_WX_STRING);
+		strscpy_pad(extra, "802.11bg (6)", MAX_WX_STRING);
 		break;
 	case IEEE_A | IEEE_B | IEEE_G:
-		strncpy(extra, "802.11abg (7)", MAX_WX_STRING);
+		strscpy_pad(extra, "802.11abg (7)", MAX_WX_STRING);
 		break;
 	default:
-		strncpy(extra, "unknown", MAX_WX_STRING);
+		strscpy_pad(extra, "unknown", MAX_WX_STRING);
 		break;
 	}
-	extra[MAX_WX_STRING - 1] = '\0';
 
 	IPW_DEBUG_WX("PRIV GET MODE: %s\n", extra);
 
@@ -9827,7 +9834,7 @@ static int ipw_wx_sw_reset(struct net_device *dev,
 
 /* Rebase the WE IOCTLs to zero for the handler array */
 static iw_handler ipw_wx_handlers[] = {
-	IW_HANDLER(SIOCGIWNAME, cfg80211_wext_giwname),
+	IW_HANDLER(SIOCGIWNAME, ipw_wx_get_name),
 	IW_HANDLER(SIOCSIWFREQ, ipw_wx_set_freq),
 	IW_HANDLER(SIOCGIWFREQ, ipw_wx_get_freq),
 	IW_HANDLER(SIOCSIWMODE, ipw_wx_set_mode),
@@ -9857,10 +9864,10 @@ static iw_handler ipw_wx_handlers[] = {
 	IW_HANDLER(SIOCGIWENCODE, ipw_wx_get_encode),
 	IW_HANDLER(SIOCSIWPOWER, ipw_wx_set_power),
 	IW_HANDLER(SIOCGIWPOWER, ipw_wx_get_power),
-	IW_HANDLER(SIOCSIWSPY, iw_handler_set_spy),
-	IW_HANDLER(SIOCGIWSPY, iw_handler_get_spy),
-	IW_HANDLER(SIOCSIWTHRSPY, iw_handler_set_thrspy),
-	IW_HANDLER(SIOCGIWTHRSPY, iw_handler_get_thrspy),
+	IW_HANDLER(SIOCSIWSPY, ipw_wx_set_spy),
+	IW_HANDLER(SIOCGIWSPY, ipw_wx_get_spy),
+	IW_HANDLER(SIOCSIWTHRSPY, ipw_wx_set_thrspy),
+	IW_HANDLER(SIOCGIWTHRSPY, ipw_wx_get_thrspy),
 	IW_HANDLER(SIOCSIWGENIE, ipw_wx_set_genie),
 	IW_HANDLER(SIOCGIWGENIE, ipw_wx_get_genie),
 	IW_HANDLER(SIOCSIWMLME, ipw_wx_set_mlme),
@@ -10378,7 +10385,6 @@ static void ipw_ethtool_get_drvinfo(struct net_device *dev,
 {
 	struct ipw_priv *p = libipw_priv(dev);
 	char vers[64];
-	char date[32];
 	u32 len;
 
 	strscpy(info->driver, DRV_NAME, sizeof(info->driver));
@@ -10386,11 +10392,8 @@ static void ipw_ethtool_get_drvinfo(struct net_device *dev,
 
 	len = sizeof(vers);
 	ipw_get_ordinal(p, IPW_ORD_STAT_FW_VERSION, vers, &len);
-	len = sizeof(date);
-	ipw_get_ordinal(p, IPW_ORD_STAT_FW_DATE, date, &len);
 
-	snprintf(info->fw_version, sizeof(info->fw_version), "%s (%s)",
-		 vers, date);
+	strscpy(info->fw_version, vers, sizeof(info->fw_version));
 	strscpy(info->bus_info, pci_name(p->pci_dev),
 		sizeof(info->bus_info));
 }
@@ -11641,8 +11644,7 @@ static int ipw_pci_probe(struct pci_dev *pdev,
 	priv->ieee->worst_rssi = -85;
 
 	net_dev->netdev_ops = &ipw_netdev_ops;
-	priv->wireless_data.spy_data = &priv->ieee->spy_data;
-	net_dev->wireless_data = &priv->wireless_data;
+	priv->ieee->spy_enabled = true;
 	net_dev->wireless_handlers = &ipw_wx_handler_def;
 	net_dev->ethtool_ops = &ipw_ethtool_ops;
 

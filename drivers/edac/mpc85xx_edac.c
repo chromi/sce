@@ -300,7 +300,7 @@ err:
 	return res;
 }
 
-static int mpc85xx_pci_err_remove(struct platform_device *op)
+static void mpc85xx_pci_err_remove(struct platform_device *op)
 {
 	struct edac_pci_ctl_info *pci = dev_get_drvdata(&op->dev);
 	struct mpc85xx_pci_pdata *pdata = pci->pvt_info;
@@ -312,8 +312,6 @@ static int mpc85xx_pci_err_remove(struct platform_device *op)
 
 	edac_pci_del_device(&op->dev);
 	edac_pci_free_ctl_info(pci);
-
-	return 0;
 }
 
 static const struct platform_device_id mpc85xx_pci_err_match[] = {
@@ -498,7 +496,7 @@ static int mpc85xx_l2_err_probe(struct platform_device *op)
 		return -ENOMEM;
 
 	edac_dev = edac_device_alloc_ctl_info(sizeof(*pdata),
-					      "cpu", 1, "L", 1, 2, NULL, 0,
+					      "cpu", 1, "L", 1, 2,
 					      edac_dev_idx);
 	if (!edac_dev) {
 		devres_release_group(&op->dev, mpc85xx_l2_err_probe);
@@ -591,7 +589,7 @@ err:
 	return res;
 }
 
-static int mpc85xx_l2_err_remove(struct platform_device *op)
+static void mpc85xx_l2_err_remove(struct platform_device *op)
 {
 	struct edac_device_ctl_info *edac_dev = dev_get_drvdata(&op->dev);
 	struct mpc85xx_l2_pdata *pdata = edac_dev->pvt_info;
@@ -606,7 +604,6 @@ static int mpc85xx_l2_err_remove(struct platform_device *op)
 	out_be32(pdata->l2_vbase + MPC85XX_L2_ERRDIS, orig_l2_err_disable);
 	edac_device_del_device(&op->dev);
 	edac_device_free_ctl_info(edac_dev);
-	return 0;
 }
 
 static const struct of_device_id mpc85xx_l2_err_of_match[] = {
@@ -707,6 +704,7 @@ static void __exit mpc85xx_mc_exit(void)
 
 module_exit(mpc85xx_mc_exit);
 
+MODULE_DESCRIPTION("Freescale MPC85xx Memory Controller EDAC driver");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Montavista Software, Inc.");
 module_param(edac_op_state, int, 0444);

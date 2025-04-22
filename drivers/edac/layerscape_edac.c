@@ -21,6 +21,7 @@
 
 static const struct of_device_id fsl_ddr_mc_err_of_match[] = {
 	{ .compatible = "fsl,qoriq-memory-controller", },
+	{ .compatible = "nxp,imx9-memory-controller", .data = (void *)TYPE_IMX9, },
 	{},
 };
 MODULE_DEVICE_TABLE(of, fsl_ddr_mc_err_of_match);
@@ -69,6 +70,7 @@ static void __exit fsl_ddr_mc_exit(void)
 
 module_exit(fsl_ddr_mc_exit);
 
+MODULE_DESCRIPTION("Freescale Layerscape EDAC driver");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("NXP Semiconductor");
 module_param(edac_op_state, int, 0444);

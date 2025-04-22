@@ -2,6 +2,7 @@
 /*
  * n_gsm.c GSM 0710 tty multiplexor
  * Copyright (c) 2009/10 Intel Corporation
+ * Copyright (c) 2022/23 Siemens Mobility GmbH
  *
  *	* THIS IS A DEVELOPMENT SNAPSHOT IT IS NOT A FINAL RELEASE *
  *
@@ -123,8 +124,8 @@ struct gsm_msg {
 	u8 addr;		/* DLCI address + flags */
 	u8 ctrl;		/* Control byte + flags */
 	unsigned int len;	/* Length of data block (can be zero) */
-	unsigned char *data;	/* Points into buffer but not at the start */
-	unsigned char buffer[];
+	u8 *data;	/* Points into buffer but not at the start */
+	u8 buffer[];
 };
 
 enum gsm_dlci_state {
@@ -244,16 +245,18 @@ enum gsm_encoding {
 
 enum gsm_mux_state {
 	GSM_SEARCH,
-	GSM_START,
-	GSM_ADDRESS,
-	GSM_CONTROL,
-	GSM_LEN,
-	GSM_DATA,
-	GSM_FCS,
-	GSM_OVERRUN,
-	GSM_LEN0,
-	GSM_LEN1,
-	GSM_SSOF,
+	GSM0_ADDRESS,
+	GSM0_CONTROL,
+	GSM0_LEN0,
+	GSM0_LEN1,
+	GSM0_DATA,
+	GSM0_FCS,
+	GSM0_SSOF,
+	GSM1_START,
+	GSM1_ADDRESS,
+	GSM1_CONTROL,
+	GSM1_DATA,
+	GSM1_OVERRUN,
 };
 
 /*
@@ -282,7 +285,7 @@ struct gsm_mux {
 	/* Bits for GSM mode decoding */
 
 	/* Framing Layer */
-	unsigned char *buf;
+	u8 *buf;
 	enum gsm_mux_state state;
 	unsigned int len;
 	unsigned int address;
@@ -2221,7 +2224,7 @@ static int gsm_dlci_negotiate(struct gsm_dlci *dlci)
  *
  *	Some control dlci can stay in ADM mode with other dlci working just
  *	fine. In that case we can just keep the control dlci open after the
- *	DLCI_OPENING retries time out.
+ *	DLCI_OPENING receives DM.
  */
 
 static void gsm_dlci_t1(struct timer_list *t)
@@ -2240,16 +2243,19 @@ static void gsm_dlci_t1(struct timer_list *t)
 		}
 		break;
 	case DLCI_OPENING:
-		if (dlci->retries) {
-			dlci->retries--;
-			gsm_command(dlci->gsm, dlci->addr, SABM|PF);
-			mod_timer(&dlci->t1, jiffies + gsm->t1 * HZ / 100);
-		} else if (!dlci->addr && gsm->control == (DM | PF)) {
+		if (!dlci->addr && gsm->control == (DM | PF)) {
 			if (debug & DBG_ERRORS)
-				pr_info("DLCI %d opening in ADM mode.\n",
-					dlci->addr);
+				pr_info("DLCI 0 opening in ADM mode.\n");
 			dlci->mode = DLCI_MODE_ADM;
 			gsm_dlci_open(dlci);
+		} else if (dlci->retries) {
+			if (!dlci->addr || !gsm->dlci[0] ||
+			    gsm->dlci[0]->state != DLCI_OPENING) {
+				dlci->retries--;
+				gsm_command(dlci->gsm, dlci->addr, SABM|PF);
+			}
+
+			mod_timer(&dlci->t1, jiffies + gsm->t1 * HZ / 100);
 		} else {
 			gsm->open_error++;
 			gsm_dlci_begin_close(dlci); /* prevent half open link */
@@ -2305,7 +2311,9 @@ static void gsm_dlci_begin_open(struct gsm_dlci *dlci)
 		dlci->retries = gsm->n2;
 		if (!need_pn) {
 			dlci->state = DLCI_OPENING;
-			gsm_command(gsm, dlci->addr, SABM|PF);
+			if (!dlci->addr || !gsm->dlci[0] ||
+			    gsm->dlci[0]->state != DLCI_OPENING)
+				gsm_command(gsm, dlci->addr, SABM|PF);
 		} else {
 			/* Configure DLCI before setup */
 			dlci->state = DLCI_CONFIGURE;
@@ -2846,6 +2854,30 @@ invalid:
 	return;
 }
 
+/**
+ * gsm0_receive_state_check_and_fix	-	check and correct receive state
+ * @gsm: gsm data for this ldisc instance
+ *
+ * Ensures that the current receive state is valid for basic option mode.
+ */
+
+static void gsm0_receive_state_check_and_fix(struct gsm_mux *gsm)
+{
+	switch (gsm->state) {
+	case GSM_SEARCH:
+	case GSM0_ADDRESS:
+	case GSM0_CONTROL:
+	case GSM0_LEN0:
+	case GSM0_LEN1:
+	case GSM0_DATA:
+	case GSM0_FCS:
+	case GSM0_SSOF:
+		break;
+	default:
+		gsm->state = GSM_SEARCH;
+		break;
+	}
+}
 
 /**
  *	gsm0_receive	-	perform processing for non-transparency
@@ -2855,30 +2887,31 @@ invalid:
  *	Receive bytes in gsm mode 0
  */
 
-static void gsm0_receive(struct gsm_mux *gsm, unsigned char c)
+static void gsm0_receive(struct gsm_mux *gsm, u8 c)
 {
 	unsigned int len;
 
+	gsm0_receive_state_check_and_fix(gsm);
 	switch (gsm->state) {
 	case GSM_SEARCH:	/* SOF marker */
 		if (c == GSM0_SOF) {
-			gsm->state = GSM_ADDRESS;
+			gsm->state = GSM0_ADDRESS;
 			gsm->address = 0;
 			gsm->len = 0;
 			gsm->fcs = INIT_FCS;
 		}
 		break;
-	case GSM_ADDRESS:	/* Address EA */
+	case GSM0_ADDRESS:	/* Address EA */
 		gsm->fcs = gsm_fcs_add(gsm->fcs, c);
 		if (gsm_read_ea(&gsm->address, c))
-			gsm->state = GSM_CONTROL;
+			gsm->state = GSM0_CONTROL;
 		break;
-	case GSM_CONTROL:	/* Control Byte */
+	case GSM0_CONTROL:	/* Control Byte */
 		gsm->fcs = gsm_fcs_add(gsm->fcs, c);
 		gsm->control = c;
-		gsm->state = GSM_LEN0;
+		gsm->state = GSM0_LEN0;
 		break;
-	case GSM_LEN0:		/* Length EA */
+	case GSM0_LEN0:		/* Length EA */
 		gsm->fcs = gsm_fcs_add(gsm->fcs, c);
 		if (gsm_read_ea(&gsm->len, c)) {
 			if (gsm->len > gsm->mru) {
@@ -2888,14 +2921,14 @@ static void gsm0_receive(struct gsm_mux *gsm, unsigned char c)
 			}
 			gsm->count = 0;
 			if (!gsm->len)
-				gsm->state = GSM_FCS;
+				gsm->state = GSM0_FCS;
 			else
-				gsm->state = GSM_DATA;
+				gsm->state = GSM0_DATA;
 			break;
 		}
-		gsm->state = GSM_LEN1;
+		gsm->state = GSM0_LEN1;
 		break;
-	case GSM_LEN1:
+	case GSM0_LEN1:
 		gsm->fcs = gsm_fcs_add(gsm->fcs, c);
 		len = c;
 		gsm->len |= len << 7;
@@ -2906,26 +2939,29 @@ static void gsm0_receive(struct gsm_mux *gsm, unsigned char c)
 		}
 		gsm->count = 0;
 		if (!gsm->len)
-			gsm->state = GSM_FCS;
+			gsm->state = GSM0_FCS;
 		else
-			gsm->state = GSM_DATA;
+			gsm->state = GSM0_DATA;
 		break;
-	case GSM_DATA:		/* Data */
+	case GSM0_DATA:		/* Data */
 		gsm->buf[gsm->count++] = c;
-		if (gsm->count == gsm->len) {
+		if (gsm->count >= MAX_MRU) {
+			gsm->bad_size++;
+			gsm->state = GSM_SEARCH;
+		} else if (gsm->count >= gsm->len) {
 			/* Calculate final FCS for UI frames over all data */
 			if ((gsm->control & ~PF) != UIH) {
 				gsm->fcs = gsm_fcs_add_block(gsm->fcs, gsm->buf,
 							     gsm->count);
 			}
-			gsm->state = GSM_FCS;
+			gsm->state = GSM0_FCS;
 		}
 		break;
-	case GSM_FCS:		/* FCS follows the packet */
+	case GSM0_FCS:		/* FCS follows the packet */
 		gsm->fcs = gsm_fcs_add(gsm->fcs, c);
-		gsm->state = GSM_SSOF;
+		gsm->state = GSM0_SSOF;
 		break;
-	case GSM_SSOF:
+	case GSM0_SSOF:
 		gsm->state = GSM_SEARCH;
 		if (c == GSM0_SOF)
 			gsm_queue(gsm);
@@ -2939,6 +2975,29 @@ static void gsm0_receive(struct gsm_mux *gsm, unsigned char c)
 }
 
 /**
+ * gsm1_receive_state_check_and_fix	-	check and correct receive state
+ * @gsm: gsm data for this ldisc instance
+ *
+ * Ensures that the current receive state is valid for advanced option mode.
+ */
+
+static void gsm1_receive_state_check_and_fix(struct gsm_mux *gsm)
+{
+	switch (gsm->state) {
+	case GSM_SEARCH:
+	case GSM1_START:
+	case GSM1_ADDRESS:
+	case GSM1_CONTROL:
+	case GSM1_DATA:
+	case GSM1_OVERRUN:
+		break;
+	default:
+		gsm->state = GSM_SEARCH;
+		break;
+	}
+}
+
+/**
  *	gsm1_receive	-	perform processing for non-transparency
  *	@gsm: gsm data for this ldisc instance
  *	@c: character
@@ -2946,8 +3005,9 @@ static void gsm0_receive(struct gsm_mux *gsm, unsigned char c)
  *	Receive bytes in mode 1 (Advanced option)
  */
 
-static void gsm1_receive(struct gsm_mux *gsm, unsigned char c)
+static void gsm1_receive(struct gsm_mux *gsm, u8 c)
 {
+	gsm1_receive_state_check_and_fix(gsm);
 	/* handle XON/XOFF */
 	if ((c & ISO_IEC_646_MASK) == XON) {
 		gsm->constipated = true;
@@ -2960,11 +3020,11 @@ static void gsm1_receive(struct gsm_mux *gsm, unsigned char c)
 	}
 	if (c == GSM1_SOF) {
 		/* EOF is only valid in frame if we have got to the data state */
-		if (gsm->state == GSM_DATA) {
+		if (gsm->state == GSM1_DATA) {
 			if (gsm->count < 1) {
 				/* Missing FSC */
 				gsm->malformed++;
-				gsm->state = GSM_START;
+				gsm->state = GSM1_START;
 				return;
 			}
 			/* Remove the FCS from data */
@@ -2980,14 +3040,14 @@ static void gsm1_receive(struct gsm_mux *gsm, unsigned char c)
 			gsm->fcs = gsm_fcs_add(gsm->fcs, gsm->buf[gsm->count]);
 			gsm->len = gsm->count;
 			gsm_queue(gsm);
-			gsm->state  = GSM_START;
+			gsm->state  = GSM1_START;
 			return;
 		}
 		/* Any partial frame was a runt so go back to start */
-		if (gsm->state != GSM_START) {
+		if (gsm->state != GSM1_START) {
 			if (gsm->state != GSM_SEARCH)
 				gsm->malformed++;
-			gsm->state = GSM_START;
+			gsm->state = GSM1_START;
 		}
 		/* A SOF in GSM_START means we are still reading idling or
 		   framing bytes */
@@ -3008,30 +3068,30 @@ static void gsm1_receive(struct gsm_mux *gsm, unsigned char c)
 		gsm->escape = false;
 	}
 	switch (gsm->state) {
-	case GSM_START:		/* First byte after SOF */
+	case GSM1_START:		/* First byte after SOF */
 		gsm->address = 0;
-		gsm->state = GSM_ADDRESS;
+		gsm->state = GSM1_ADDRESS;
 		gsm->fcs = INIT_FCS;
 		fallthrough;
-	case GSM_ADDRESS:	/* Address continuation */
+	case GSM1_ADDRESS:	/* Address continuation */
 		gsm->fcs = gsm_fcs_add(gsm->fcs, c);
 		if (gsm_read_ea(&gsm->address, c))
-			gsm->state = GSM_CONTROL;
+			gsm->state = GSM1_CONTROL;
 		break;
-	case GSM_CONTROL:	/* Control Byte */
+	case GSM1_CONTROL:	/* Control Byte */
 		gsm->fcs = gsm_fcs_add(gsm->fcs, c);
 		gsm->control = c;
 		gsm->count = 0;
-		gsm->state = GSM_DATA;
+		gsm->state = GSM1_DATA;
 		break;
-	case GSM_DATA:		/* Data */
-		if (gsm->count > gsm->mru) {	/* Allow one for the FCS */
-			gsm->state = GSM_OVERRUN;
+	case GSM1_DATA:		/* Data */
+		if (gsm->count > gsm->mru || gsm->count > MAX_MRU) {	/* Allow one for the FCS */
+			gsm->state = GSM1_OVERRUN;
 			gsm->bad_size++;
 		} else
 			gsm->buf[gsm->count++] = c;
 		break;
-	case GSM_OVERRUN:	/* Over-long - eg a dropped SOF */
+	case GSM1_OVERRUN:	/* Over-long - eg a dropped SOF */
 		break;
 	default:
 		pr_debug("%s: unhandled state: %d\n", __func__, gsm->state);
@@ -3102,6 +3162,8 @@ static void gsm_cleanup_mux(struct gsm_mux *gsm, bool disc)
 	mutex_unlock(&gsm->mutex);
 	/* Now wipe the queues */
 	tty_ldisc_flush(gsm->tty);
+
+	guard(spinlock_irqsave)(&gsm->tx_lock);
 	list_for_each_entry_safe(txq, ntxq, &gsm->tx_ctrl_list, list)
 		kfree(txq);
 	INIT_LIST_HEAD(&gsm->tx_ctrl_list);
@@ -3540,7 +3602,7 @@ static void gsmld_receive_buf(struct tty_struct *tty, const u8 *cp,
 			      const u8 *fp, size_t count)
 {
 	struct gsm_mux *gsm = tty->disc_data;
-	char flags = TTY_NORMAL;
+	u8 flags = TTY_NORMAL;
 
 	if (debug & DBG_DATA)
 		gsm_hex_dump_bytes(__func__, cp, count);
@@ -3710,7 +3772,7 @@ static ssize_t gsmld_write(struct tty_struct *tty, struct file *file,
 {
 	struct gsm_mux *gsm = tty->disc_data;
 	unsigned long flags;
-	int space;
+	size_t space;
 	int ret;
 
 	if (!gsm)
@@ -3908,8 +3970,7 @@ static void gsm_mux_net_tx_timeout(struct net_device *net, unsigned int txqueue)
 	net->stats.tx_errors++;
 }
 
-static void gsm_mux_rx_netchar(struct gsm_dlci *dlci,
-				const unsigned char *in_buf, int size)
+static void gsm_mux_rx_netchar(struct gsm_dlci *dlci, const u8 *in_buf, int size)
 {
 	struct net_device *net = dlci->net;
 	struct sk_buff *skb;
@@ -4010,7 +4071,7 @@ static int gsm_create_network(struct gsm_dlci *dlci, struct gsm_netconfig *nc)
 	mux_net = netdev_priv(net);
 	mux_net->dlci = dlci;
 	kref_init(&mux_net->ref);
-	strncpy(nc->if_name, net->name, IFNAMSIZ); /* return net name */
+	strscpy(nc->if_name, net->name); /* return net name */
 
 	/* reconfigure dlci for network */
 	dlci->prev_adaption = dlci->adaption;
@@ -4108,6 +4169,8 @@ static int gsm_modem_upd_via_msc(struct gsm_dlci *dlci, u8 brk)
 
 static int gsm_modem_update(struct gsm_dlci *dlci, u8 brk)
 {
+	if (dlci->gsm->dead)
+		return -EL2HLT;
 	if (dlci->adaption == 2) {
 		/* Send convergence layer type 2 empty data frame. */
 		gsm_modem_upd_via_data(dlci, brk);
@@ -4193,7 +4256,7 @@ static const struct tty_port_operations gsm_port_ops = {
 static int gsmtty_install(struct tty_driver *driver, struct tty_struct *tty)
 {
 	struct gsm_mux *gsm;
-	struct gsm_dlci *dlci;
+	struct gsm_dlci *dlci, *dlci0;
 	unsigned int line = tty->index;
 	unsigned int mux = mux_line_to_num(line);
 	bool alloc = false;
@@ -4216,10 +4279,20 @@ static int gsmtty_install(struct tty_driver *driver, struct tty_struct *tty)
 	perspective as we don't have to worry about this
 	if DLCI0 is lost */
 	mutex_lock(&gsm->mutex);
-	if (gsm->dlci[0] && gsm->dlci[0]->state != DLCI_OPEN) {
+
+	dlci0 = gsm->dlci[0];
+	if (dlci0 && dlci0->state != DLCI_OPEN) {
 		mutex_unlock(&gsm->mutex);
-		return -EL2NSYNC;
+
+		if (dlci0->state == DLCI_OPENING)
+			wait_event(gsm->event, dlci0->state != DLCI_OPENING);
+
+		if (dlci0->state != DLCI_OPEN)
+			return -EL2NSYNC;
+
+		mutex_lock(&gsm->mutex);
 	}
+
 	dlci = gsm->dlci[line];
 	if (dlci == NULL) {
 		alloc = true;
@@ -4578,5 +4651,6 @@ module_init(gsm_init);
 module_exit(gsm_exit);
 
 
+MODULE_DESCRIPTION("GSM 0710 tty multiplexor");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS_LDISC(N_GSM0710);

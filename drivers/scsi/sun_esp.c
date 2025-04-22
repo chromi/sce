@@ -550,7 +550,7 @@ static int esp_sbus_probe(struct platform_device *op)
 	return ret;
 }
 
-static int esp_sbus_remove(struct platform_device *op)
+static void esp_sbus_remove(struct platform_device *op)
 {
 	struct esp *esp = dev_get_drvdata(&op->dev);
 	struct platform_device *dma_of = esp->dma;
@@ -581,8 +581,6 @@ static int esp_sbus_remove(struct platform_device *op)
 	dev_set_drvdata(&op->dev, NULL);
 
 	put_device(&dma_of->dev);
-
-	return 0;
 }
 
 static const struct of_device_id esp_match[] = {
@@ -610,6 +608,6 @@ static struct platform_driver esp_sbus_driver = {
 module_platform_driver(esp_sbus_driver);
 
 MODULE_DESCRIPTION("Sun ESP SCSI driver");
-MODULE_AUTHOR("David S. Miller (davem@davemloft.net)");
+MODULE_AUTHOR("David S. Miller <davem@davemloft.net>");
 MODULE_LICENSE("GPL");
 MODULE_VERSION(DRV_VERSION);

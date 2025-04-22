@@ -15,7 +15,7 @@ static void mlx5_mpesw_metadata_cleanup(struct mlx5_lag *ldev)
 	u32 pf_metadata;
 	int i;
 
-	for (i = 0; i < ldev->ports; i++) {
+	mlx5_ldev_for_each(i, 0, ldev) {
 		dev = ldev->pf[i].dev;
 		esw = dev->priv.eswitch;
 		pf_metadata = ldev->lag_mpesw.pf_metadata[i];
@@ -36,7 +36,7 @@ static int mlx5_mpesw_metadata_set(struct mlx5_lag *ldev)
 	u32 pf_metadata;
 	int i, err;
 
-	for (i = 0; i < ldev->ports; i++) {
+	mlx5_ldev_for_each(i, 0, ldev) {
 		dev = ldev->pf[i].dev;
 		esw = dev->priv.eswitch;
 		pf_metadata = mlx5_esw_match_metadata_alloc(esw);
@@ -52,7 +52,7 @@ static int mlx5_mpesw_metadata_set(struct mlx5_lag *ldev)
 			goto err_metadata;
 	}
 
-	for (i = 0; i < ldev->ports; i++) {
+	mlx5_ldev_for_each(i, 0, ldev) {
 		dev = ldev->pf[i].dev;
 		mlx5_notifier_call_chain(dev->priv.events, MLX5_DEV_EVENT_MULTIPORT_ESW,
 					 (void *)0);
@@ -65,23 +65,26 @@ err_metadata:
 	return err;
 }
 
-#define MLX5_LAG_MPESW_OFFLOADS_SUPPORTED_PORTS 2
+#define MLX5_LAG_MPESW_OFFLOADS_SUPPORTED_PORTS 4
 static int enable_mpesw(struct mlx5_lag *ldev)
 {
-	struct mlx5_core_dev *dev0 = ldev->pf[MLX5_LAG_P1].dev;
-	struct mlx5_core_dev *dev1 = ldev->pf[MLX5_LAG_P2].dev;
+	int idx = mlx5_lag_get_dev_index_by_seq(ldev, MLX5_LAG_P1);
+	struct mlx5_core_dev *dev0;
 	int err;
+	int i;
 
-	if (ldev->mode != MLX5_LAG_MODE_NONE)
+	if (idx < 0 || ldev->mode != MLX5_LAG_MODE_NONE)
 		return -EINVAL;
 
+	dev0 = ldev->pf[idx].dev;
 	if (ldev->ports > MLX5_LAG_MPESW_OFFLOADS_SUPPORTED_PORTS)
 		return -EOPNOTSUPP;
 
 	if (mlx5_eswitch_mode(dev0) != MLX5_ESWITCH_OFFLOADS ||
 	    !MLX5_CAP_PORT_SELECTION(dev0, port_select_flow_table) ||
 	    !MLX5_CAP_GEN(dev0, create_lag_when_not_master_up) ||
-	    !mlx5_lag_check_prereq(ldev))
+	    !mlx5_lag_check_prereq(ldev) ||
+	    !mlx5_lag_shared_fdb_supported(ldev))
 		return -EOPNOTSUPP;
 
 	err = mlx5_mpesw_metadata_set(ldev);
@@ -98,11 +101,11 @@ static int enable_mpesw(struct mlx5_lag *ldev)
 
 	dev0->priv.flags &= ~MLX5_PRIV_FLAGS_DISABLE_IB_ADEV;
 	mlx5_rescan_drivers_locked(dev0);
-	err = mlx5_eswitch_reload_reps(dev0->priv.eswitch);
-	if (!err)
-		err = mlx5_eswitch_reload_reps(dev1->priv.eswitch);
-	if (err)
-		goto err_rescan_drivers;
+	mlx5_ldev_for_each(i, 0, ldev) {
+		err = mlx5_eswitch_reload_ib_reps(ldev->pf[i].dev->priv.eswitch);
+		if (err)
+			goto err_rescan_drivers;
+	}
 
 	return 0;
 
@@ -112,8 +115,8 @@ err_rescan_drivers:
 	mlx5_deactivate_lag(ldev);
 err_add_devices:
 	mlx5_lag_add_devices(ldev);
-	mlx5_eswitch_reload_reps(dev0->priv.eswitch);
-	mlx5_eswitch_reload_reps(dev1->priv.eswitch);
+	mlx5_ldev_for_each(i, 0, ldev)
+		mlx5_eswitch_reload_ib_reps(ldev->pf[i].dev->priv.eswitch);
 	mlx5_mpesw_metadata_cleanup(ldev);
 	return err;
 }
@@ -129,9 +132,14 @@ static void disable_mpesw(struct mlx5_lag *ldev)
 static void mlx5_mpesw_work(struct work_struct *work)
 {
 	struct mlx5_mpesw_work_st *mpesww = container_of(work, struct mlx5_mpesw_work_st, work);
+	struct mlx5_devcom_comp_dev *devcom;
 	struct mlx5_lag *ldev = mpesww->lag;
 
-	mlx5_dev_list_lock();
+	devcom = mlx5_lag_get_devcom_comp(ldev);
+	if (!devcom)
+		return;
+
+	mlx5_devcom_comp_lock(devcom);
 	mutex_lock(&ldev->lock);
 	if (ldev->mode_changes_in_progress) {
 		mpesww->result = -EAGAIN;
@@ -144,7 +152,7 @@ static void mlx5_mpesw_work(struct work_struct *work)
 		disable_mpesw(ldev);
 unlock:
 	mutex_unlock(&ldev->lock);
-	mlx5_dev_list_unlock();
+	mlx5_devcom_comp_unlock(devcom);
 	complete(&mpesww->comp);
 }
 

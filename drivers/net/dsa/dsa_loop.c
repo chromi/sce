@@ -121,8 +121,7 @@ static void dsa_loop_get_strings(struct dsa_switch *ds, int port,
 		return;
 
 	for (i = 0; i < __DSA_LOOP_CNT_MAX; i++)
-		memcpy(data + i * ETH_GSTRING_LEN,
-		       ps->ports[port].mib[i].name, ETH_GSTRING_LEN);
+		ethtool_puts(&data, ps->ports[port].mib[i].name);
 }
 
 static void dsa_loop_get_ethtool_stats(struct dsa_switch *ds, int port,
@@ -277,6 +276,14 @@ static int dsa_loop_port_max_mtu(struct dsa_switch *ds, int port)
 	return ETH_MAX_MTU;
 }
 
+static void dsa_loop_phylink_get_caps(struct dsa_switch *dsa, int port,
+				      struct phylink_config *config)
+{
+	bitmap_fill(config->supported_interfaces, PHY_INTERFACE_MODE_MAX);
+	__clear_bit(PHY_INTERFACE_MODE_NA, config->supported_interfaces);
+	config->mac_capabilities = ~0;
+}
+
 static const struct dsa_switch_ops dsa_loop_driver = {
 	.get_tag_protocol	= dsa_loop_get_protocol,
 	.setup			= dsa_loop_setup,
@@ -295,6 +302,7 @@ static const struct dsa_switch_ops dsa_loop_driver = {
 	.port_vlan_del		= dsa_loop_port_vlan_del,
 	.port_change_mtu	= dsa_loop_port_change_mtu,
 	.port_max_mtu		= dsa_loop_port_max_mtu,
+	.phylink_get_caps	= dsa_loop_phylink_get_caps,
 };
 
 static int dsa_loop_drv_probe(struct mdio_device *mdiodev)

@@ -715,7 +715,7 @@ static void omap_gpio_irq_print_chip(struct irq_data *d, struct seq_file *p)
 {
 	struct gpio_bank *bank = omap_irq_data_get_bank(d);
 
-	seq_printf(p, dev_name(bank->dev));
+	seq_puts(p, dev_name(bank->dev));
 }
 
 static const struct irq_chip omap_gpio_irq_chip = {
@@ -1048,15 +1048,14 @@ static int omap_gpio_chip_init(struct gpio_bank *bank, struct device *pm_dev)
 		bank->chip.label = "mpuio";
 		if (bank->regs->wkup_en)
 			bank->chip.parent = &omap_mpuio_device.dev;
-		bank->chip.base = OMAP_MPUIO(0);
 	} else {
 		label = devm_kasprintf(bank->chip.parent, GFP_KERNEL, "gpio-%d-%d",
 				       gpio, gpio + bank->width - 1);
 		if (!label)
 			return -ENOMEM;
 		bank->chip.label = label;
-		bank->chip.base = -1;
 	}
+	bank->chip.base = -1;
 	bank->chip.ngpio = bank->width;
 
 	irq = &bank->chip.irq;
@@ -1489,7 +1488,7 @@ static int omap_gpio_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int omap_gpio_remove(struct platform_device *pdev)
+static void omap_gpio_remove(struct platform_device *pdev)
 {
 	struct gpio_bank *bank = platform_get_drvdata(pdev);
 
@@ -1498,8 +1497,6 @@ static int omap_gpio_remove(struct platform_device *pdev)
 	pm_runtime_disable(&pdev->dev);
 	if (bank->dbck_flag)
 		clk_unprepare(bank->dbck);
-
-	return 0;
 }
 
 static int __maybe_unused omap_gpio_runtime_suspend(struct device *dev)

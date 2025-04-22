@@ -60,8 +60,27 @@
 		};
 	};
 
+	firmware {
+		svc {
+			compatible = "intel,agilex-svc";
+			method = "smc";
+			memory-region = <&service_reserved>;
+
+			fpga_mgr: fpga-mgr {
+				compatible = "intel,agilex-soc-fpga-mgr";
+			};
+		};
+	};
+
+	fpga-region {
+		compatible = "fpga-region";
+		#address-cells = <0x2>;
+		#size-cells = <0x2>;
+		fpga-mgr = <&fpga_mgr>;
+	};
+
 	pmu {
-		compatible = "arm,armv8-pmuv3";
+		compatible = "arm,cortex-a53-pmu";
 		interrupts = <GIC_SPI 170 IRQ_TYPE_LEVEL_HIGH>,
 			     <GIC_SPI 171 IRQ_TYPE_LEVEL_HIGH>,
 			     <GIC_SPI 172 IRQ_TYPE_LEVEL_HIGH>,
@@ -82,10 +101,13 @@
 		compatible = "arm,gic-400", "arm,cortex-a15-gic";
 		#interrupt-cells = <3>;
 		interrupt-controller;
+		interrupt-parent = <&intc>;
 		reg = <0x0 0xfffc1000 0x0 0x1000>,
 		      <0x0 0xfffc2000 0x0 0x2000>,
 		      <0x0 0xfffc4000 0x0 0x2000>,
 		      <0x0 0xfffc6000 0x0 0x2000>;
+		/* VGIC maintenance interrupt */
+		interrupts = <GIC_PPI 9 IRQ_TYPE_LEVEL_HIGH>;
 	};
 
 	clocks {
@@ -130,20 +152,13 @@
 		compatible = "usb-nop-xceiv";
 	};
 
-	soc {
+	soc@0 {
 		#address-cells = <1>;
 		#size-cells = <1>;
 		compatible = "simple-bus";
 		device_type = "soc";
 		interrupt-parent = <&intc>;
 		ranges = <0 0 0 0xffffffff>;
-
-		base_fpga_region {
-			#address-cells = <0x2>;
-			#size-cells = <0x2>;
-			compatible = "fpga-region";
-			fpga-mgr = <&fpga_mgr>;
-		};
 
 		clkmgr: clock-controller@ffd10000 {
 			compatible = "intel,agilex-clkmgr";
@@ -368,7 +383,7 @@
 			pinctrl-single,function-mask = <0x0000000f>;
 		};
 
-		pinctrl1: pinconf@ffd13100 {
+		pinctrl1: pinctrl@ffd13100 {
 			compatible = "pinctrl-single";
 			#pinctrl-cells = <1>;
 			reg = <0xffd13100 0x20>;
@@ -658,18 +673,6 @@
 			clocks = <&qspi_clk>;
 
 			status = "disabled";
-		};
-
-		firmware {
-			svc {
-				compatible = "intel,agilex-svc";
-				method = "smc";
-				memory-region = <&service_reserved>;
-
-				fpga_mgr: fpga-mgr {
-					compatible = "intel,agilex-soc-fpga-mgr";
-				};
-			};
 		};
 	};
 };

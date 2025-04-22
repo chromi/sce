@@ -34,6 +34,9 @@
 
 #include <drm/drm_device.h>
 
+struct dmem_cgroup_region;
+struct drm_fb_helper;
+struct drm_fb_helper_surface_size;
 struct drm_file;
 struct drm_gem_object;
 struct drm_master;
@@ -110,6 +113,15 @@ enum drm_driver_feature {
 	 * Driver supports user defined GPU VA bindings for GEM objects.
 	 */
 	DRIVER_GEM_GPUVA		= BIT(8),
+	/**
+	 * @DRIVER_CURSOR_HOTSPOT:
+	 *
+	 * Driver supports and requires cursor hotspot information in the
+	 * cursor plane (e.g. cursor plane has to actually track the mouse
+	 * cursor and the clients are required to set hotspot in order for
+	 * the cursor planes to work correctly).
+	 */
+	DRIVER_CURSOR_HOTSPOT           = BIT(9),
 
 	/* IMPORTANT: Below are all the legacy flags, add new ones above. */
 
@@ -218,34 +230,6 @@ struct drm_driver {
 	 * resources in this callback. Doing so would be a driver design bug.
 	 */
 	void (*postclose) (struct drm_device *, struct drm_file *);
-
-	/**
-	 * @lastclose:
-	 *
-	 * Called when the last &struct drm_file has been closed and there's
-	 * currently no userspace client for the &struct drm_device.
-	 *
-	 * Modern drivers should only use this to force-restore the fbdev
-	 * framebuffer using drm_fb_helper_restore_fbdev_mode_unlocked().
-	 * Anything else would indicate there's something seriously wrong.
-	 * Modern drivers can also use this to execute delayed power switching
-	 * state changes, e.g. in conjunction with the :ref:`vga_switcheroo`
-	 * infrastructure.
-	 *
-	 * This is called after @postclose hook has been called.
-	 *
-	 * NOTE:
-	 *
-	 * All legacy drivers use this callback to de-initialize the hardware.
-	 * This is purely because of the shadow-attach model, where the DRM
-	 * kernel driver does not really own the hardware. Instead ownershipe is
-	 * handled with the help of userspace through an inheritedly racy dance
-	 * to set/unset the VT into raw mode.
-	 *
-	 * Legacy drivers initialize the hardware in the @firstopen callback,
-	 * which isn't even called for modern drivers.
-	 */
-	void (*lastclose) (struct drm_device *);
 
 	/**
 	 * @unload:
@@ -386,6 +370,22 @@ struct drm_driver {
 			       uint64_t *offset);
 
 	/**
+	 * @fbdev_probe:
+	 *
+	 * Allocates and initialize the fb_info structure for fbdev emulation.
+	 * Furthermore it also needs to allocate the DRM framebuffer used to
+	 * back the fbdev.
+	 *
+	 * This callback is mandatory for fbdev support.
+	 *
+	 * Returns:
+	 *
+	 * 0 on success ot a negative error code otherwise.
+	 */
+	int (*fbdev_probe)(struct drm_fb_helper *fbdev_helper,
+			   struct drm_fb_helper_surface_size *sizes);
+
+	/**
 	 * @show_fdinfo:
 	 *
 	 * Print device specific fdinfo.  See Documentation/gpu/drm-usage-stats.rst.
@@ -402,8 +402,6 @@ struct drm_driver {
 	char *name;
 	/** @desc: driver description */
 	char *desc;
-	/** @date: driver date */
-	char *date;
 
 	/**
 	 * @driver_features:
@@ -433,30 +431,15 @@ struct drm_driver {
 	 * some examples.
 	 */
 	const struct file_operations *fops;
-
-#ifdef CONFIG_DRM_LEGACY
-	/* Everything below here is for legacy driver, never use! */
-	/* private: */
-
-	int (*firstopen) (struct drm_device *);
-	void (*preclose) (struct drm_device *, struct drm_file *file_priv);
-	int (*dma_ioctl) (struct drm_device *dev, void *data, struct drm_file *file_priv);
-	int (*dma_quiescent) (struct drm_device *);
-	int (*context_dtor) (struct drm_device *dev, int context);
-	irqreturn_t (*irq_handler)(int irq, void *arg);
-	void (*irq_preinstall)(struct drm_device *dev);
-	int (*irq_postinstall)(struct drm_device *dev);
-	void (*irq_uninstall)(struct drm_device *dev);
-	u32 (*get_vblank_counter)(struct drm_device *dev, unsigned int pipe);
-	int (*enable_vblank)(struct drm_device *dev, unsigned int pipe);
-	void (*disable_vblank)(struct drm_device *dev, unsigned int pipe);
-	int dev_priv_size;
-#endif
 };
 
 void *__devm_drm_dev_alloc(struct device *parent,
 			   const struct drm_driver *driver,
 			   size_t size, size_t offset);
+
+struct dmem_cgroup_region *
+drmm_cgroup_register_region(struct drm_device *dev,
+			    const char *region_name, u64 size);
 
 /**
  * devm_drm_dev_alloc - Resource managed allocation of a &drm_device instance
@@ -580,5 +563,13 @@ static inline bool drm_firmware_drivers_only(void)
 {
 	return video_firmware_drivers_only();
 }
+
+#if defined(CONFIG_DEBUG_FS)
+void drm_debugfs_dev_init(struct drm_device *dev, struct dentry *root);
+#else
+static inline void drm_debugfs_dev_init(struct drm_device *dev, struct dentry *root)
+{
+}
+#endif
 
 #endif

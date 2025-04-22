@@ -147,14 +147,11 @@ ipq8064_mdio_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int
-ipq8064_mdio_remove(struct platform_device *pdev)
+static void ipq8064_mdio_remove(struct platform_device *pdev)
 {
 	struct mii_bus *bus = platform_get_drvdata(pdev);
 
 	mdiobus_unregister(bus);
-
-	return 0;
 }
 
 static const struct of_device_id ipq8064_mdio_dt_ids[] = {

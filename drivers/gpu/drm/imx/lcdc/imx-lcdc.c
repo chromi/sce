@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // SPDX-FileCopyrightText: 2020 Marian Cichy <M.Cichy@pengutronix.de>
 
+#include <drm/clients/drm_client_setup.h>
 #include <drm/drm_bridge.h>
 #include <drm/drm_bridge_connector.h>
 #include <drm/drm_damage_helper.h>
 #include <drm/drm_drv.h>
-#include <drm/drm_fbdev_generic.h>
+#include <drm/drm_fbdev_dma.h>
 #include <drm/drm_fb_dma_helper.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_framebuffer.h>
@@ -342,24 +343,15 @@ static const struct drm_mode_config_helper_funcs imx_lcdc_mode_config_helpers = 
 	.atomic_commit_tail = drm_atomic_helper_commit_tail_rpm,
 };
 
-static void imx_lcdc_release(struct drm_device *drm)
-{
-	struct imx_lcdc *lcdc = imx_lcdc_from_drmdev(drm);
-
-	drm_kms_helper_poll_fini(drm);
-	kfree(lcdc);
-}
-
 DEFINE_DRM_GEM_DMA_FOPS(imx_lcdc_drm_fops);
 
 static struct drm_driver imx_lcdc_drm_driver = {
 	.driver_features = DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC,
 	.fops = &imx_lcdc_drm_fops,
 	DRM_GEM_DMA_DRIVER_OPS_VMAP,
-	.release = imx_lcdc_release,
+	DRM_FBDEV_DMA_DRIVER_OPS,
 	.name = "imx-lcdc",
 	.desc = "i.MX LCDC driver",
-	.date = "20200716",
 };
 
 static const struct of_device_id imx_lcdc_of_dev_id[] = {
@@ -510,19 +502,17 @@ static int imx_lcdc_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(dev, ret, "Cannot register device\n");
 
-	drm_fbdev_generic_setup(drm, 0);
+	drm_client_setup(drm, NULL);
 
 	return 0;
 }
 
-static int imx_lcdc_remove(struct platform_device *pdev)
+static void imx_lcdc_remove(struct platform_device *pdev)
 {
 	struct drm_device *drm = platform_get_drvdata(pdev);
 
 	drm_dev_unregister(drm);
 	drm_atomic_helper_shutdown(drm);
-
-	return 0;
 }
 
 static void imx_lcdc_shutdown(struct platform_device *pdev)

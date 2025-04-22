@@ -27,7 +27,24 @@ enum level_option {
 	TLMI_LEVEL_MASTER,
 };
 
+/*
+ * There are a limit on the number of WMI operations you can do if you use
+ * the default implementation of saving on every set. This is due to a
+ * limitation in EFI variable space used.
+ * Have a 'bulk save' mode where you can manually trigger the save, and can
+ * therefore set unlimited variables - for users that need it.
+ */
+enum save_mode {
+	TLMI_SAVE_SINGLE,
+	TLMI_SAVE_BULK,
+	TLMI_SAVE_SAVE,
+};
+
 /* password configuration details */
+#define TLMI_PWDCFG_MODE_LEGACY    0
+#define TLMI_PWDCFG_MODE_PASSWORD  1
+#define TLMI_PWDCFG_MODE_MULTICERT 3
+
 struct tlmi_pwdcfg_core {
 	uint32_t password_mode;
 	uint32_t password_state;
@@ -52,7 +69,7 @@ struct tlmi_pwdcfg {
 /* password setting details */
 struct tlmi_pwd_setting {
 	struct kobject kobj;
-	bool valid;
+	bool pwd_enabled;
 	char password[TLMI_PWD_BUFSIZE];
 	const char *pwd_type;
 	const char *role;
@@ -86,6 +103,9 @@ struct think_lmi {
 	bool can_debug_cmd;
 	bool opcode_support;
 	bool certificate_support;
+	enum save_mode save_mode;
+	bool save_required;
+	bool reboot_required;
 
 	struct tlmi_attr_setting *setting[TLMI_SETTINGS_COUNT];
 	struct device *class_dev;

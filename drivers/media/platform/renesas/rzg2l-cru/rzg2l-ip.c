@@ -5,24 +5,56 @@
  * Copyright (C) 2022 Renesas Electronics Corp.
  */
 
-#include "rzg2l-cru.h"
+#include <linux/delay.h>
+#include <media/mipi-csi2.h>
 
-struct rzg2l_cru_ip_format {
-	u32 code;
-	unsigned int datatype;
-	unsigned int bpp;
-};
+#include "rzg2l-cru.h"
+#include "rzg2l-cru-regs.h"
 
 static const struct rzg2l_cru_ip_format rzg2l_cru_ip_formats[] = {
-	{ .code = MEDIA_BUS_FMT_UYVY8_1X16,	.datatype = 0x1e, .bpp = 16 },
+	{
+		.code = MEDIA_BUS_FMT_UYVY8_1X16,
+		.datatype = MIPI_CSI2_DT_YUV422_8B,
+		.format = V4L2_PIX_FMT_UYVY,
+		.bpp = 2,
+		.icndmr = ICnDMR_YCMODE_UYVY,
+		.yuv = true,
+	},
+	{
+		.code = MEDIA_BUS_FMT_SBGGR8_1X8,
+		.format = V4L2_PIX_FMT_SBGGR8,
+		.datatype = MIPI_CSI2_DT_RAW8,
+		.bpp = 1,
+		.icndmr = 0,
+		.yuv = false,
+	},
+	{
+		.code = MEDIA_BUS_FMT_SGBRG8_1X8,
+		.format = V4L2_PIX_FMT_SGBRG8,
+		.datatype = MIPI_CSI2_DT_RAW8,
+		.bpp = 1,
+		.icndmr = 0,
+		.yuv = false,
+	},
+	{
+		.code = MEDIA_BUS_FMT_SGRBG8_1X8,
+		.format = V4L2_PIX_FMT_SGRBG8,
+		.datatype = MIPI_CSI2_DT_RAW8,
+		.bpp = 1,
+		.icndmr = 0,
+		.yuv = false,
+	},
+	{
+		.code = MEDIA_BUS_FMT_SRGGB8_1X8,
+		.format = V4L2_PIX_FMT_SRGGB8,
+		.datatype = MIPI_CSI2_DT_RAW8,
+		.bpp = 1,
+		.icndmr = 0,
+		.yuv = false,
+	},
 };
 
-enum rzg2l_csi2_pads {
-	RZG2L_CRU_IP_SINK = 0,
-	RZG2L_CRU_IP_SOURCE,
-};
-
-static const struct rzg2l_cru_ip_format *rzg2l_cru_ip_code_to_fmt(unsigned int code)
+const struct rzg2l_cru_ip_format *rzg2l_cru_ip_code_to_fmt(unsigned int code)
 {
 	unsigned int i;
 
@@ -33,13 +65,33 @@ static const struct rzg2l_cru_ip_format *rzg2l_cru_ip_code_to_fmt(unsigned int c
 	return NULL;
 }
 
+const struct rzg2l_cru_ip_format *rzg2l_cru_ip_format_to_fmt(u32 format)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(rzg2l_cru_ip_formats); i++) {
+		if (rzg2l_cru_ip_formats[i].format == format)
+			return &rzg2l_cru_ip_formats[i];
+	}
+
+	return NULL;
+}
+
+const struct rzg2l_cru_ip_format *rzg2l_cru_ip_index_to_fmt(u32 index)
+{
+	if (index >= ARRAY_SIZE(rzg2l_cru_ip_formats))
+		return NULL;
+
+	return &rzg2l_cru_ip_formats[index];
+}
+
 struct v4l2_mbus_framefmt *rzg2l_cru_ip_get_src_fmt(struct rzg2l_cru_dev *cru)
 {
 	struct v4l2_subdev_state *state;
 	struct v4l2_mbus_framefmt *fmt;
 
 	state = v4l2_subdev_lock_and_get_active_state(&cru->ip.subdev);
-	fmt = v4l2_subdev_get_pad_format(&cru->ip.subdev, state, 1);
+	fmt = v4l2_subdev_state_get_format(state, 1);
 	v4l2_subdev_unlock_state(state);
 
 	return fmt;
@@ -71,26 +123,17 @@ static int rzg2l_cru_ip_s_stream(struct v4l2_subdev *sd, int enable)
 		if (ret)
 			return ret;
 
+		fsleep(1000);
+
 		ret = rzg2l_cru_start_image_processing(cru);
 		if (ret) {
 			v4l2_subdev_call(cru->ip.remote, video, post_streamoff);
 			return ret;
 		}
 
-		rzg2l_cru_vclk_unprepare(cru);
-
 		ret = v4l2_subdev_call(cru->ip.remote, video, s_stream, enable);
-		if (ret == -ENOIOCTLCMD)
-			ret = 0;
-		if (!ret) {
-			ret = rzg2l_cru_vclk_prepare(cru);
-			if (!ret)
-				return 0;
-		} else {
-			/* enable back vclk so that s_stream in error path disables it */
-			if (rzg2l_cru_vclk_prepare(cru))
-				dev_err(cru->dev, "Failed to enable vclk\n");
-		}
+		if (!ret || ret == -ENOIOCTLCMD)
+			return 0;
 
 		s_stream_ret = ret;
 
@@ -108,13 +151,13 @@ static int rzg2l_cru_ip_set_format(struct v4l2_subdev *sd,
 	struct v4l2_mbus_framefmt *src_format;
 	struct v4l2_mbus_framefmt *sink_format;
 
-	src_format = v4l2_subdev_get_pad_format(sd, state, RZG2L_CRU_IP_SOURCE);
+	src_format = v4l2_subdev_state_get_format(state, RZG2L_CRU_IP_SOURCE);
 	if (fmt->pad == RZG2L_CRU_IP_SOURCE) {
 		fmt->format = *src_format;
 		return 0;
 	}
 
-	sink_format = v4l2_subdev_get_pad_format(sd, state, fmt->pad);
+	sink_format = v4l2_subdev_state_get_format(state, fmt->pad);
 
 	if (!rzg2l_cru_ip_code_to_fmt(fmt->format.code))
 		sink_format->code = rzg2l_cru_ip_formats[0].code;
@@ -157,7 +200,7 @@ static int rzg2l_cru_ip_enum_frame_size(struct v4l2_subdev *sd,
 	if (fse->index != 0)
 		return -EINVAL;
 
-	if (fse->code != MEDIA_BUS_FMT_UYVY8_1X16)
+	if (!rzg2l_cru_ip_code_to_fmt(fse->code))
 		return -EINVAL;
 
 	fse->min_width = RZG2L_CRU_MIN_INPUT_WIDTH;
@@ -168,8 +211,8 @@ static int rzg2l_cru_ip_enum_frame_size(struct v4l2_subdev *sd,
 	return 0;
 }
 
-static int rzg2l_cru_ip_init_config(struct v4l2_subdev *sd,
-				    struct v4l2_subdev_state *sd_state)
+static int rzg2l_cru_ip_init_state(struct v4l2_subdev *sd,
+				   struct v4l2_subdev_state *sd_state)
 {
 	struct v4l2_subdev_format fmt = { .pad = RZG2L_CRU_IP_SINK, };
 
@@ -192,7 +235,6 @@ static const struct v4l2_subdev_video_ops rzg2l_cru_ip_video_ops = {
 static const struct v4l2_subdev_pad_ops rzg2l_cru_ip_pad_ops = {
 	.enum_mbus_code = rzg2l_cru_ip_enum_mbus_code,
 	.enum_frame_size = rzg2l_cru_ip_enum_frame_size,
-	.init_cfg = rzg2l_cru_ip_init_config,
 	.get_fmt = v4l2_subdev_get_fmt,
 	.set_fmt = rzg2l_cru_ip_set_format,
 };
@@ -200,6 +242,10 @@ static const struct v4l2_subdev_pad_ops rzg2l_cru_ip_pad_ops = {
 static const struct v4l2_subdev_ops rzg2l_cru_ip_subdev_ops = {
 	.video = &rzg2l_cru_ip_video_ops,
 	.pad = &rzg2l_cru_ip_pad_ops,
+};
+
+static const struct v4l2_subdev_internal_ops rzg2l_cru_ip_internal_ops = {
+	.init_state = rzg2l_cru_ip_init_state,
 };
 
 static const struct media_entity_operations rzg2l_cru_ip_entity_ops = {
@@ -213,6 +259,7 @@ int rzg2l_cru_ip_subdev_register(struct rzg2l_cru_dev *cru)
 
 	ip->subdev.dev = cru->dev;
 	v4l2_subdev_init(&ip->subdev, &rzg2l_cru_ip_subdev_ops);
+	ip->subdev.internal_ops = &rzg2l_cru_ip_internal_ops;
 	v4l2_set_subdevdata(&ip->subdev, cru);
 	snprintf(ip->subdev.name, sizeof(ip->subdev.name),
 		 "cru-ip-%s", dev_name(cru->dev));
@@ -221,8 +268,10 @@ int rzg2l_cru_ip_subdev_register(struct rzg2l_cru_dev *cru)
 	ip->subdev.entity.function = MEDIA_ENT_F_PROC_VIDEO_PIXEL_FORMATTER;
 	ip->subdev.entity.ops = &rzg2l_cru_ip_entity_ops;
 
-	ip->pads[0].flags = MEDIA_PAD_FL_SINK;
-	ip->pads[1].flags = MEDIA_PAD_FL_SOURCE;
+	ip->pads[RZG2L_CRU_IP_SINK].flags = MEDIA_PAD_FL_SINK |
+					    MEDIA_PAD_FL_MUST_CONNECT;
+	ip->pads[RZG2L_CRU_IP_SOURCE].flags = MEDIA_PAD_FL_SOURCE |
+					      MEDIA_PAD_FL_MUST_CONNECT;
 
 	ret = media_entity_pads_init(&ip->subdev.entity, 2, ip->pads);
 	if (ret)

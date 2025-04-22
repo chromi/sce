@@ -35,6 +35,7 @@
 #include "reg.h"
 #include "resources.h"
 #include "../mlxfw/mlxfw.h"
+#include "txheader.h"
 
 static LIST_HEAD(mlxsw_core_driver_list);
 static DEFINE_SPINLOCK(mlxsw_core_driver_list_lock);
@@ -203,6 +204,20 @@ int mlxsw_core_max_lag(struct mlxsw_core *mlxsw_core, u16 *p_max_lag)
 	return 0;
 }
 EXPORT_SYMBOL(mlxsw_core_max_lag);
+
+enum mlxsw_cmd_mbox_config_profile_lag_mode
+mlxsw_core_lag_mode(struct mlxsw_core *mlxsw_core)
+{
+	return mlxsw_core->bus->lag_mode(mlxsw_core->bus_priv);
+}
+EXPORT_SYMBOL(mlxsw_core_lag_mode);
+
+enum mlxsw_cmd_mbox_config_profile_flood_mode
+mlxsw_core_flood_mode(struct mlxsw_core *mlxsw_core)
+{
+	return mlxsw_core->bus->flood_mode(mlxsw_core->bus_priv);
+}
+EXPORT_SYMBOL(mlxsw_core_flood_mode);
 
 void *mlxsw_core_driver_priv(struct mlxsw_core *mlxsw_core)
 {
@@ -663,7 +678,7 @@ struct mlxsw_reg_trans {
 	struct list_head bulk_list;
 	struct mlxsw_core *core;
 	struct sk_buff *tx_skb;
-	struct mlxsw_tx_info tx_info;
+	struct mlxsw_txhdr_info txhdr_info;
 	struct delayed_work timeout_dw;
 	unsigned int retries;
 	u64 tid;
@@ -723,12 +738,11 @@ static int mlxsw_emad_transmit(struct mlxsw_core *mlxsw_core,
 	if (!skb)
 		return -ENOMEM;
 
-	trace_devlink_hwmsg(priv_to_devlink(mlxsw_core), false, 0,
-			    skb->data + mlxsw_core->driver->txhdr_len,
-			    skb->len - mlxsw_core->driver->txhdr_len);
+	trace_devlink_hwmsg(priv_to_devlink(mlxsw_core), false, 0, skb->data,
+			    skb->len);
 
 	atomic_set(&trans->active, 1);
-	err = mlxsw_core_skb_transmit(mlxsw_core, skb, &trans->tx_info);
+	err = mlxsw_core_skb_transmit(mlxsw_core, skb, &trans->txhdr_info);
 	if (err) {
 		dev_kfree_skb(skb);
 		return err;
@@ -835,7 +849,7 @@ free_skb:
 
 static const struct mlxsw_listener mlxsw_emad_rx_listener =
 	MLXSW_RXL(mlxsw_emad_rx_listener_func, ETHEMAD, TRAP_TO_CPU, false,
-		  EMAD, DISCARD);
+		  EMAD, FORWARD);
 
 static int mlxsw_emad_tlv_enable(struct mlxsw_core *mlxsw_core)
 {
@@ -930,7 +944,7 @@ static struct sk_buff *mlxsw_emad_alloc(const struct mlxsw_core *mlxsw_core,
 
 	emad_len = (reg_len + sizeof(u32) + MLXSW_EMAD_ETH_HDR_LEN +
 		    (MLXSW_EMAD_OP_TLV_LEN + MLXSW_EMAD_END_TLV_LEN) *
-		    sizeof(u32) + mlxsw_core->driver->txhdr_len);
+		    sizeof(u32) + MLXSW_TXHDR_LEN);
 	if (mlxsw_core->emad.enable_string_tlv)
 		emad_len += MLXSW_EMAD_STRING_TLV_LEN * sizeof(u32);
 	if (mlxsw_core->emad.enable_latency_tlv)
@@ -970,8 +984,8 @@ static int mlxsw_emad_reg_access(struct mlxsw_core *mlxsw_core,
 	list_add_tail(&trans->bulk_list, bulk_list);
 	trans->core = mlxsw_core;
 	trans->tx_skb = skb;
-	trans->tx_info.local_port = MLXSW_PORT_CPU_PORT;
-	trans->tx_info.is_emad = true;
+	trans->txhdr_info.tx_info.local_port = MLXSW_PORT_CPU_PORT;
+	trans->txhdr_info.tx_info.is_emad = true;
 	INIT_DELAYED_WORK(&trans->timeout_dw, mlxsw_emad_trans_timeout_work);
 	trans->tid = tid;
 	init_completion(&trans->completion);
@@ -981,7 +995,6 @@ static int mlxsw_emad_reg_access(struct mlxsw_core *mlxsw_core,
 	trans->type = type;
 
 	mlxsw_emad_construct(mlxsw_core, skb, reg, payload, type, trans->tid);
-	mlxsw_core->driver->txhdr_construct(skb, &trans->tx_info);
 
 	spin_lock_bh(&mlxsw_core->emad.trans_list_lock);
 	list_add_tail_rcu(&trans->list, &mlxsw_core->emad.trans_list);
@@ -1792,122 +1805,78 @@ static void mlxsw_core_health_listener_func(const struct mlxsw_reg_info *reg,
 static const struct mlxsw_listener mlxsw_core_health_listener =
 	MLXSW_CORE_EVENTL(mlxsw_core_health_listener_func, MFDE);
 
-static int
+static void
 mlxsw_core_health_fw_fatal_dump_fatal_cause(const char *mfde_pl,
 					    struct devlink_fmsg *fmsg)
 {
 	u32 val, tile_v;
-	int err;
 
 	val = mlxsw_reg_mfde_fatal_cause_id_get(mfde_pl);
-	err = devlink_fmsg_u32_pair_put(fmsg, "cause_id", val);
-	if (err)
-		return err;
+	devlink_fmsg_u32_pair_put(fmsg, "cause_id", val);
 	tile_v = mlxsw_reg_mfde_fatal_cause_tile_v_get(mfde_pl);
 	if (tile_v) {
 		val = mlxsw_reg_mfde_fatal_cause_tile_index_get(mfde_pl);
-		err = devlink_fmsg_u8_pair_put(fmsg, "tile_index", val);
-		if (err)
-			return err;
+		devlink_fmsg_u8_pair_put(fmsg, "tile_index", val);
 	}
-
-	return 0;
 }
 
-static int
+static void
 mlxsw_core_health_fw_fatal_dump_fw_assert(const char *mfde_pl,
 					  struct devlink_fmsg *fmsg)
 {
 	u32 val, tile_v;
-	int err;
 
 	val = mlxsw_reg_mfde_fw_assert_var0_get(mfde_pl);
-	err = devlink_fmsg_u32_pair_put(fmsg, "var0", val);
-	if (err)
-		return err;
+	devlink_fmsg_u32_pair_put(fmsg, "var0", val);
 	val = mlxsw_reg_mfde_fw_assert_var1_get(mfde_pl);
-	err = devlink_fmsg_u32_pair_put(fmsg, "var1", val);
-	if (err)
-		return err;
+	devlink_fmsg_u32_pair_put(fmsg, "var1", val);
 	val = mlxsw_reg_mfde_fw_assert_var2_get(mfde_pl);
-	err = devlink_fmsg_u32_pair_put(fmsg, "var2", val);
-	if (err)
-		return err;
+	devlink_fmsg_u32_pair_put(fmsg, "var2", val);
 	val = mlxsw_reg_mfde_fw_assert_var3_get(mfde_pl);
-	err = devlink_fmsg_u32_pair_put(fmsg, "var3", val);
-	if (err)
-		return err;
+	devlink_fmsg_u32_pair_put(fmsg, "var3", val);
 	val = mlxsw_reg_mfde_fw_assert_var4_get(mfde_pl);
-	err = devlink_fmsg_u32_pair_put(fmsg, "var4", val);
-	if (err)
-		return err;
+	devlink_fmsg_u32_pair_put(fmsg, "var4", val);
 	val = mlxsw_reg_mfde_fw_assert_existptr_get(mfde_pl);
-	err = devlink_fmsg_u32_pair_put(fmsg, "existptr", val);
-	if (err)
-		return err;
+	devlink_fmsg_u32_pair_put(fmsg, "existptr", val);
 	val = mlxsw_reg_mfde_fw_assert_callra_get(mfde_pl);
-	err = devlink_fmsg_u32_pair_put(fmsg, "callra", val);
-	if (err)
-		return err;
+	devlink_fmsg_u32_pair_put(fmsg, "callra", val);
 	val = mlxsw_reg_mfde_fw_assert_oe_get(mfde_pl);
-	err = devlink_fmsg_bool_pair_put(fmsg, "old_event", val);
-	if (err)
-		return err;
+	devlink_fmsg_bool_pair_put(fmsg, "old_event", val);
 	tile_v = mlxsw_reg_mfde_fw_assert_tile_v_get(mfde_pl);
 	if (tile_v) {
 		val = mlxsw_reg_mfde_fw_assert_tile_index_get(mfde_pl);
-		err = devlink_fmsg_u8_pair_put(fmsg, "tile_index", val);
-		if (err)
-			return err;
+		devlink_fmsg_u8_pair_put(fmsg, "tile_index", val);
 	}
 	val = mlxsw_reg_mfde_fw_assert_ext_synd_get(mfde_pl);
-	err = devlink_fmsg_u32_pair_put(fmsg, "ext_synd", val);
-	if (err)
-		return err;
-
-	return 0;
+	devlink_fmsg_u32_pair_put(fmsg, "ext_synd", val);
 }
 
-static int
+static void
 mlxsw_core_health_fw_fatal_dump_kvd_im_stop(const char *mfde_pl,
 					    struct devlink_fmsg *fmsg)
 {
 	u32 val;
-	int err;
 
 	val = mlxsw_reg_mfde_kvd_im_stop_oe_get(mfde_pl);
-	err = devlink_fmsg_bool_pair_put(fmsg, "old_event", val);
-	if (err)
-		return err;
+	devlink_fmsg_bool_pair_put(fmsg, "old_event", val);
 	val = mlxsw_reg_mfde_kvd_im_stop_pipes_mask_get(mfde_pl);
-	return devlink_fmsg_u32_pair_put(fmsg, "pipes_mask", val);
+	devlink_fmsg_u32_pair_put(fmsg, "pipes_mask", val);
 }
 
-static int
+static void
 mlxsw_core_health_fw_fatal_dump_crspace_to(const char *mfde_pl,
 					   struct devlink_fmsg *fmsg)
 {
 	u32 val;
-	int err;
 
 	val = mlxsw_reg_mfde_crspace_to_log_address_get(mfde_pl);
-	err = devlink_fmsg_u32_pair_put(fmsg, "log_address", val);
-	if (err)
-		return err;
+	devlink_fmsg_u32_pair_put(fmsg, "log_address", val);
 	val = mlxsw_reg_mfde_crspace_to_oe_get(mfde_pl);
-	err = devlink_fmsg_bool_pair_put(fmsg, "old_event", val);
-	if (err)
-		return err;
+	devlink_fmsg_bool_pair_put(fmsg, "old_event", val);
 	val = mlxsw_reg_mfde_crspace_to_log_id_get(mfde_pl);
-	err = devlink_fmsg_u8_pair_put(fmsg, "log_irisc_id", val);
-	if (err)
-		return err;
+	devlink_fmsg_u8_pair_put(fmsg, "log_irisc_id", val);
 	val = mlxsw_reg_mfde_crspace_to_log_ip_get(mfde_pl);
-	err = devlink_fmsg_u64_pair_put(fmsg, "log_ip", val);
-	if (err)
-		return err;
-
-	return 0;
+	devlink_fmsg_u64_pair_put(fmsg, "log_ip", val);
 }
 
 static int mlxsw_core_health_fw_fatal_dump(struct devlink_health_reporter *reporter,
@@ -1918,24 +1887,17 @@ static int mlxsw_core_health_fw_fatal_dump(struct devlink_health_reporter *repor
 	char *val_str;
 	u8 event_id;
 	u32 val;
-	int err;
 
 	if (!priv_ctx)
 		/* User-triggered dumps are not possible */
 		return -EOPNOTSUPP;
 
 	val = mlxsw_reg_mfde_irisc_id_get(mfde_pl);
-	err = devlink_fmsg_u8_pair_put(fmsg, "irisc_id", val);
-	if (err)
-		return err;
-	err = devlink_fmsg_arr_pair_nest_start(fmsg, "event");
-	if (err)
-		return err;
+	devlink_fmsg_u8_pair_put(fmsg, "irisc_id", val);
 
+	devlink_fmsg_arr_pair_nest_start(fmsg, "event");
 	event_id = mlxsw_reg_mfde_event_id_get(mfde_pl);
-	err = devlink_fmsg_u32_pair_put(fmsg, "id", event_id);
-	if (err)
-		return err;
+	devlink_fmsg_u32_pair_put(fmsg, "id", event_id);
 	switch (event_id) {
 	case MLXSW_REG_MFDE_EVENT_ID_CRSPACE_TO:
 		val_str = "CR space timeout";
@@ -1955,24 +1917,13 @@ static int mlxsw_core_health_fw_fatal_dump(struct devlink_health_reporter *repor
 	default:
 		val_str = NULL;
 	}
-	if (val_str) {
-		err = devlink_fmsg_string_pair_put(fmsg, "desc", val_str);
-		if (err)
-			return err;
-	}
+	if (val_str)
+		devlink_fmsg_string_pair_put(fmsg, "desc", val_str);
+	devlink_fmsg_arr_pair_nest_end(fmsg);
 
-	err = devlink_fmsg_arr_pair_nest_end(fmsg);
-	if (err)
-		return err;
-
-	err = devlink_fmsg_arr_pair_nest_start(fmsg, "severity");
-	if (err)
-		return err;
-
+	devlink_fmsg_arr_pair_nest_start(fmsg, "severity");
 	val = mlxsw_reg_mfde_severity_get(mfde_pl);
-	err = devlink_fmsg_u8_pair_put(fmsg, "id", val);
-	if (err)
-		return err;
+	devlink_fmsg_u8_pair_put(fmsg, "id", val);
 	switch (val) {
 	case MLXSW_REG_MFDE_SEVERITY_FATL:
 		val_str = "Fatal";
@@ -1986,15 +1937,9 @@ static int mlxsw_core_health_fw_fatal_dump(struct devlink_health_reporter *repor
 	default:
 		val_str = NULL;
 	}
-	if (val_str) {
-		err = devlink_fmsg_string_pair_put(fmsg, "desc", val_str);
-		if (err)
-			return err;
-	}
-
-	err = devlink_fmsg_arr_pair_nest_end(fmsg);
-	if (err)
-		return err;
+	if (val_str)
+		devlink_fmsg_string_pair_put(fmsg, "desc", val_str);
+	devlink_fmsg_arr_pair_nest_end(fmsg);
 
 	val = mlxsw_reg_mfde_method_get(mfde_pl);
 	switch (val) {
@@ -2007,16 +1952,11 @@ static int mlxsw_core_health_fw_fatal_dump(struct devlink_health_reporter *repor
 	default:
 		val_str = NULL;
 	}
-	if (val_str) {
-		err = devlink_fmsg_string_pair_put(fmsg, "method", val_str);
-		if (err)
-			return err;
-	}
+	if (val_str)
+		devlink_fmsg_string_pair_put(fmsg, "method", val_str);
 
 	val = mlxsw_reg_mfde_long_process_get(mfde_pl);
-	err = devlink_fmsg_bool_pair_put(fmsg, "long_process", val);
-	if (err)
-		return err;
+	devlink_fmsg_bool_pair_put(fmsg, "long_process", val);
 
 	val = mlxsw_reg_mfde_command_type_get(mfde_pl);
 	switch (val) {
@@ -2032,29 +1972,25 @@ static int mlxsw_core_health_fw_fatal_dump(struct devlink_health_reporter *repor
 	default:
 		val_str = NULL;
 	}
-	if (val_str) {
-		err = devlink_fmsg_string_pair_put(fmsg, "command_type", val_str);
-		if (err)
-			return err;
-	}
+	if (val_str)
+		devlink_fmsg_string_pair_put(fmsg, "command_type", val_str);
 
 	val = mlxsw_reg_mfde_reg_attr_id_get(mfde_pl);
-	err = devlink_fmsg_u32_pair_put(fmsg, "reg_attr_id", val);
-	if (err)
-		return err;
+	devlink_fmsg_u32_pair_put(fmsg, "reg_attr_id", val);
 
 	switch (event_id) {
 	case MLXSW_REG_MFDE_EVENT_ID_CRSPACE_TO:
-		return mlxsw_core_health_fw_fatal_dump_crspace_to(mfde_pl,
-								  fmsg);
+		mlxsw_core_health_fw_fatal_dump_crspace_to(mfde_pl, fmsg);
+		break;
 	case MLXSW_REG_MFDE_EVENT_ID_KVD_IM_STOP:
-		return mlxsw_core_health_fw_fatal_dump_kvd_im_stop(mfde_pl,
-								   fmsg);
+		mlxsw_core_health_fw_fatal_dump_kvd_im_stop(mfde_pl, fmsg);
+		break;
 	case MLXSW_REG_MFDE_EVENT_ID_FW_ASSERT:
-		return mlxsw_core_health_fw_fatal_dump_fw_assert(mfde_pl, fmsg);
+		mlxsw_core_health_fw_fatal_dump_fw_assert(mfde_pl, fmsg);
+		break;
 	case MLXSW_REG_MFDE_EVENT_ID_FATAL_CAUSE:
-		return mlxsw_core_health_fw_fatal_dump_fatal_cause(mfde_pl,
-								   fmsg);
+		mlxsw_core_health_fw_fatal_dump_fatal_cause(mfde_pl, fmsg);
+		break;
 	}
 
 	return 0;
@@ -2393,10 +2329,10 @@ bool mlxsw_core_skb_transmit_busy(struct mlxsw_core *mlxsw_core,
 EXPORT_SYMBOL(mlxsw_core_skb_transmit_busy);
 
 int mlxsw_core_skb_transmit(struct mlxsw_core *mlxsw_core, struct sk_buff *skb,
-			    const struct mlxsw_tx_info *tx_info)
+			    const struct mlxsw_txhdr_info *txhdr_info)
 {
 	return mlxsw_core->bus->skb_transmit(mlxsw_core->bus_priv, skb,
-					     tx_info);
+					     txhdr_info);
 }
 EXPORT_SYMBOL(mlxsw_core_skb_transmit);
 

@@ -38,20 +38,25 @@ requests.  ``aio-max-nr`` allows you to change the maximum value
 ``aio-max-nr`` does not result in the
 pre-allocation or re-sizing of any kernel data structures.
 
+dentry-negative
+----------------------------
+
+Policy for negative dentries. Set to 1 to always delete the dentry when a
+file is removed, and 0 to disable it. By default, this behavior is disabled.
 
 dentry-state
 ------------
 
-This file shows the values in ``struct dentry_stat``, as defined in
-``linux/include/linux/dcache.h``::
+This file shows the values in ``struct dentry_stat_t``, as defined in
+``fs/dcache.c``::
 
   struct dentry_stat_t dentry_stat {
-        int nr_dentry;
-        int nr_unused;
-        int age_limit;         /* age in seconds */
-        int want_pages;        /* pages requested by system */
-        int nr_negative;       /* # of unused negative dentries */
-        int dummy;             /* Reserved for future use */
+        long nr_dentry;
+        long nr_unused;
+        long age_limit;         /* age in seconds */
+        long want_pages;        /* pages requested by system */
+        long nr_negative;       /* # of unused negative dentries */
+        long dummy;             /* Reserved for future use */
   };
 
 Dentries are dynamically allocated and deallocated.
@@ -332,3 +337,13 @@ Each "watch" costs roughly 90 bytes on a 32-bit kernel, and roughly 160 bytes
 on a 64-bit one.
 The current default value for ``max_user_watches`` is 4% of the
 available low memory, divided by the "watch" cost in bytes.
+
+5. /proc/sys/fs/fuse - Configuration options for FUSE filesystems
+=====================================================================
+
+This directory contains the following configuration options for FUSE
+filesystems:
+
+``/proc/sys/fs/fuse/max_pages_limit`` is a read/write file for
+setting/getting the maximum number of pages that can be used for servicing
+requests in FUSE.

@@ -28,10 +28,9 @@ static int vbi_out_queue_setup(struct vb2_queue *vq,
 	if (!vivid_is_svid_out(dev))
 		return -EINVAL;
 
+	if (*nplanes)
+		return sizes[0] < size ? -EINVAL : 0;
 	sizes[0] = size;
-
-	if (vq->num_buffers + *nbuffers < 2)
-		*nbuffers = 2 - vq->num_buffers;
 
 	*nplanes = 1;
 	return 0;
@@ -129,8 +128,6 @@ const struct vb2_ops vivid_vbi_out_qops = {
 	.start_streaming	= vbi_out_start_streaming,
 	.stop_streaming		= vbi_out_stop_streaming,
 	.buf_request_complete	= vbi_out_buf_request_complete,
-	.wait_prepare		= vb2_ops_wait_prepare,
-	.wait_finish		= vb2_ops_wait_finish,
 };
 
 int vidioc_g_fmt_vbi_out(struct file *file, void *priv,

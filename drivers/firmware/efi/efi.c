@@ -32,6 +32,7 @@
 #include <linux/ucs2_string.h>
 #include <linux/memblock.h>
 #include <linux/security.h>
+#include <linux/notifier.h>
 
 #include <asm/early_ioremap.h>
 
@@ -147,9 +148,6 @@ static ssize_t systab_show(struct kobject *kobj,
 	if (efi.smbios != EFI_INVALID_TABLE_ADDR)
 		str += sprintf(str, "SMBIOS=0x%lx\n", efi.smbios);
 
-	if (IS_ENABLED(CONFIG_IA64) || IS_ENABLED(CONFIG_X86))
-		str = efi_systab_show_arch(str);
-
 	return str - buf;
 }
 
@@ -187,6 +185,9 @@ static const struct attribute_group efi_subsys_attr_group = {
 	.is_visible = efi_attr_is_visible,
 };
 
+struct blocking_notifier_head efivar_ops_nh;
+EXPORT_SYMBOL_GPL(efivar_ops_nh);
+
 static struct efivars generic_efivars;
 static struct efivar_operations generic_ops;
 
@@ -199,6 +200,8 @@ static bool generic_ops_supported(void)
 
 	name_size = sizeof(name);
 
+	if (!efi.get_next_variable)
+		return false;
 	status = efi.get_next_variable(&name_size, &name, &guid);
 	if (status == EFI_UNSUPPORTED)
 		return false;
@@ -231,6 +234,18 @@ static void generic_ops_unregister(void)
 	efivars_unregister(&generic_efivars);
 }
 
+void efivars_generic_ops_register(void)
+{
+	generic_ops_register();
+}
+EXPORT_SYMBOL_GPL(efivars_generic_ops_register);
+
+void efivars_generic_ops_unregister(void)
+{
+	generic_ops_unregister();
+}
+EXPORT_SYMBOL_GPL(efivars_generic_ops_unregister);
+
 #ifdef CONFIG_EFI_CUSTOM_SSDT_OVERLAYS
 #define EFIVAR_SSDT_NAME_MAX	16UL
 static char efivar_ssdt[EFIVAR_SSDT_NAME_MAX] __initdata;
@@ -255,6 +270,7 @@ static __init int efivar_ssdt_load(void)
 	efi_char16_t *name = NULL;
 	efi_status_t status;
 	efi_guid_t guid;
+	int ret = 0;
 
 	if (!efivar_ssdt[0])
 		return 0;
@@ -276,8 +292,8 @@ static __init int efivar_ssdt_load(void)
 			efi_char16_t *name_tmp =
 				krealloc(name, name_size, GFP_KERNEL);
 			if (!name_tmp) {
-				kfree(name);
-				return -ENOMEM;
+				ret = -ENOMEM;
+				goto out;
 			}
 			name = name_tmp;
 			continue;
@@ -291,26 +307,38 @@ static __init int efivar_ssdt_load(void)
 		pr_info("loading SSDT from variable %s-%pUl\n", efivar_ssdt, &guid);
 
 		status = efi.get_variable(name, &guid, NULL, &data_size, NULL);
-		if (status != EFI_BUFFER_TOO_SMALL || !data_size)
-			return -EIO;
+		if (status != EFI_BUFFER_TOO_SMALL || !data_size) {
+			ret = -EIO;
+			goto out;
+		}
 
 		data = kmalloc(data_size, GFP_KERNEL);
-		if (!data)
-			return -ENOMEM;
+		if (!data) {
+			ret = -ENOMEM;
+			goto out;
+		}
 
 		status = efi.get_variable(name, &guid, NULL, &data_size, data);
 		if (status == EFI_SUCCESS) {
-			acpi_status ret = acpi_load_table(data, NULL);
-			if (ret)
-				pr_err("failed to load table: %u\n", ret);
-			else
+			acpi_status acpi_ret = acpi_load_table(data, NULL);
+			if (ACPI_FAILURE(acpi_ret)) {
+				pr_err("efivar_ssdt: failed to load table: %u\n",
+				       acpi_ret);
+			} else {
+				/*
+				 * The @data will be in use by ACPI engine,
+				 * do not free it!
+				 */
 				continue;
+			}
 		} else {
-			pr_err("failed to get var data: 0x%lx\n", status);
+			pr_err("efivar_ssdt: failed to get var data: 0x%lx\n", status);
 		}
 		kfree(data);
 	}
-	return 0;
+out:
+	kfree(name);
+	return ret;
 }
 #else
 static inline int efivar_ssdt_load(void) { return 0; }
@@ -331,7 +359,7 @@ static void __init efi_debugfs_init(void)
 	int i = 0;
 
 	efi_debugfs = debugfs_create_dir("efi", NULL);
-	if (IS_ERR_OR_NULL(efi_debugfs))
+	if (IS_ERR(efi_debugfs))
 		return;
 
 	for_each_efi_memory_desc(md) {
@@ -415,9 +443,13 @@ static int __init efisubsys_init(void)
 		error = generic_ops_register();
 		if (error)
 			goto err_put;
-		efivar_ssdt_load();
+		error = efivar_ssdt_load();
+		if (error)
+			pr_err("efi: failed to load SSDT, error %d.\n", error);
 		platform_device_register_simple("efivars", 0, NULL, 0);
 	}
+
+	BLOCKING_INIT_NOTIFIER_HEAD(&efivar_ops_nh);
 
 	error = sysfs_create_group(efi_kobj, &efi_subsys_attr_group);
 	if (error) {
@@ -579,7 +611,8 @@ static const efi_config_table_type_t common_tables[] __initconst = {
 	{EFI_MEMORY_ATTRIBUTES_TABLE_GUID,	&efi_mem_attr_table,	"MEMATTR"	},
 	{LINUX_EFI_RANDOM_SEED_TABLE_GUID,	&efi_rng_seed,		"RNG"		},
 	{LINUX_EFI_TPM_EVENT_LOG_GUID,		&efi.tpm_log,		"TPMEventLog"	},
-	{LINUX_EFI_TPM_FINAL_LOG_GUID,		&efi.tpm_final_log,	"TPMFinalLog"	},
+	{EFI_TCG2_FINAL_EVENTS_TABLE_GUID,	&efi.tpm_final_log,	"TPMFinalLog"	},
+	{EFI_CC_FINAL_EVENTS_TABLE_GUID,	&efi.tpm_final_log,	"CCFinalLog"	},
 	{LINUX_EFI_MEMRESERVE_TABLE_GUID,	&mem_reserve,		"MEMRESERVE"	},
 	{LINUX_EFI_INITRD_MEDIA_GUID,		&initrd,		"INITRD"	},
 	{EFI_RT_PROPERTIES_TABLE_GUID,		&rt_prop,		"RTPROP"	},
@@ -807,7 +840,6 @@ int __init efi_systab_check_header(const efi_table_hdr_t *systab_hdr)
 	return 0;
 }
 
-#ifndef CONFIG_IA64
 static const efi_char16_t *__init map_fw_vendor(unsigned long fw_vendor,
 						size_t size)
 {
@@ -823,10 +855,6 @@ static void __init unmap_fw_vendor(const void *fw_vendor, size_t size)
 {
 	early_memunmap((void *)fw_vendor, size);
 }
-#else
-#define map_fw_vendor(p, s)	__va(p)
-#define unmap_fw_vendor(v, s)
-#endif
 
 void __init efi_systab_report_header(const efi_table_hdr_t *systab_hdr,
 				     unsigned long fw_vendor)
@@ -906,13 +934,15 @@ char * __init efi_md_typeattr_format(char *buf, size_t size,
 		     EFI_MEMORY_WB | EFI_MEMORY_UCE | EFI_MEMORY_RO |
 		     EFI_MEMORY_WP | EFI_MEMORY_RP | EFI_MEMORY_XP |
 		     EFI_MEMORY_NV | EFI_MEMORY_SP | EFI_MEMORY_CPU_CRYPTO |
-		     EFI_MEMORY_RUNTIME | EFI_MEMORY_MORE_RELIABLE))
+		     EFI_MEMORY_MORE_RELIABLE | EFI_MEMORY_HOT_PLUGGABLE |
+		     EFI_MEMORY_RUNTIME))
 		snprintf(pos, size, "|attr=0x%016llx]",
 			 (unsigned long long)attr);
 	else
 		snprintf(pos, size,
-			 "|%3s|%2s|%2s|%2s|%2s|%2s|%2s|%2s|%2s|%3s|%2s|%2s|%2s|%2s]",
+			 "|%3s|%2s|%2s|%2s|%2s|%2s|%2s|%2s|%2s|%2s|%3s|%2s|%2s|%2s|%2s]",
 			 attr & EFI_MEMORY_RUNTIME		? "RUN" : "",
+			 attr & EFI_MEMORY_HOT_PLUGGABLE	? "HP"  : "",
 			 attr & EFI_MEMORY_MORE_RELIABLE	? "MR"  : "",
 			 attr & EFI_MEMORY_CPU_CRYPTO   	? "CC"  : "",
 			 attr & EFI_MEMORY_SP			? "SP"  : "",
@@ -929,11 +959,6 @@ char * __init efi_md_typeattr_format(char *buf, size_t size,
 	return buf;
 }
 
-/*
- * IA64 has a funky EFI memory map that doesn't work the same way as
- * other architectures.
- */
-#ifndef CONFIG_IA64
 /*
  * efi_mem_attributes - lookup memmap attributes for physical address
  * @phys_addr: the physical address to lookup
@@ -981,7 +1006,6 @@ int efi_mem_type(unsigned long phys_addr)
 	}
 	return -EINVAL;
 }
-#endif
 
 int efi_status_to_err(efi_status_t status)
 {

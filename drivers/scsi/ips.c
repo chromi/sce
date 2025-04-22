@@ -364,7 +364,7 @@ static struct scsi_host_template ips_driver_template = {
 	.proc_name		= "ips",
 	.show_info		= ips_show_info,
 	.write_info		= ips_write_info,
-	.slave_configure	= ips_slave_configure,
+	.sdev_configure		= ips_sdev_configure,
 	.bios_param		= ips_biosparam,
 	.this_id		= -1,
 	.sg_tablesize		= IPS_MAX_SG,
@@ -835,7 +835,6 @@ static int __ips_eh_reset(struct scsi_cmnd *SC)
 	int i;
 	ips_ha_t *ha;
 	ips_scb_t *scb;
-	ips_copp_wait_item_t *item;
 
 	METHOD_TRACE("ips_eh_reset", 1);
 
@@ -859,23 +858,6 @@ static int __ips_eh_reset(struct scsi_cmnd *SC)
 
 	if (!ha->active)
 		return (FAILED);
-
-	/* See if the command is on the copp queue */
-	item = ha->copp_waitlist.head;
-	while ((item) && (item->scsi_cmd != SC))
-		item = item->next;
-
-	if (item) {
-		/* Found it */
-		ips_removeq_copp(&ha->copp_waitlist, item);
-		return (SUCCESS);
-	}
-
-	/* See if the command is on the wait queue */
-	if (ips_removeq_wait(&ha->scb_waitlist, SC)) {
-		/* command not sent yet */
-		return (SUCCESS);
-	}
 
 	/* An explanation for the casual observer:                              */
 	/* Part of the function of a RAID controller is automatic error         */
@@ -1184,7 +1166,7 @@ static int ips_biosparam(struct scsi_device *sdev, struct block_device *bdev,
 
 /****************************************************************************/
 /*                                                                          */
-/* Routine Name: ips_slave_configure                                        */
+/* Routine Name: ips_sdev_configure                                         */
 /*                                                                          */
 /* Routine Description:                                                     */
 /*                                                                          */
@@ -1192,7 +1174,7 @@ static int ips_biosparam(struct scsi_device *sdev, struct block_device *bdev,
 /*                                                                          */
 /****************************************************************************/
 static int
-ips_slave_configure(struct scsi_device * SDptr)
+ips_sdev_configure(struct scsi_device *SDptr, struct queue_limits *lim)
 {
 	ips_ha_t *ha;
 	int min;

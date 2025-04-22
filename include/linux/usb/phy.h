@@ -144,10 +144,6 @@ struct usb_phy {
 	 */
 	int	(*set_wakeup)(struct usb_phy *x, bool enabled);
 
-	/* notify phy port status change */
-	int	(*notify_port_status)(struct usb_phy *x, int port,
-				      u16 portstatus, u16 portchange);
-
 	/* notify phy connect status change */
 	int	(*notify_connect)(struct usb_phy *x,
 			enum usb_device_speed speed);
@@ -227,7 +223,6 @@ extern struct usb_phy *devm_usb_get_phy_by_phandle(struct device *dev,
 extern struct usb_phy *devm_usb_get_phy_by_node(struct device *dev,
 	struct device_node *node, struct notifier_block *nb);
 extern void usb_put_phy(struct usb_phy *);
-extern void devm_usb_put_phy(struct device *dev, struct usb_phy *x);
 extern void usb_phy_set_event(struct usb_phy *x, unsigned long event);
 extern void usb_phy_set_charger_current(struct usb_phy *usb_phy,
 					unsigned int mA);
@@ -260,10 +255,6 @@ static inline struct usb_phy *devm_usb_get_phy_by_node(struct device *dev,
 }
 
 static inline void usb_put_phy(struct usb_phy *x)
-{
-}
-
-static inline void devm_usb_put_phy(struct device *dev, struct usb_phy *x)
 {
 }
 
@@ -316,15 +307,6 @@ usb_phy_set_wakeup(struct usb_phy *x, bool enabled)
 {
 	if (x && x->set_wakeup)
 		return x->set_wakeup(x, enabled);
-	else
-		return 0;
-}
-
-static inline int
-usb_phy_notify_port_status(struct usb_phy *x, int port, u16 portstatus, u16 portchange)
-{
-	if (x && x->notify_port_status)
-		return x->notify_port_status(x, port, portstatus, portchange);
 	else
 		return 0;
 }

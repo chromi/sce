@@ -27,7 +27,6 @@
  * MCLK/LRCK ratios, but we also add ratio 400, which is commonly used on
  * Intel Cherry Trail platforms (19.2MHz MCLK, 48kHz LRCK).
  */
-#define NR_SUPPORTED_MCLK_LRCK_RATIOS ARRAY_SIZE(supported_mclk_lrck_ratios)
 static const unsigned int supported_mclk_lrck_ratios[] = {
 	256, 384, 400, 500, 512, 768, 1024
 };
@@ -40,7 +39,9 @@ struct es8316_priv {
 	struct snd_soc_jack *jack;
 	int irq;
 	unsigned int sysclk;
-	unsigned int allowed_rates[NR_SUPPORTED_MCLK_LRCK_RATIOS];
+	/* ES83xx supports halving the MCLK so it supports twice as many rates
+	 */
+	unsigned int allowed_rates[ARRAY_SIZE(supported_mclk_lrck_ratios) * 2];
 	struct snd_pcm_hw_constraint_list sysclk_constraints;
 	bool jd_inverted;
 };
@@ -100,7 +101,7 @@ static const struct snd_kcontrol_new es8316_snd_controls[] = {
 	SOC_DOUBLE_R_TLV("DAC Playback Volume", ES8316_DAC_VOLL,
 			 ES8316_DAC_VOLR, 0, 0xc0, 1, dac_vol_tlv),
 	SOC_SINGLE("DAC Soft Ramp Switch", ES8316_DAC_SET1, 4, 1, 1),
-	SOC_SINGLE("DAC Soft Ramp Rate", ES8316_DAC_SET1, 2, 4, 0),
+	SOC_SINGLE("DAC Soft Ramp Rate", ES8316_DAC_SET1, 2, 3, 0),
 	SOC_SINGLE("DAC Notch Filter Switch", ES8316_DAC_SET2, 6, 1, 0),
 	SOC_SINGLE("DAC Double Fs Switch", ES8316_DAC_SET2, 7, 1, 0),
 	SOC_SINGLE("DAC Stereo Enhancement", ES8316_DAC_SET3, 0, 7, 0),
@@ -382,11 +383,17 @@ static int es8316_set_dai_sysclk(struct snd_soc_dai *codec_dai,
 	/* Limit supported sample rates to ones that can be autodetected
 	 * by the codec running in slave mode.
 	 */
-	for (i = 0; i < NR_SUPPORTED_MCLK_LRCK_RATIOS; i++) {
+	for (i = 0; i < ARRAY_SIZE(supported_mclk_lrck_ratios); i++) {
 		const unsigned int ratio = supported_mclk_lrck_ratios[i];
 
 		if (freq % ratio == 0)
 			es8316->allowed_rates[count++] = freq / ratio;
+
+		/* We also check if the halved MCLK produces a valid rate
+		 * since the codec supports halving the MCLK.
+		 */
+		if ((freq / ratio) % 2 == 0)
+			es8316->allowed_rates[count++] = freq / ratio / 2;
 	}
 
 	if (count) {
@@ -470,19 +477,42 @@ static int es8316_pcm_hw_params(struct snd_pcm_substream *substream,
 	u8 bclk_divider;
 	u16 lrck_divider;
 	int i;
+	unsigned int clk = es8316->sysclk / 2;
+	bool clk_valid = false;
 
-	/* Validate supported sample rates that are autodetected from MCLK */
-	for (i = 0; i < NR_SUPPORTED_MCLK_LRCK_RATIOS; i++) {
-		const unsigned int ratio = supported_mclk_lrck_ratios[i];
+	/* We will start with halved sysclk and see if we can use it
+	 * for proper clocking. This is to minimise the risk of running
+	 * the CODEC with a too high frequency. We have an SKU where
+	 * the sysclk frequency is 48Mhz and this causes the sound to be
+	 * sped up. If we can run with a halved sysclk, we will use it,
+	 * if we can't use it, then full sysclk will be used.
+	 */
+	do {
+		/* Validate supported sample rates that are autodetected from MCLK */
+		for (i = 0; i < ARRAY_SIZE(supported_mclk_lrck_ratios); i++) {
+			const unsigned int ratio = supported_mclk_lrck_ratios[i];
 
-		if (es8316->sysclk % ratio != 0)
-			continue;
-		if (es8316->sysclk / ratio == params_rate(params))
-			break;
+			if (clk % ratio != 0)
+				continue;
+			if (clk / ratio == params_rate(params))
+				break;
+		}
+		if (i == ARRAY_SIZE(supported_mclk_lrck_ratios)) {
+			if (clk == es8316->sysclk)
+				return -EINVAL;
+			clk = es8316->sysclk;
+		} else {
+			clk_valid = true;
+		}
+	} while (!clk_valid);
+
+	if (clk != es8316->sysclk) {
+		snd_soc_component_update_bits(component, ES8316_CLKMGR_CLKSW,
+					      ES8316_CLKMGR_CLKSW_MCLK_DIV,
+					      ES8316_CLKMGR_CLKSW_MCLK_DIV);
 	}
-	if (i == NR_SUPPORTED_MCLK_LRCK_RATIOS)
-		return -EINVAL;
-	lrck_divider = es8316->sysclk / params_rate(params);
+
+	lrck_divider = clk / params_rate(params);
 	bclk_divider = lrck_divider / 4;
 	switch (params_format(params)) {
 	case SNDRV_PCM_FORMAT_S16_LE:
@@ -526,7 +556,7 @@ static int es8316_mute(struct snd_soc_dai *dai, int mute, int direction)
 }
 
 #define ES8316_FORMATS (SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S20_3LE | \
-			SNDRV_PCM_FMTBIT_S24_LE)
+			SNDRV_PCM_FMTBIT_S24_LE | SNDRV_PCM_FMTBIT_S32_LE)
 
 static const struct snd_soc_dai_ops es8316_ops = {
 	.startup = es8316_pcm_startup,
@@ -865,7 +895,7 @@ static int es8316_i2c_probe(struct i2c_client *i2c_client)
 }
 
 static const struct i2c_device_id es8316_i2c_id[] = {
-	{"es8316", 0 },
+	{"es8316" },
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, es8316_i2c_id);

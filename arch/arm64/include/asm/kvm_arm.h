@@ -102,11 +102,13 @@
 #define HCR_HOST_NVHE_PROTECTED_FLAGS (HCR_HOST_NVHE_FLAGS | HCR_TSC)
 #define HCR_HOST_VHE_FLAGS (HCR_RW | HCR_TGE | HCR_E2H)
 
-#define HCRX_GUEST_FLAGS (HCRX_EL2_SMPME | HCRX_EL2_TCR2En)
-#define HCRX_HOST_FLAGS (HCRX_EL2_MSCEn | HCRX_EL2_TCR2En)
+#define HCRX_HOST_FLAGS (HCRX_EL2_MSCEn | HCRX_EL2_TCR2En | HCRX_EL2_EnFPM)
+#define MPAMHCR_HOST_FLAGS	0
 
 /* TCR_EL2 Registers bits */
+#define TCR_EL2_DS		(1UL << 32)
 #define TCR_EL2_RES1		((1U << 31) | (1 << 23))
+#define TCR_EL2_HPD		(1 << 24)
 #define TCR_EL2_TBI		(1 << 20)
 #define TCR_EL2_PS_SHIFT	16
 #define TCR_EL2_PS_MASK		(7 << TCR_EL2_PS_SHIFT)
@@ -117,9 +119,10 @@
 #define TCR_EL2_IRGN0_MASK	TCR_IRGN0_MASK
 #define TCR_EL2_T0SZ_MASK	0x3f
 #define TCR_EL2_MASK	(TCR_EL2_TG0_MASK | TCR_EL2_SH0_MASK | \
-			 TCR_EL2_ORGN0_MASK | TCR_EL2_IRGN0_MASK | TCR_EL2_T0SZ_MASK)
+			 TCR_EL2_ORGN0_MASK | TCR_EL2_IRGN0_MASK)
 
 /* VTCR_EL2 Registers bits */
+#define VTCR_EL2_DS		TCR_EL2_DS
 #define VTCR_EL2_RES1		(1U << 31)
 #define VTCR_EL2_HD		(1 << 22)
 #define VTCR_EL2_HA		(1 << 21)
@@ -297,40 +300,17 @@
 #define CPTR_EL2_TSM	(1 << 12)
 #define CPTR_EL2_TFP	(1 << CPTR_EL2_TFP_SHIFT)
 #define CPTR_EL2_TZ	(1 << 8)
-#define CPTR_NVHE_EL2_RES1	0x000032ff /* known RES1 bits in CPTR_EL2 (nVHE) */
+#define CPTR_NVHE_EL2_RES1	(BIT(13) | BIT(9) | GENMASK(7, 0))
 #define CPTR_NVHE_EL2_RES0	(GENMASK(63, 32) |	\
 				 GENMASK(29, 21) |	\
 				 GENMASK(19, 14) |	\
 				 BIT(11))
 
-/* Hyp Debug Configuration Register bits */
-#define MDCR_EL2_E2TB_MASK	(UL(0x3))
-#define MDCR_EL2_E2TB_SHIFT	(UL(24))
-#define MDCR_EL2_HPMFZS		(UL(1) << 36)
-#define MDCR_EL2_HPMFZO		(UL(1) << 29)
-#define MDCR_EL2_MTPME		(UL(1) << 28)
-#define MDCR_EL2_TDCC		(UL(1) << 27)
-#define MDCR_EL2_HLP		(UL(1) << 26)
-#define MDCR_EL2_HCCD		(UL(1) << 23)
-#define MDCR_EL2_TTRF		(UL(1) << 19)
-#define MDCR_EL2_HPMD		(UL(1) << 17)
-#define MDCR_EL2_TPMS		(UL(1) << 14)
-#define MDCR_EL2_E2PB_MASK	(UL(0x3))
-#define MDCR_EL2_E2PB_SHIFT	(UL(12))
-#define MDCR_EL2_TDRA		(UL(1) << 11)
-#define MDCR_EL2_TDOSA		(UL(1) << 10)
-#define MDCR_EL2_TDA		(UL(1) << 9)
-#define MDCR_EL2_TDE		(UL(1) << 8)
-#define MDCR_EL2_HPME		(UL(1) << 7)
-#define MDCR_EL2_TPM		(UL(1) << 6)
-#define MDCR_EL2_TPMCR		(UL(1) << 5)
-#define MDCR_EL2_HPMN_MASK	(UL(0x1F))
-#define MDCR_EL2_RES0		(GENMASK(63, 37) |	\
-				 GENMASK(35, 30) |	\
-				 GENMASK(25, 24) |	\
-				 GENMASK(22, 20) |	\
-				 BIT(18) |		\
-				 GENMASK(16, 15))
+#define CPTR_VHE_EL2_RES0	(GENMASK(63, 32) |	\
+				 GENMASK(27, 26) |	\
+				 GENMASK(23, 22) |	\
+				 GENMASK(19, 18) |	\
+				 GENMASK(15, 0))
 
 /*
  * FGT register definitions
@@ -342,36 +322,47 @@
  * Once we get to a point where the two describe the same thing, we'll
  * merge the definitions. One day.
  */
-#define __HFGRTR_EL2_RES0	(GENMASK(63, 56) | GENMASK(53, 51))
+#define __HFGRTR_EL2_RES0	HFGxTR_EL2_RES0
 #define __HFGRTR_EL2_MASK	GENMASK(49, 0)
-#define __HFGRTR_EL2_nMASK	(GENMASK(58, 57) | GENMASK(55, 54) | BIT(50))
+#define __HFGRTR_EL2_nMASK	~(__HFGRTR_EL2_RES0 | __HFGRTR_EL2_MASK)
 
-#define __HFGWTR_EL2_RES0	(GENMASK(63, 56) | GENMASK(53, 51) |	\
-				 BIT(46) | BIT(42) | BIT(40) | BIT(28) | \
-				 GENMASK(26, 25) | BIT(21) | BIT(18) |	\
+/*
+ * The HFGWTR bits are a subset of HFGRTR bits. To ensure we don't miss any
+ * future additions, define __HFGWTR* macros relative to __HFGRTR* ones.
+ */
+#define __HFGRTR_ONLY_MASK	(BIT(46) | BIT(42) | BIT(40) | BIT(28) | \
+				 GENMASK(26, 25) | BIT(21) | BIT(18) | \
 				 GENMASK(15, 14) | GENMASK(10, 9) | BIT(2))
-#define __HFGWTR_EL2_MASK	GENMASK(49, 0)
-#define __HFGWTR_EL2_nMASK	(GENMASK(58, 57) | GENMASK(55, 54) | BIT(50))
+#define __HFGWTR_EL2_RES0	(__HFGRTR_EL2_RES0 | __HFGRTR_ONLY_MASK)
+#define __HFGWTR_EL2_MASK	(__HFGRTR_EL2_MASK & ~__HFGRTR_ONLY_MASK)
+#define __HFGWTR_EL2_nMASK	~(__HFGWTR_EL2_RES0 | __HFGWTR_EL2_MASK)
 
-#define __HFGITR_EL2_RES0	GENMASK(63, 57)
-#define __HFGITR_EL2_MASK	GENMASK(54, 0)
-#define __HFGITR_EL2_nMASK	GENMASK(56, 55)
+#define __HFGITR_EL2_RES0	HFGITR_EL2_RES0
+#define __HFGITR_EL2_MASK	(BIT(62) | BIT(60) | GENMASK(54, 0))
+#define __HFGITR_EL2_nMASK	~(__HFGITR_EL2_RES0 | __HFGITR_EL2_MASK)
 
-#define __HDFGRTR_EL2_RES0	(BIT(49) | BIT(42) | GENMASK(39, 38) |	\
-				 GENMASK(21, 20) | BIT(8))
-#define __HDFGRTR_EL2_MASK	~__HDFGRTR_EL2_nMASK
-#define __HDFGRTR_EL2_nMASK	GENMASK(62, 59)
+#define __HDFGRTR_EL2_RES0	HDFGRTR_EL2_RES0
+#define __HDFGRTR_EL2_MASK	(BIT(63) | GENMASK(58, 50) | GENMASK(48, 43) | \
+				 GENMASK(41, 40) | GENMASK(37, 22) | \
+				 GENMASK(19, 9) | GENMASK(7, 0))
+#define __HDFGRTR_EL2_nMASK	~(__HDFGRTR_EL2_RES0 | __HDFGRTR_EL2_MASK)
 
-#define __HDFGWTR_EL2_RES0	(BIT(63) | GENMASK(59, 58) | BIT(51) | BIT(47) | \
-				 BIT(43) | GENMASK(40, 38) | BIT(34) | BIT(30) | \
-				 BIT(22) | BIT(9) | BIT(6))
-#define __HDFGWTR_EL2_MASK	~__HDFGWTR_EL2_nMASK
-#define __HDFGWTR_EL2_nMASK	GENMASK(62, 60)
+#define __HDFGWTR_EL2_RES0	HDFGWTR_EL2_RES0
+#define __HDFGWTR_EL2_MASK	(GENMASK(57, 52) | GENMASK(50, 48) | \
+				 GENMASK(46, 44) | GENMASK(42, 41) | \
+				 GENMASK(37, 35) | GENMASK(33, 31) | \
+				 GENMASK(29, 23) | GENMASK(21, 10) | \
+				 GENMASK(8, 7) | GENMASK(5, 0))
+#define __HDFGWTR_EL2_nMASK	~(__HDFGWTR_EL2_RES0 | __HDFGWTR_EL2_MASK)
+
+#define __HAFGRTR_EL2_RES0	HAFGRTR_EL2_RES0
+#define __HAFGRTR_EL2_MASK	(GENMASK(49, 17) | GENMASK(4, 0))
+#define __HAFGRTR_EL2_nMASK	~(__HAFGRTR_EL2_RES0 | __HAFGRTR_EL2_MASK)
 
 /* Similar definitions for HCRX_EL2 */
-#define __HCRX_EL2_RES0		(GENMASK(63, 16) | GENMASK(13, 12))
-#define __HCRX_EL2_MASK		(0)
-#define __HCRX_EL2_nMASK	(GENMASK(15, 14) | GENMASK(4, 0))
+#define __HCRX_EL2_RES0         HCRX_EL2_RES0
+#define __HCRX_EL2_MASK		(BIT(6))
+#define __HCRX_EL2_nMASK	~(__HCRX_EL2_RES0 | __HCRX_EL2_MASK)
 
 /* Hyp Prefetch Fault Address Register (HPFAR/HDFAR) */
 #define HPFAR_MASK	(~UL(0xf))
@@ -399,8 +390,6 @@
 	ECN(BREAKPT_LOW), ECN(BREAKPT_CUR), ECN(SOFTSTP_LOW), \
 	ECN(SOFTSTP_CUR), ECN(WATCHPT_LOW), ECN(WATCHPT_CUR), \
 	ECN(BKPT32), ECN(VECTOR32), ECN(BRK64), ECN(ERET)
-
-#define CPACR_EL1_TTA		(1 << 28)
 
 #define kvm_mode_names				\
 	{ PSR_MODE_EL0t,	"EL0t" },	\

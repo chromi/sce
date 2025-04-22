@@ -1487,7 +1487,7 @@ static int sunlance_sbus_probe(struct platform_device *op)
 	return err;
 }
 
-static int sunlance_sbus_remove(struct platform_device *op)
+static void sunlance_sbus_remove(struct platform_device *op)
 {
 	struct lance_private *lp = platform_get_drvdata(op);
 	struct net_device *net_dev = lp->dev;
@@ -1497,8 +1497,6 @@ static int sunlance_sbus_remove(struct platform_device *op)
 	lance_free_hwresources(lp);
 
 	free_netdev(net_dev);
-
-	return 0;
 }
 
 static const struct of_device_id sunlance_sbus_match[] = {

@@ -246,11 +246,15 @@ static void cptvf_lf_shutdown(struct otx2_cptlfs_info *lfs)
 	/* Unregister crypto algorithms */
 	otx2_cpt_crypto_exit(lfs->pdev, THIS_MODULE);
 	/* Unregister LFs interrupts */
-	otx2_cptlf_unregister_interrupts(lfs);
+	otx2_cptlf_unregister_misc_interrupts(lfs);
+	otx2_cptlf_unregister_done_interrupts(lfs);
 	/* Cleanup LFs software side */
 	lf_sw_cleanup(lfs);
+	/* Free instruction queues */
+	otx2_cpt_free_instruction_queues(lfs);
 	/* Send request to detach LFs */
 	otx2_cpt_detach_rsrcs_msg(lfs);
+	lfs->lfs_num = 0;
 }
 
 static int cptvf_lf_init(struct otx2_cptvf_dev *cptvf)
@@ -277,8 +281,7 @@ static int cptvf_lf_init(struct otx2_cptvf_dev *cptvf)
 	if (ret)
 		return ret;
 
-	lfs_num = cptvf->lfs.kvf_limits ? cptvf->lfs.kvf_limits :
-		  num_online_cpus();
+	lfs_num = cptvf->lfs.kvf_limits;
 
 	otx2_cptlf_set_dev_info(lfs, cptvf->pdev, cptvf->reg_base,
 				&cptvf->pfvf_mbox, cptvf->blkaddr);
@@ -298,7 +301,11 @@ static int cptvf_lf_init(struct otx2_cptvf_dev *cptvf)
 		goto cleanup_lf;
 
 	/* Register LFs interrupts */
-	ret = otx2_cptlf_register_interrupts(lfs);
+	ret = otx2_cptlf_register_misc_interrupts(lfs);
+	if (ret)
+		goto cleanup_lf_sw;
+
+	ret = otx2_cptlf_register_done_interrupts(lfs);
 	if (ret)
 		goto cleanup_lf_sw;
 
@@ -319,7 +326,8 @@ static int cptvf_lf_init(struct otx2_cptvf_dev *cptvf)
 disable_irqs:
 	otx2_cptlf_free_irqs_affinity(lfs);
 unregister_intr:
-	otx2_cptlf_unregister_interrupts(lfs);
+	otx2_cptlf_unregister_misc_interrupts(lfs);
+	otx2_cptlf_unregister_done_interrupts(lfs);
 cleanup_lf_sw:
 	lf_sw_cleanup(lfs);
 cleanup_lf:
@@ -350,9 +358,8 @@ static int otx2_cptvf_probe(struct pci_dev *pdev,
 		dev_err(dev, "Unable to get usable DMA configuration\n");
 		goto clear_drvdata;
 	}
-	/* Map VF's configuration registers */
-	ret = pcim_iomap_regions_request_all(pdev, 1 << PCI_PF_REG_BAR_NUM,
-					     OTX2_CPTVF_DRV_NAME);
+
+	ret = pcim_request_all_regions(pdev, OTX2_CPTVF_DRV_NAME);
 	if (ret) {
 		dev_err(dev, "Couldn't get PCI resources 0x%x\n", ret);
 		goto clear_drvdata;
@@ -361,7 +368,13 @@ static int otx2_cptvf_probe(struct pci_dev *pdev,
 	pci_set_drvdata(pdev, cptvf);
 	cptvf->pdev = pdev;
 
-	cptvf->reg_base = pcim_iomap_table(pdev)[PCI_PF_REG_BAR_NUM];
+	/* Map VF's configuration registers */
+	cptvf->reg_base = pcim_iomap(pdev, PCI_PF_REG_BAR_NUM, 0);
+	if (!cptvf->reg_base) {
+		ret = -ENOMEM;
+		dev_err(dev, "Couldn't ioremap PCI resource 0x%x\n", ret);
+		goto clear_drvdata;
+	}
 
 	otx2_cpt_set_hw_caps(pdev, &cptvf->cap_flag);
 
@@ -380,6 +393,17 @@ static int otx2_cptvf_probe(struct pci_dev *pdev,
 		goto destroy_pfvf_mbox;
 
 	cptvf->blkaddr = BLKADDR_CPT0;
+
+	cptvf_hw_ops_get(cptvf);
+
+	ret = otx2_cptvf_send_caps_msg(cptvf);
+	if (ret) {
+		dev_err(&pdev->dev, "Couldn't get CPT engine capabilities.\n");
+		goto unregister_interrupts;
+	}
+	if (cptvf->eng_caps[OTX2_CPT_SE_TYPES] & BIT_ULL(35))
+		cptvf->lfs.ops->cpt_sg_info_create = cn10k_sgv2_info_create;
+
 	/* Initialize CPT LFs */
 	ret = cptvf_lf_init(cptvf);
 	if (ret)
@@ -429,7 +453,7 @@ static struct pci_driver otx2_cptvf_pci_driver = {
 
 module_pci_driver(otx2_cptvf_pci_driver);
 
-MODULE_IMPORT_NS(CRYPTO_DEV_OCTEONTX2_CPT);
+MODULE_IMPORT_NS("CRYPTO_DEV_OCTEONTX2_CPT");
 
 MODULE_AUTHOR("Marvell");
 MODULE_DESCRIPTION("Marvell RVU CPT Virtual Function Driver");

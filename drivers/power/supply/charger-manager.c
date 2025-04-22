@@ -22,6 +22,7 @@
 #include <linux/platform_device.h>
 #include <linux/power/charger-manager.h>
 #include <linux/regulator/consumer.h>
+#include <linux/string_choices.h>
 #include <linux/sysfs.h>
 #include <linux/of.h>
 #include <linux/thermal.h>
@@ -221,7 +222,7 @@ static bool is_charging(struct charger_manager *cm)
 
 	/* If at least one of the charger is charging, return yes */
 	for (i = 0; cm->desc->psy_charger_stat[i]; i++) {
-		/* 1. The charger sholuld not be DISABLED */
+		/* 1. The charger should not be DISABLED */
 		if (cm->emergency_stop)
 			continue;
 		if (!cm->charger_enabled)
@@ -1088,7 +1089,7 @@ static ssize_t charger_state_show(struct device *dev,
 	if (!charger->externally_control)
 		state = regulator_is_enabled(charger->consumer);
 
-	return sysfs_emit(buf, "%s\n", state ? "enabled" : "disabled");
+	return sysfs_emit(buf, "%s\n", str_enabled_disabled(state));
 }
 
 static ssize_t charger_externally_control_show(struct device *dev,
@@ -1412,10 +1413,9 @@ static inline struct charger_desc *cm_get_drv_data(struct platform_device *pdev)
 	return dev_get_platdata(&pdev->dev);
 }
 
-static enum alarmtimer_restart cm_timer_func(struct alarm *alarm, ktime_t now)
+static void cm_timer_func(struct alarm *alarm, ktime_t now)
 {
 	cm_timer_set = false;
-	return ALARMTIMER_NORESTART;
 }
 
 static int charger_manager_probe(struct platform_device *pdev)
@@ -1516,9 +1516,11 @@ static int charger_manager_probe(struct platform_device *pdev)
 	memcpy(&cm->charger_psy_desc, &psy_default, sizeof(psy_default));
 
 	if (!desc->psy_name)
-		strncpy(cm->psy_name_buf, psy_default.name, PSY_NAME_MAX);
+		strscpy(cm->psy_name_buf, psy_default.name,
+			sizeof(cm->psy_name_buf));
 	else
-		strncpy(cm->psy_name_buf, desc->psy_name, PSY_NAME_MAX);
+		strscpy(cm->psy_name_buf, desc->psy_name,
+			sizeof(cm->psy_name_buf));
 	cm->charger_psy_desc.name = cm->psy_name_buf;
 
 	/* Allocate for psy properties because they may vary */
@@ -1628,7 +1630,7 @@ err_reg_extcon:
 	return ret;
 }
 
-static int charger_manager_remove(struct platform_device *pdev)
+static void charger_manager_remove(struct platform_device *pdev)
 {
 	struct charger_manager *cm = platform_get_drvdata(pdev);
 	struct charger_desc *desc = cm->desc;
@@ -1648,8 +1650,6 @@ static int charger_manager_remove(struct platform_device *pdev)
 	power_supply_unregister(cm->charger_psy);
 
 	try_charger_enable(cm, false);
-
-	return 0;
 }
 
 static const struct platform_device_id charger_manager_id[] = {

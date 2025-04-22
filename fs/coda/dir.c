@@ -111,7 +111,7 @@ static inline void coda_dir_update_mtime(struct inode *dir)
 	/* optimistically we can also act as if our nose bleeds. The
 	 * granularity of the mtime is coarse anyways so we might actually be
 	 * right most of the time. Note: we only do this for directories. */
-	dir->i_mtime = inode_set_ctime_current(dir);
+	inode_set_mtime_to_ts(dir, inode_set_ctime_current(dir));
 #endif
 }
 
@@ -445,7 +445,8 @@ static int coda_readdir(struct file *coda_file, struct dir_context *ctx)
 }
 
 /* called when a cache lookup succeeds */
-static int coda_dentry_revalidate(struct dentry *de, unsigned int flags)
+static int coda_dentry_revalidate(struct inode *dir, const struct qstr *name,
+				  struct dentry *de, unsigned int flags)
 {
 	struct inode *inode;
 	struct coda_inode_info *cii;

@@ -36,11 +36,9 @@ static int int3401_add(struct platform_device *pdev)
 	return ret;
 }
 
-static int int3401_remove(struct platform_device *pdev)
+static void int3401_remove(struct platform_device *pdev)
 {
 	proc_thermal_remove(platform_get_drvdata(pdev));
-
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP

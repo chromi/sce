@@ -7,11 +7,11 @@
  */
 
 #include <linux/mod_devicetable.h>
-#include <linux/of_device.h>
-#include <linux/platform_device.h>
 
 struct device;
+struct device_node;
 struct of_device_id;
+struct platform_device;
 
 /**
  * struct of_dev_auxdata - lookup table entry for device names & platform_data
@@ -46,8 +46,6 @@ struct of_dev_auxdata {
 #define OF_DEV_AUXDATA(_compat,_phys,_name,_pdata) \
 	{ .compatible = _compat, .phys_addr = _phys, .name = _name, \
 	  .platform_data = _pdata }
-
-extern const struct of_device_id of_default_bus_match_table[];
 
 /* Platform drivers register/unregister */
 extern struct platform_device *of_device_alloc(struct device_node *np,

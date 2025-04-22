@@ -133,13 +133,15 @@ static void vb2_vmalloc_put_userptr(void *buf_priv)
 
 	if (!buf->vec->is_pfns) {
 		n_pages = frame_vector_count(buf->vec);
-		pages = frame_vector_pages(buf->vec);
 		if (vaddr)
 			vm_unmap_ram((void *)vaddr, n_pages);
 		if (buf->dma_dir == DMA_FROM_DEVICE ||
-		    buf->dma_dir == DMA_BIDIRECTIONAL)
-			for (i = 0; i < n_pages; i++)
-				set_page_dirty_lock(pages[i]);
+		    buf->dma_dir == DMA_BIDIRECTIONAL) {
+			pages = frame_vector_pages(buf->vec);
+			if (!WARN_ON_ONCE(IS_ERR(pages)))
+				for (i = 0; i < n_pages; i++)
+					set_page_dirty_lock(pages[i]);
+		}
 	} else {
 		iounmap((__force void __iomem *)buf->vaddr);
 	}
@@ -440,4 +442,4 @@ EXPORT_SYMBOL_GPL(vb2_vmalloc_memops);
 MODULE_DESCRIPTION("vmalloc memory handling routines for videobuf2");
 MODULE_AUTHOR("Pawel Osciak <pawel@osciak.com>");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS(DMA_BUF);
+MODULE_IMPORT_NS("DMA_BUF");

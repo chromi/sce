@@ -435,7 +435,7 @@ static int yogabook_pdev_set_kbd_backlight(struct yogabook_data *data, u8 level)
 		.enabled = level,
 	};
 
-	pwm_apply_state(data->kbd_bl_pwm, &state);
+	pwm_apply_might_sleep(data->kbd_bl_pwm, &state);
 	gpiod_set_value(data->kbd_bl_led_enable, level ? 1 : 0);
 	return 0;
 }
@@ -536,7 +536,7 @@ static void yogabook_pdev_remove(struct platform_device *pdev)
 
 static struct platform_driver yogabook_pdev_driver = {
 	.probe = yogabook_pdev_probe,
-	.remove_new = yogabook_pdev_remove,
+	.remove = yogabook_pdev_remove,
 	.driver = {
 		.name = YB_PDEV_NAME,
 		.pm = pm_sleep_ptr(&yogabook_pm_ops),

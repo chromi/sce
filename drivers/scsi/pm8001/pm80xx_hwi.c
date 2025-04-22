@@ -568,13 +568,13 @@ static void read_main_config_table(struct pm8001_hba_info *pm8001_ha)
 	pm8001_ha->main_cfg_tbl.pm80xx_tbl.inc_fw_version =
 		pm8001_mr32(address, MAIN_MPI_INACTIVE_FW_VERSION);
 
-	pm8001_dbg(pm8001_ha, DEV,
+	pm8001_dbg(pm8001_ha, INIT,
 		   "Main cfg table: sign:%x interface rev:%x fw_rev:%x\n",
 		   pm8001_ha->main_cfg_tbl.pm80xx_tbl.signature,
 		   pm8001_ha->main_cfg_tbl.pm80xx_tbl.interface_rev,
 		   pm8001_ha->main_cfg_tbl.pm80xx_tbl.firmware_rev);
 
-	pm8001_dbg(pm8001_ha, DEV,
+	pm8001_dbg(pm8001_ha, INIT,
 		   "table offset: gst:%x iq:%x oq:%x int vec:%x phy attr:%x\n",
 		   pm8001_ha->main_cfg_tbl.pm80xx_tbl.gst_offset,
 		   pm8001_ha->main_cfg_tbl.pm80xx_tbl.inbound_queue_offset,
@@ -582,7 +582,7 @@ static void read_main_config_table(struct pm8001_hba_info *pm8001_ha)
 		   pm8001_ha->main_cfg_tbl.pm80xx_tbl.int_vec_table_offset,
 		   pm8001_ha->main_cfg_tbl.pm80xx_tbl.phy_attr_table_offset);
 
-	pm8001_dbg(pm8001_ha, DEV,
+	pm8001_dbg(pm8001_ha, INIT,
 		   "Main cfg table; ila rev:%x Inactive fw rev:%x\n",
 		   pm8001_ha->main_cfg_tbl.pm80xx_tbl.ila_version,
 		   pm8001_ha->main_cfg_tbl.pm80xx_tbl.inc_fw_version);
@@ -763,7 +763,8 @@ static void init_default_table_values(struct pm8001_hba_info *pm8001_ha)
 		pm8001_ha->memoryMap.region[IOP].phys_addr_lo;
 	pm8001_ha->main_cfg_tbl.pm80xx_tbl.pcs_event_log_size		=
 							PM8001_EVENT_LOG_SIZE;
-	pm8001_ha->main_cfg_tbl.pm80xx_tbl.pcs_event_log_severity	= 0x01;
+	pm8001_ha->main_cfg_tbl.pm80xx_tbl.pcs_event_log_severity	=
+		pcs_event_log_severity;
 	pm8001_ha->main_cfg_tbl.pm80xx_tbl.fatal_err_interrupt		= 0x01;
 
 	/* Enable higher IQs and OQs, 32 to 63, bit 16 */
@@ -1715,27 +1716,6 @@ static void pm80xx_hw_chip_rst(struct pm8001_hba_info *pm8001_ha)
 }
 
 /**
- * pm80xx_chip_intx_interrupt_enable - enable PM8001 chip interrupt
- * @pm8001_ha: our hba card information
- */
-static void
-pm80xx_chip_intx_interrupt_enable(struct pm8001_hba_info *pm8001_ha)
-{
-	pm8001_cw32(pm8001_ha, 0, MSGU_ODMR, ODMR_CLEAR_ALL);
-	pm8001_cw32(pm8001_ha, 0, MSGU_ODCR, ODCR_CLEAR_ALL);
-}
-
-/**
- * pm80xx_chip_intx_interrupt_disable - disable PM8001 chip interrupt
- * @pm8001_ha: our hba card information
- */
-static void
-pm80xx_chip_intx_interrupt_disable(struct pm8001_hba_info *pm8001_ha)
-{
-	pm8001_cw32(pm8001_ha, 0, MSGU_ODMR_CLR, ODMR_MASK_ALL);
-}
-
-/**
  * pm80xx_chip_interrupt_enable - enable PM8001 chip interrupt
  * @pm8001_ha: our hba card information
  * @vec: interrupt number to enable
@@ -1743,16 +1723,16 @@ pm80xx_chip_intx_interrupt_disable(struct pm8001_hba_info *pm8001_ha)
 static void
 pm80xx_chip_interrupt_enable(struct pm8001_hba_info *pm8001_ha, u8 vec)
 {
-#ifdef PM8001_USE_MSIX
+	if (!pm8001_ha->use_msix) {
+		pm8001_cw32(pm8001_ha, 0, MSGU_ODMR, ODMR_CLEAR_ALL);
+		pm8001_cw32(pm8001_ha, 0, MSGU_ODCR, ODCR_CLEAR_ALL);
+		return;
+	}
+
 	if (vec < 32)
 		pm8001_cw32(pm8001_ha, 0, MSGU_ODMR_CLR, 1U << vec);
 	else
-		pm8001_cw32(pm8001_ha, 0, MSGU_ODMR_CLR_U,
-			    1U << (vec - 32));
-	return;
-#endif
-	pm80xx_chip_intx_interrupt_enable(pm8001_ha);
-
+		pm8001_cw32(pm8001_ha, 0, MSGU_ODMR_CLR_U, 1U << (vec - 32));
 }
 
 /**
@@ -1763,19 +1743,20 @@ pm80xx_chip_interrupt_enable(struct pm8001_hba_info *pm8001_ha, u8 vec)
 static void
 pm80xx_chip_interrupt_disable(struct pm8001_hba_info *pm8001_ha, u8 vec)
 {
-#ifdef PM8001_USE_MSIX
+	if (!pm8001_ha->use_msix) {
+		pm8001_cw32(pm8001_ha, 0, MSGU_ODMR_CLR, ODMR_MASK_ALL);
+		return;
+	}
+
 	if (vec == 0xFF) {
 		/* disable all vectors 0-31, 32-63 */
 		pm8001_cw32(pm8001_ha, 0, MSGU_ODMR, 0xFFFFFFFF);
 		pm8001_cw32(pm8001_ha, 0, MSGU_ODMR_U, 0xFFFFFFFF);
-	} else if (vec < 32)
+	} else if (vec < 32) {
 		pm8001_cw32(pm8001_ha, 0, MSGU_ODMR, 1U << vec);
-	else
-		pm8001_cw32(pm8001_ha, 0, MSGU_ODMR_U,
-			    1U << (vec - 32));
-	return;
-#endif
-	pm80xx_chip_intx_interrupt_disable(pm8001_ha);
+	} else {
+		pm8001_cw32(pm8001_ha, 0, MSGU_ODMR_U, 1U << (vec - 32));
+	}
 }
 
 /**
@@ -2057,7 +2038,7 @@ mpi_ssp_completion(struct pm8001_hba_info *pm8001_ha, void *piomb)
 			atomic_dec(&pm8001_dev->running_req);
 		break;
 	}
-	pm8001_dbg(pm8001_ha, IO, "scsi_status = 0x%x\n ",
+	pm8001_dbg(pm8001_ha, IO, "scsi_status = 0x%x\n",
 		   psspPayload->ssp_resp_iu.status);
 	spin_lock_irqsave(&t->task_state_lock, flags);
 	t->task_state_flags &= ~SAS_TASK_STATE_PENDING;
@@ -2265,7 +2246,7 @@ mpi_sata_completion(struct pm8001_hba_info *pm8001_ha,
 	u32 param;
 	u32 status;
 	u32 tag;
-	int i, j;
+	int i, j, ata_tag = -1;
 	u8 sata_addr_low[4];
 	u32 temp_sata_addr_low, temp_sata_addr_hi;
 	u8 sata_addr_hi[4];
@@ -2275,6 +2256,7 @@ mpi_sata_completion(struct pm8001_hba_info *pm8001_ha,
 	u32 *sata_resp;
 	struct pm8001_device *pm8001_dev;
 	unsigned long flags;
+	struct ata_queued_cmd *qc;
 
 	psataPayload = (struct sata_completion_resp *)(piomb + 4);
 	status = le32_to_cpu(psataPayload->status);
@@ -2286,8 +2268,11 @@ mpi_sata_completion(struct pm8001_hba_info *pm8001_ha,
 	pm8001_dev = ccb->device;
 
 	if (t) {
-		if (t->dev && (t->dev->lldd_dev))
+		if (t->dev && (t->dev->lldd_dev)) {
 			pm8001_dev = t->dev->lldd_dev;
+			qc = t->uldd_task;
+			ata_tag = qc ? qc->tag : -1;
+		}
 	} else {
 		pm8001_dbg(pm8001_ha, FAIL, "task null, freeing CCB tag %d\n",
 			   ccb->ccb_tag);
@@ -2295,16 +2280,14 @@ mpi_sata_completion(struct pm8001_hba_info *pm8001_ha,
 		return;
 	}
 
-
 	if (pm8001_dev && unlikely(!t->lldd_task || !t->dev))
 		return;
 
 	ts = &t->task_status;
-
 	if (status != IO_SUCCESS) {
 		pm8001_dbg(pm8001_ha, FAIL,
-			"IO failed device_id %u status 0x%x tag %d\n",
-			pm8001_dev->device_id, status, tag);
+			"IO failed status %#x pm80xx tag %#x ata tag %d\n",
+			status, tag, ata_tag);
 	}
 
 	/* Print sas address of IO failed device */
@@ -2686,13 +2669,19 @@ static void mpi_sata_event(struct pm8001_hba_info *pm8001_ha,
 
 	/* Check if this is NCQ error */
 	if (event == IO_XFER_ERROR_ABORTED_NCQ_MODE) {
+		/* tag value is invalid with this event */
+		pm8001_dbg(pm8001_ha, FAIL, "NCQ ERROR for device %#x tag %#x\n",
+			dev_id, tag);
+
 		/* find device using device id */
 		pm8001_dev = pm8001_find_dev(pm8001_ha, dev_id);
 		/* send read log extension by aborting the link - libata does what we want */
-		if (pm8001_dev)
+		if (pm8001_dev) {
+			pm80xx_show_pending_commands(pm8001_ha, pm8001_dev);
 			pm8001_handle_event(pm8001_ha,
 				pm8001_dev,
 				IO_XFER_ERROR_ABORTED_NCQ_MODE);
+		}
 		return;
 	}
 
@@ -3355,10 +3344,11 @@ static int mpi_phy_start_resp(struct pm8001_hba_info *pm8001_ha, void *piomb)
 	u32 phy_id =
 		le32_to_cpu(pPayload->phyid) & 0xFF;
 	struct pm8001_phy *phy = &pm8001_ha->phy[phy_id];
+	u32 tag = le32_to_cpu(pPayload->tag);
 
 	pm8001_dbg(pm8001_ha, INIT,
-		   "phy start resp status:0x%x, phyid:0x%x\n",
-		   status, phy_id);
+		   "phy start resp status:0x%x, phyid:0x%x, tag 0x%x\n",
+		   status, phy_id, tag);
 	if (status == 0)
 		phy->phy_state = PHY_LINK_DOWN;
 
@@ -3367,6 +3357,8 @@ static int mpi_phy_start_resp(struct pm8001_hba_info *pm8001_ha, void *piomb)
 		complete(phy->enable_completion);
 		phy->enable_completion = NULL;
 	}
+
+	pm8001_tag_free(pm8001_ha, tag);
 	return 0;
 
 }
@@ -3647,8 +3639,10 @@ static int mpi_phy_stop_resp(struct pm8001_hba_info *pm8001_ha, void *piomb)
 	u32 phyid =
 		le32_to_cpu(pPayload->phyid) & 0xFF;
 	struct pm8001_phy *phy = &pm8001_ha->phy[phyid];
-	pm8001_dbg(pm8001_ha, MSG, "phy:0x%x status:0x%x\n",
-		   phyid, status);
+	u32 tag = le32_to_cpu(pPayload->tag);
+
+	pm8001_dbg(pm8001_ha, MSG, "phy:0x%x status:0x%x tag 0x%x\n", phyid,
+		   status, tag);
 	if (status == PHY_STOP_SUCCESS ||
 		status == PHY_STOP_ERR_DEVICE_ATTACHED) {
 		phy->phy_state = PHY_LINK_DISABLE;
@@ -3656,6 +3650,7 @@ static int mpi_phy_stop_resp(struct pm8001_hba_info *pm8001_ha, void *piomb)
 		phy->sas_phy.linkrate = SAS_PHY_DISABLED;
 	}
 
+	pm8001_tag_free(pm8001_ha, tag);
 	return 0;
 }
 
@@ -3674,10 +3669,9 @@ static int mpi_set_controller_config_resp(struct pm8001_hba_info *pm8001_ha,
 	u32 tag = le32_to_cpu(pPayload->tag);
 
 	pm8001_dbg(pm8001_ha, MSG,
-		   "SET CONTROLLER RESP: status 0x%x qlfr_pgcd 0x%x\n",
-		   status, err_qlfr_pgcd);
+		   "SET CONTROLLER RESP: status 0x%x qlfr_pgcd 0x%x tag 0x%x\n",
+		   status, err_qlfr_pgcd, tag);
 	pm8001_tag_free(pm8001_ha, tag);
-
 	return 0;
 }
 
@@ -4651,8 +4645,15 @@ static int
 pm80xx_chip_phy_start_req(struct pm8001_hba_info *pm8001_ha, u8 phy_id)
 {
 	struct phy_start_req payload;
-	u32 tag = 0x01;
+	int ret;
+	u32 tag;
 	u32 opcode = OPC_INB_PHYSTART;
+
+	ret = pm8001_tag_alloc(pm8001_ha, &tag);
+	if (ret) {
+		pm8001_dbg(pm8001_ha, FAIL, "Tag allocation failed\n");
+		return ret;
+	}
 
 	memset(&payload, 0, sizeof(payload));
 	payload.tag = cpu_to_le32(tag);
@@ -4689,8 +4690,15 @@ static int pm80xx_chip_phy_stop_req(struct pm8001_hba_info *pm8001_ha,
 	u8 phy_id)
 {
 	struct phy_stop_req payload;
-	u32 tag = 0x01;
+	int ret;
+	u32 tag;
 	u32 opcode = OPC_INB_PHYSTOP;
+
+	ret = pm8001_tag_alloc(pm8001_ha, &tag);
+	if (ret) {
+		pm8001_dbg(pm8001_ha, FAIL, "Tag allocation failed\n");
+		return ret;
+	}
 
 	memset(&payload, 0, sizeof(payload));
 	payload.tag = cpu_to_le32(tag);
@@ -4802,16 +4810,15 @@ static int pm80xx_chip_phy_ctl_req(struct pm8001_hba_info *pm8001_ha,
 
 static u32 pm80xx_chip_is_our_interrupt(struct pm8001_hba_info *pm8001_ha)
 {
-#ifdef PM8001_USE_MSIX
-	return 1;
-#else
 	u32 value;
+
+	if (pm8001_ha->use_msix)
+		return 1;
 
 	value = pm8001_cr32(pm8001_ha, 0, MSGU_ODR);
 	if (value)
 		return 1;
 	return 0;
-#endif
 }
 
 /**

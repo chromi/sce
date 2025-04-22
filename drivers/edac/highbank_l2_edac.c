@@ -54,7 +54,7 @@ static int highbank_l2_err_probe(struct platform_device *pdev)
 	int res = 0;
 
 	dci = edac_device_alloc_ctl_info(sizeof(*drvdata), "cpu",
-		1, "L", 1, 2, NULL, 0, 0);
+					 1, "L", 1, 2, 0);
 	if (!dci)
 		return -ENOMEM;
 
@@ -118,13 +118,12 @@ err:
 	return res;
 }
 
-static int highbank_l2_err_remove(struct platform_device *pdev)
+static void highbank_l2_err_remove(struct platform_device *pdev)
 {
 	struct edac_device_ctl_info *dci = platform_get_drvdata(pdev);
 
 	edac_device_del_device(&pdev->dev);
 	edac_device_free_ctl_info(dci);
-	return 0;
 }
 
 static struct platform_driver highbank_l2_edac_driver = {

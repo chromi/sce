@@ -236,6 +236,7 @@ struct key {
 #define KEY_FLAG_ROOT_CAN_INVAL	7	/* set if key can be invalidated by root without permission */
 #define KEY_FLAG_KEEP		8	/* set if key should not be removed */
 #define KEY_FLAG_UID_KEYRING	9	/* set if key is a user or user session keyring */
+#define KEY_FLAG_FINAL_PUT	10	/* set if final put has happened on key */
 
 	/* the key type and key description string
 	 * - the desc is used to match a key against search criteria
@@ -436,9 +437,6 @@ extern key_ref_t keyring_search(key_ref_t keyring,
 				const char *description,
 				bool recurse);
 
-extern int keyring_add_key(struct key *keyring,
-			   struct key *key);
-
 extern int keyring_restrict(key_ref_t keyring, const char *type,
 			    const char *restriction);
 
@@ -515,6 +513,7 @@ extern void key_init(void);
 #define key_init()			do { } while(0)
 #define key_free_user_ns(ns)		do { } while(0)
 #define key_remove_domain(d)		do { } while(0)
+#define key_lookup(k)			NULL
 
 #endif /* CONFIG_KEYS */
 #endif /* __KERNEL__ */

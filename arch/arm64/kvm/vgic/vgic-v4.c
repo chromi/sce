@@ -123,7 +123,7 @@ static void vgic_v4_enable_vsgis(struct kvm_vcpu *vcpu)
 	 * IRQ. The SGI code will do its magic.
 	 */
 	for (i = 0; i < VGIC_NR_SGIS; i++) {
-		struct vgic_irq *irq = vgic_get_irq(vcpu->kvm, vcpu, i);
+		struct vgic_irq *irq = vgic_get_vcpu_irq(vcpu, i);
 		struct irq_desc *desc;
 		unsigned long flags;
 		int ret;
@@ -160,7 +160,7 @@ static void vgic_v4_disable_vsgis(struct kvm_vcpu *vcpu)
 	int i;
 
 	for (i = 0; i < VGIC_NR_SGIS; i++) {
-		struct vgic_irq *irq = vgic_get_irq(vcpu->kvm, vcpu, i);
+		struct vgic_irq *irq = vgic_get_vcpu_irq(vcpu, i);
 		struct irq_desc *desc;
 		unsigned long flags;
 		int ret;
@@ -434,6 +434,10 @@ int kvm_vgic_v4_set_forwarding(struct kvm *kvm, int virq,
 	ret = vgic_its_resolve_lpi(kvm, its, irq_entry->msi.devid,
 				   irq_entry->msi.data, &irq);
 	if (ret)
+		goto out;
+
+	/* Silently exit if the vLPI is already mapped */
+	if (irq->hw)
 		goto out;
 
 	/*

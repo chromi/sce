@@ -331,7 +331,7 @@ err:
 	return rc;
 }
 
-static int aspeed_lpc_snoop_remove(struct platform_device *pdev)
+static void aspeed_lpc_snoop_remove(struct platform_device *pdev)
 {
 	struct aspeed_lpc_snoop *lpc_snoop = dev_get_drvdata(&pdev->dev);
 
@@ -340,8 +340,6 @@ static int aspeed_lpc_snoop_remove(struct platform_device *pdev)
 	aspeed_lpc_disable_snoop(lpc_snoop, 1);
 
 	clk_disable_unprepare(lpc_snoop->clk);
-
-	return 0;
 }
 
 static const struct aspeed_lpc_snoop_model_data ast2400_model_data = {

@@ -3,7 +3,7 @@
 // This file is provided under a dual BSD/GPLv2 license.  When using or
 // redistributing this file, you may do so under either license.
 //
-// Copyright(c) 2018 Intel Corporation. All rights reserved.
+// Copyright(c) 2018 Intel Corporation
 //
 // Author: Liam Girdwood <liam.r.girdwood@linux.intel.com>
 //
@@ -266,20 +266,20 @@ static void bdw_dump(struct snd_sof_dev *sdev, u32 flags)
 	imrd = snd_sof_dsp_read(sdev, BDW_DSP_BAR, SHIM_IMRD);
 	dev_err(sdev->dev,
 		"error: ipc host -> DSP: pending %s complete %s raw 0x%8.8x\n",
-		(panic & SHIM_IPCX_BUSY) ? "yes" : "no",
-		(panic & SHIM_IPCX_DONE) ? "yes" : "no", panic);
+		str_yes_no(panic & SHIM_IPCX_BUSY),
+		str_yes_no(panic & SHIM_IPCX_DONE), panic);
 	dev_err(sdev->dev,
 		"error: mask host: pending %s complete %s raw 0x%8.8x\n",
-		(imrx & SHIM_IMRX_BUSY) ? "yes" : "no",
-		(imrx & SHIM_IMRX_DONE) ? "yes" : "no", imrx);
+		str_yes_no(imrx & SHIM_IMRX_BUSY),
+		str_yes_no(imrx & SHIM_IMRX_DONE), imrx);
 	dev_err(sdev->dev,
 		"error: ipc DSP -> host: pending %s complete %s raw 0x%8.8x\n",
-		(status & SHIM_IPCD_BUSY) ? "yes" : "no",
-		(status & SHIM_IPCD_DONE) ? "yes" : "no", status);
+		str_yes_no(status & SHIM_IPCD_BUSY),
+		str_yes_no(status & SHIM_IPCD_DONE), status);
 	dev_err(sdev->dev,
 		"error: mask DSP: pending %s complete %s raw 0x%8.8x\n",
-		(imrd & SHIM_IMRD_BUSY) ? "yes" : "no",
-		(imrd & SHIM_IMRD_DONE) ? "yes" : "no", imrd);
+		str_yes_no(imrd & SHIM_IMRD_BUSY),
+		str_yes_no(imrd & SHIM_IMRD_DONE), imrd);
 }
 
 /*
@@ -410,8 +410,7 @@ static int bdw_probe(struct snd_sof_dev *sdev)
 {
 	struct snd_sof_pdata *pdata = sdev->pdata;
 	const struct sof_dev_desc *desc = pdata->desc;
-	struct platform_device *pdev =
-		container_of(sdev->dev, struct platform_device, dev);
+	struct platform_device *pdev = to_platform_device(sdev->dev);
 	const struct sof_intel_dsp_desc *chip;
 	struct resource *mmio;
 	u32 base, size;
@@ -567,7 +566,7 @@ static struct snd_soc_dai_driver bdw_dai[] = {
 };
 
 /* broadwell ops */
-static struct snd_sof_dsp_ops sof_bdw_ops = {
+static const struct snd_sof_dsp_ops sof_bdw_ops = {
 	/*Device init */
 	.probe          = bdw_probe,
 
@@ -639,16 +638,16 @@ static const struct sof_dev_desc sof_acpi_broadwell_desc = {
 	.resindex_imr_base = -1,
 	.irqindex_host_ipc = 0,
 	.chip_info = &bdw_chip_info,
-	.ipc_supported_mask = BIT(SOF_IPC),
-	.ipc_default = SOF_IPC,
+	.ipc_supported_mask = BIT(SOF_IPC_TYPE_3),
+	.ipc_default = SOF_IPC_TYPE_3,
 	.default_fw_path = {
-		[SOF_IPC] = "intel/sof",
+		[SOF_IPC_TYPE_3] = "intel/sof",
 	},
 	.default_tplg_path = {
-		[SOF_IPC] = "intel/sof-tplg",
+		[SOF_IPC_TYPE_3] = "intel/sof-tplg",
 	},
 	.default_fw_filename = {
-		[SOF_IPC] = "sof-bdw.ri",
+		[SOF_IPC_TYPE_3] = "sof-bdw.ri",
 	},
 	.nocodec_tplg_filename = "sof-bdw-nocodec.tplg",
 	.ops = &sof_bdw_ops,
@@ -694,6 +693,7 @@ static struct platform_driver snd_sof_acpi_intel_bdw_driver = {
 module_platform_driver(snd_sof_acpi_intel_bdw_driver);
 
 MODULE_LICENSE("Dual BSD/GPL");
-MODULE_IMPORT_NS(SND_SOC_SOF_INTEL_HIFI_EP_IPC);
-MODULE_IMPORT_NS(SND_SOC_SOF_XTENSA);
-MODULE_IMPORT_NS(SND_SOC_SOF_ACPI_DEV);
+MODULE_DESCRIPTION("SOF support for Broadwell platforms");
+MODULE_IMPORT_NS("SND_SOC_SOF_INTEL_HIFI_EP_IPC");
+MODULE_IMPORT_NS("SND_SOC_SOF_XTENSA");
+MODULE_IMPORT_NS("SND_SOC_SOF_ACPI_DEV");

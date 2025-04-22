@@ -345,7 +345,7 @@ static int regulator_virtual_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int regulator_virtual_remove(struct platform_device *pdev)
+static void regulator_virtual_remove(struct platform_device *pdev)
 {
 	struct virtual_consumer_data *drvdata = platform_get_drvdata(pdev);
 
@@ -353,8 +353,6 @@ static int regulator_virtual_remove(struct platform_device *pdev)
 
 	if (drvdata->enabled)
 		regulator_disable(drvdata->regulator);
-
-	return 0;
 }
 
 static struct platform_driver regulator_virtual_consumer_driver = {

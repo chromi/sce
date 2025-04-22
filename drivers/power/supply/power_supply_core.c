@@ -9,6 +9,7 @@
  *  Modified: 2004, Oct     Szabolcs Gyurko
  */
 
+#include <linux/cleanup.h>
 #include <linux/module.h>
 #include <linux/types.h>
 #include <linux/init.h>
@@ -25,14 +26,17 @@
 #include "power_supply.h"
 #include "samsung-sdi-battery.h"
 
-/* exported for the APM Power driver, APM emulation */
-struct class *power_supply_class;
-EXPORT_SYMBOL_GPL(power_supply_class);
+static const struct class power_supply_class = {
+	.name = "power_supply",
+	.dev_uevent = power_supply_uevent,
+};
 
-ATOMIC_NOTIFIER_HEAD(power_supply_notifier);
-EXPORT_SYMBOL_GPL(power_supply_notifier);
+static BLOCKING_NOTIFIER_HEAD(power_supply_notifier);
 
-static struct device_type power_supply_dev_type;
+static const struct device_type power_supply_dev_type = {
+	.name = "power_supply",
+	.groups = power_supply_attr_groups,
+};
 
 #define POWER_SUPPLY_DEFERRED_REGISTER_TIME	msecs_to_jiffies(10)
 
@@ -62,21 +66,19 @@ static bool __power_supply_is_supplied_by(struct power_supply *supplier,
 	return false;
 }
 
-static int __power_supply_changed_work(struct device *dev, void *data)
+static int __power_supply_changed_work(struct power_supply *pst, void *data)
 {
 	struct power_supply *psy = data;
-	struct power_supply *pst = dev_get_drvdata(dev);
 
-	if (__power_supply_is_supplied_by(psy, pst)) {
-		if (pst->desc->external_power_changed)
-			pst->desc->external_power_changed(pst);
-	}
+	if (__power_supply_is_supplied_by(psy, pst))
+		power_supply_external_power_changed(pst);
 
 	return 0;
 }
 
 static void power_supply_changed_work(struct work_struct *work)
 {
+	int ret;
 	unsigned long flags;
 	struct power_supply *psy = container_of(work, struct power_supply,
 						changed_work);
@@ -84,6 +86,16 @@ static void power_supply_changed_work(struct work_struct *work)
 	dev_dbg(&psy->dev, "%s\n", __func__);
 
 	spin_lock_irqsave(&psy->changed_lock, flags);
+
+	if (unlikely(psy->update_groups)) {
+		psy->update_groups = false;
+		spin_unlock_irqrestore(&psy->changed_lock, flags);
+		ret = sysfs_update_groups(&psy->dev.kobj, power_supply_dev_type.groups);
+		if (ret)
+			dev_warn(&psy->dev, "failed to update sysfs groups: %pe\n", ERR_PTR(ret));
+		spin_lock_irqsave(&psy->changed_lock, flags);
+	}
+
 	/*
 	 * Check 'changed' here to avoid issues due to race between
 	 * power_supply_changed() and this routine. In worst case
@@ -94,10 +106,9 @@ static void power_supply_changed_work(struct work_struct *work)
 	if (likely(psy->changed)) {
 		psy->changed = false;
 		spin_unlock_irqrestore(&psy->changed_lock, flags);
-		class_for_each_device(power_supply_class, NULL, psy,
-				      __power_supply_changed_work);
+		power_supply_for_each_psy(psy, __power_supply_changed_work);
 		power_supply_update_leds(psy);
-		atomic_notifier_call_chain(&power_supply_notifier,
+		blocking_notifier_call_chain(&power_supply_notifier,
 				PSY_EVENT_PROP_CHANGED, psy);
 		kobject_uevent(&psy->dev.kobj, KOBJ_CHANGE);
 		spin_lock_irqsave(&psy->changed_lock, flags);
@@ -112,6 +123,30 @@ static void power_supply_changed_work(struct work_struct *work)
 		pm_relax(&psy->dev);
 	spin_unlock_irqrestore(&psy->changed_lock, flags);
 }
+
+struct psy_for_each_psy_cb_data {
+	int (*fn)(struct power_supply *psy, void *data);
+	void *data;
+};
+
+static int psy_for_each_psy_cb(struct device *dev, void *data)
+{
+	struct psy_for_each_psy_cb_data *cb_data = data;
+	struct power_supply *psy = dev_to_psy(dev);
+
+	return cb_data->fn(psy, cb_data->data);
+}
+
+int power_supply_for_each_psy(void *data, int (*fn)(struct power_supply *psy, void *data))
+{
+	struct psy_for_each_psy_cb_data cb_data = {
+		.fn = fn,
+		.data = data,
+	};
+
+	return class_for_each_device(&power_supply_class, NULL, &cb_data, psy_for_each_psy_cb);
+}
+EXPORT_SYMBOL_GPL(power_supply_for_each_psy);
 
 void power_supply_changed(struct power_supply *psy)
 {
@@ -143,7 +178,7 @@ static void power_supply_deferred_register_work(struct work_struct *work)
 						deferred_register_work.work);
 
 	if (psy->dev.parent) {
-		while (!mutex_trylock(&psy->dev.parent->mutex)) {
+		while (!device_trylock(psy->dev.parent)) {
 			if (psy->removing)
 				return;
 			msleep(10);
@@ -153,15 +188,14 @@ static void power_supply_deferred_register_work(struct work_struct *work)
 	power_supply_changed(psy);
 
 	if (psy->dev.parent)
-		mutex_unlock(&psy->dev.parent->mutex);
+		device_unlock(psy->dev.parent);
 }
 
 #ifdef CONFIG_OF
-static int __power_supply_populate_supplied_from(struct device *dev,
+static int __power_supply_populate_supplied_from(struct power_supply *epsy,
 						 void *data)
 {
 	struct power_supply *psy = data;
-	struct power_supply *epsy = dev_get_drvdata(dev);
 	struct device_node *np;
 	int i = 0;
 
@@ -188,21 +222,19 @@ static int power_supply_populate_supplied_from(struct power_supply *psy)
 {
 	int error;
 
-	error = class_for_each_device(power_supply_class, NULL, psy,
-				      __power_supply_populate_supplied_from);
+	error = power_supply_for_each_psy(psy, __power_supply_populate_supplied_from);
 
 	dev_dbg(&psy->dev, "%s %d\n", __func__, error);
 
 	return error;
 }
 
-static int  __power_supply_find_supply_from_node(struct device *dev,
+static int  __power_supply_find_supply_from_node(struct power_supply *epsy,
 						 void *data)
 {
 	struct device_node *np = data;
-	struct power_supply *epsy = dev_get_drvdata(dev);
 
-	/* returning non-zero breaks out of class_for_each_device loop */
+	/* returning non-zero breaks out of power_supply_for_each_psy loop */
 	if (epsy->of_node == np)
 		return 1;
 
@@ -214,17 +246,16 @@ static int power_supply_find_supply_from_node(struct device_node *supply_node)
 	int error;
 
 	/*
-	 * class_for_each_device() either returns its own errors or values
+	 * power_supply_for_each_psy() either returns its own errors or values
 	 * returned by __power_supply_find_supply_from_node().
 	 *
 	 * __power_supply_find_supply_from_node() will return 0 (no match)
 	 * or 1 (match).
 	 *
-	 * We return 0 if class_for_each_device() returned 1, -EPROBE_DEFER if
+	 * We return 0 if power_supply_for_each_psy() returned 1, -EPROBE_DEFER if
 	 * it returned 0, or error as returned by it.
 	 */
-	error = class_for_each_device(power_supply_class, NULL, supply_node,
-				       __power_supply_find_supply_from_node);
+	error = power_supply_for_each_psy(supply_node, __power_supply_find_supply_from_node);
 
 	return error ? (error == 1 ? 0 : error) : -EPROBE_DEFER;
 }
@@ -309,10 +340,9 @@ struct psy_am_i_supplied_data {
 	unsigned int count;
 };
 
-static int __power_supply_am_i_supplied(struct device *dev, void *_data)
+static int __power_supply_am_i_supplied(struct power_supply *epsy, void *_data)
 {
 	union power_supply_propval ret = {0,};
-	struct power_supply *epsy = dev_get_drvdata(dev);
 	struct psy_am_i_supplied_data *data = _data;
 
 	if (__power_supply_is_supplied_by(epsy, data->psy)) {
@@ -330,8 +360,7 @@ int power_supply_am_i_supplied(struct power_supply *psy)
 	struct psy_am_i_supplied_data data = { psy, 0 };
 	int error;
 
-	error = class_for_each_device(power_supply_class, NULL, &data,
-				      __power_supply_am_i_supplied);
+	error = power_supply_for_each_psy(&data, __power_supply_am_i_supplied);
 
 	dev_dbg(&psy->dev, "%s count %u err %d\n", __func__, data.count, error);
 
@@ -342,10 +371,9 @@ int power_supply_am_i_supplied(struct power_supply *psy)
 }
 EXPORT_SYMBOL_GPL(power_supply_am_i_supplied);
 
-static int __power_supply_is_system_supplied(struct device *dev, void *data)
+static int __power_supply_is_system_supplied(struct power_supply *psy, void *data)
 {
 	union power_supply_propval ret = {0,};
-	struct power_supply *psy = dev_get_drvdata(dev);
 	unsigned int *count = data;
 
 	if (!psy->desc->get_property(psy, POWER_SUPPLY_PROP_SCOPE, &ret))
@@ -366,8 +394,7 @@ int power_supply_is_system_supplied(void)
 	int error;
 	unsigned int count = 0;
 
-	error = class_for_each_device(power_supply_class, NULL, &count,
-				      __power_supply_is_system_supplied);
+	error = power_supply_for_each_psy(&count, __power_supply_is_system_supplied);
 
 	/*
 	 * If no system scope power class device was found at all, most probably we
@@ -386,9 +413,8 @@ struct psy_get_supplier_prop_data {
 	union power_supply_propval *val;
 };
 
-static int __power_supply_get_supplier_property(struct device *dev, void *_data)
+static int __power_supply_get_supplier_property(struct power_supply *epsy, void *_data)
 {
-	struct power_supply *epsy = dev_get_drvdata(dev);
 	struct psy_get_supplier_prop_data *data = _data;
 
 	if (__power_supply_is_supplied_by(epsy, data->psy))
@@ -413,8 +439,7 @@ int power_supply_get_property_from_supplier(struct power_supply *psy,
 	 * This function is not intended for use with a supply with multiple
 	 * suppliers, we simply pick the first supply to report the psp.
 	 */
-	ret = class_for_each_device(power_supply_class, NULL, &data,
-				    __power_supply_get_supplier_property);
+	ret = power_supply_for_each_psy(&data, __power_supply_get_supplier_property);
 	if (ret < 0)
 		return ret;
 	if (ret == 0)
@@ -440,7 +465,7 @@ EXPORT_SYMBOL_GPL(power_supply_set_battery_charged);
 static int power_supply_match_device_by_name(struct device *dev, const void *data)
 {
 	const char *name = data;
-	struct power_supply *psy = dev_get_drvdata(dev);
+	struct power_supply *psy = dev_to_psy(dev);
 
 	return strcmp(psy->desc->name, name) == 0;
 }
@@ -459,11 +484,11 @@ static int power_supply_match_device_by_name(struct device *dev, const void *dat
 struct power_supply *power_supply_get_by_name(const char *name)
 {
 	struct power_supply *psy = NULL;
-	struct device *dev = class_find_device(power_supply_class, NULL, name,
-					power_supply_match_device_by_name);
+	struct device *dev = class_find_device(&power_supply_class, NULL, name,
+					       power_supply_match_device_by_name);
 
 	if (dev) {
-		psy = dev_get_drvdata(dev);
+		psy = dev_to_psy(dev);
 		atomic_inc(&psy->use_cnt);
 	}
 
@@ -480,8 +505,6 @@ EXPORT_SYMBOL_GPL(power_supply_get_by_name);
  */
 void power_supply_put(struct power_supply *psy)
 {
-	might_sleep();
-
 	atomic_dec(&psy->use_cnt);
 	put_device(&psy->dev);
 }
@@ -516,13 +539,13 @@ struct power_supply *power_supply_get_by_phandle(struct device_node *np,
 	if (!power_supply_np)
 		return ERR_PTR(-ENODEV);
 
-	dev = class_find_device(power_supply_class, NULL, power_supply_np,
-						power_supply_match_device_node);
+	dev = class_find_device(&power_supply_class, NULL, power_supply_np,
+				power_supply_match_device_node);
 
 	of_node_put(power_supply_np);
 
 	if (dev) {
-		psy = dev_get_drvdata(dev);
+		psy = dev_to_psy(dev);
 		atomic_inc(&psy->use_cnt);
 	}
 
@@ -753,10 +776,10 @@ int power_supply_get_battery_info(struct power_supply *psy,
 
 	for (index = 0; index < len; index++) {
 		struct power_supply_battery_ocv_table *table;
-		char *propname;
 		int i, tab_len, size;
 
-		propname = kasprintf(GFP_KERNEL, "ocv-capacity-table-%d", index);
+		char *propname __free(kfree) = kasprintf(GFP_KERNEL, "ocv-capacity-table-%d",
+							 index);
 		if (!propname) {
 			power_supply_put_battery_info(psy, info);
 			err = -ENOMEM;
@@ -765,17 +788,15 @@ int power_supply_get_battery_info(struct power_supply *psy,
 		list = of_get_property(battery_np, propname, &size);
 		if (!list || !size) {
 			dev_err(&psy->dev, "failed to get %s\n", propname);
-			kfree(propname);
 			power_supply_put_battery_info(psy, info);
 			err = -EINVAL;
 			goto out_put_node;
 		}
 
-		kfree(propname);
 		tab_len = size / (2 * sizeof(__be32));
 		info->ocv_table_size[index] = tab_len;
 
-		table = info->ocv_table[index] =
+		info->ocv_table[index] = table =
 			devm_kcalloc(&psy->dev, tab_len, sizeof(*table), GFP_KERNEL);
 		if (!info->ocv_table[index]) {
 			power_supply_put_battery_info(psy, info);
@@ -796,7 +817,7 @@ int power_supply_get_battery_info(struct power_supply *psy,
 		goto out_ret_pointer;
 
 	info->resist_table_size = len / (2 * sizeof(__be32));
-	resist_table = info->resist_table = devm_kcalloc(&psy->dev,
+	info->resist_table = resist_table = devm_kcalloc(&psy->dev,
 							 info->resist_table_size,
 							 sizeof(*resist_table),
 							 GFP_KERNEL);
@@ -862,44 +883,44 @@ const size_t power_supply_battery_info_properties_size = ARRAY_SIZE(power_supply
 EXPORT_SYMBOL_GPL(power_supply_battery_info_properties_size);
 
 bool power_supply_battery_info_has_prop(struct power_supply_battery_info *info,
-				        enum power_supply_property psp)
+					enum power_supply_property psp)
 {
 	if (!info)
 		return false;
 
 	switch (psp) {
-		case POWER_SUPPLY_PROP_TECHNOLOGY:
-			return info->technology != POWER_SUPPLY_TECHNOLOGY_UNKNOWN;
-		case POWER_SUPPLY_PROP_ENERGY_FULL_DESIGN:
-			return info->energy_full_design_uwh >= 0;
-		case POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN:
-			return info->charge_full_design_uah >= 0;
-		case POWER_SUPPLY_PROP_VOLTAGE_MIN_DESIGN:
-			return info->voltage_min_design_uv >= 0;
-		case POWER_SUPPLY_PROP_VOLTAGE_MAX_DESIGN:
-			return info->voltage_max_design_uv >= 0;
-		case POWER_SUPPLY_PROP_PRECHARGE_CURRENT:
-			return info->precharge_current_ua >= 0;
-		case POWER_SUPPLY_PROP_CHARGE_TERM_CURRENT:
-			return info->charge_term_current_ua >= 0;
-		case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX:
-			return info->constant_charge_current_max_ua >= 0;
-		case POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE_MAX:
-			return info->constant_charge_voltage_max_uv >= 0;
-		case POWER_SUPPLY_PROP_TEMP_AMBIENT_ALERT_MIN:
-			return info->temp_ambient_alert_min > INT_MIN;
-		case POWER_SUPPLY_PROP_TEMP_AMBIENT_ALERT_MAX:
-			return info->temp_ambient_alert_max < INT_MAX;
-		case POWER_SUPPLY_PROP_TEMP_ALERT_MIN:
-			return info->temp_alert_min > INT_MIN;
-		case POWER_SUPPLY_PROP_TEMP_ALERT_MAX:
-			return info->temp_alert_max < INT_MAX;
-		case POWER_SUPPLY_PROP_TEMP_MIN:
-			return info->temp_min > INT_MIN;
-		case POWER_SUPPLY_PROP_TEMP_MAX:
-			return info->temp_max < INT_MAX;
-		default:
-			return false;
+	case POWER_SUPPLY_PROP_TECHNOLOGY:
+		return info->technology != POWER_SUPPLY_TECHNOLOGY_UNKNOWN;
+	case POWER_SUPPLY_PROP_ENERGY_FULL_DESIGN:
+		return info->energy_full_design_uwh >= 0;
+	case POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN:
+		return info->charge_full_design_uah >= 0;
+	case POWER_SUPPLY_PROP_VOLTAGE_MIN_DESIGN:
+		return info->voltage_min_design_uv >= 0;
+	case POWER_SUPPLY_PROP_VOLTAGE_MAX_DESIGN:
+		return info->voltage_max_design_uv >= 0;
+	case POWER_SUPPLY_PROP_PRECHARGE_CURRENT:
+		return info->precharge_current_ua >= 0;
+	case POWER_SUPPLY_PROP_CHARGE_TERM_CURRENT:
+		return info->charge_term_current_ua >= 0;
+	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX:
+		return info->constant_charge_current_max_ua >= 0;
+	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE_MAX:
+		return info->constant_charge_voltage_max_uv >= 0;
+	case POWER_SUPPLY_PROP_TEMP_AMBIENT_ALERT_MIN:
+		return info->temp_ambient_alert_min > INT_MIN;
+	case POWER_SUPPLY_PROP_TEMP_AMBIENT_ALERT_MAX:
+		return info->temp_ambient_alert_max < INT_MAX;
+	case POWER_SUPPLY_PROP_TEMP_ALERT_MIN:
+		return info->temp_alert_min > INT_MIN;
+	case POWER_SUPPLY_PROP_TEMP_ALERT_MAX:
+		return info->temp_alert_max < INT_MAX;
+	case POWER_SUPPLY_PROP_TEMP_MIN:
+		return info->temp_min > INT_MIN;
+	case POWER_SUPPLY_PROP_TEMP_MAX:
+		return info->temp_max < INT_MAX;
+	default:
+		return false;
 	}
 }
 EXPORT_SYMBOL_GPL(power_supply_battery_info_has_prop);
@@ -915,53 +936,53 @@ int power_supply_battery_info_get_prop(struct power_supply_battery_info *info,
 		return -EINVAL;
 
 	switch (psp) {
-		case POWER_SUPPLY_PROP_TECHNOLOGY:
-			val->intval = info->technology;
-			return 0;
-		case POWER_SUPPLY_PROP_ENERGY_FULL_DESIGN:
-			val->intval = info->energy_full_design_uwh;
-			return 0;
-		case POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN:
-			val->intval = info->charge_full_design_uah;
-			return 0;
-		case POWER_SUPPLY_PROP_VOLTAGE_MIN_DESIGN:
-			val->intval = info->voltage_min_design_uv;
-			return 0;
-		case POWER_SUPPLY_PROP_VOLTAGE_MAX_DESIGN:
-			val->intval = info->voltage_max_design_uv;
-			return 0;
-		case POWER_SUPPLY_PROP_PRECHARGE_CURRENT:
-			val->intval = info->precharge_current_ua;
-			return 0;
-		case POWER_SUPPLY_PROP_CHARGE_TERM_CURRENT:
-			val->intval = info->charge_term_current_ua;
-			return 0;
-		case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX:
-			val->intval = info->constant_charge_current_max_ua;
-			return 0;
-		case POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE_MAX:
-			val->intval = info->constant_charge_voltage_max_uv;
-			return 0;
-		case POWER_SUPPLY_PROP_TEMP_AMBIENT_ALERT_MIN:
-			val->intval = info->temp_ambient_alert_min;
-			return 0;
-		case POWER_SUPPLY_PROP_TEMP_AMBIENT_ALERT_MAX:
-			val->intval = info->temp_ambient_alert_max;
-			return 0;
-		case POWER_SUPPLY_PROP_TEMP_ALERT_MIN:
-			val->intval = info->temp_alert_min;
-			return 0;
-		case POWER_SUPPLY_PROP_TEMP_ALERT_MAX:
-			val->intval = info->temp_alert_max;
-			return 0;
-		case POWER_SUPPLY_PROP_TEMP_MIN:
-			val->intval = info->temp_min;
-			return 0;
-		case POWER_SUPPLY_PROP_TEMP_MAX:
-			val->intval = info->temp_max;
-			return 0;
-		default:
-			return -EINVAL;
+	case POWER_SUPPLY_PROP_TECHNOLOGY:
+		val->intval = info->technology;
+		return 0;
+	case POWER_SUPPLY_PROP_ENERGY_FULL_DESIGN:
+		val->intval = info->energy_full_design_uwh;
+		return 0;
+	case POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN:
+		val->intval = info->charge_full_design_uah;
+		return 0;
+	case POWER_SUPPLY_PROP_VOLTAGE_MIN_DESIGN:
+		val->intval = info->voltage_min_design_uv;
+		return 0;
+	case POWER_SUPPLY_PROP_VOLTAGE_MAX_DESIGN:
+		val->intval = info->voltage_max_design_uv;
+		return 0;
+	case POWER_SUPPLY_PROP_PRECHARGE_CURRENT:
+		val->intval = info->precharge_current_ua;
+		return 0;
+	case POWER_SUPPLY_PROP_CHARGE_TERM_CURRENT:
+		val->intval = info->charge_term_current_ua;
+		return 0;
+	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX:
+		val->intval = info->constant_charge_current_max_ua;
+		return 0;
+	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE_MAX:
+		val->intval = info->constant_charge_voltage_max_uv;
+		return 0;
+	case POWER_SUPPLY_PROP_TEMP_AMBIENT_ALERT_MIN:
+		val->intval = info->temp_ambient_alert_min;
+		return 0;
+	case POWER_SUPPLY_PROP_TEMP_AMBIENT_ALERT_MAX:
+		val->intval = info->temp_ambient_alert_max;
+		return 0;
+	case POWER_SUPPLY_PROP_TEMP_ALERT_MIN:
+		val->intval = info->temp_alert_min;
+		return 0;
+	case POWER_SUPPLY_PROP_TEMP_ALERT_MAX:
+		val->intval = info->temp_alert_max;
+		return 0;
+	case POWER_SUPPLY_PROP_TEMP_MIN:
+		val->intval = info->temp_min;
+		return 0;
+	case POWER_SUPPLY_PROP_TEMP_MAX:
+		val->intval = info->temp_max;
+		return 0;
+	default:
+		return -EINVAL;
 	}
 }
 EXPORT_SYMBOL_GPL(power_supply_battery_info_get_prop);
@@ -980,7 +1001,7 @@ EXPORT_SYMBOL_GPL(power_supply_battery_info_get_prop);
  *
  * Return: the battery internal resistance percent
  */
-int power_supply_temp2resist_simple(struct power_supply_resistance_temp_table *table,
+int power_supply_temp2resist_simple(const struct power_supply_resistance_temp_table *table,
 				    int table_len, int temp)
 {
 	int i, high, low;
@@ -1021,7 +1042,7 @@ EXPORT_SYMBOL_GPL(power_supply_temp2resist_simple);
 int power_supply_vbat2ri(struct power_supply_battery_info *info,
 			 int vbat_uv, bool charging)
 {
-	struct power_supply_vbat_ri_table *vbat2ri;
+	const struct power_supply_vbat_ri_table *vbat2ri;
 	int table_len;
 	int i, high, low;
 
@@ -1069,7 +1090,7 @@ int power_supply_vbat2ri(struct power_supply_battery_info *info,
 }
 EXPORT_SYMBOL_GPL(power_supply_vbat2ri);
 
-struct power_supply_maintenance_charge_table *
+const struct power_supply_maintenance_charge_table *
 power_supply_get_maintenance_charging_setting(struct power_supply_battery_info *info,
 					      int index)
 {
@@ -1091,7 +1112,7 @@ EXPORT_SYMBOL_GPL(power_supply_get_maintenance_charging_setting);
  *
  * Return: the battery capacity.
  */
-int power_supply_ocv2cap_simple(struct power_supply_battery_ocv_table *table,
+int power_supply_ocv2cap_simple(const struct power_supply_battery_ocv_table *table,
 				int table_len, int ocv)
 {
 	int i, high, low;
@@ -1116,7 +1137,7 @@ int power_supply_ocv2cap_simple(struct power_supply_battery_ocv_table *table,
 }
 EXPORT_SYMBOL_GPL(power_supply_ocv2cap_simple);
 
-struct power_supply_battery_ocv_table *
+const struct power_supply_battery_ocv_table *
 power_supply_find_ocv2cap_table(struct power_supply_battery_info *info,
 				int temp, int *table_len)
 {
@@ -1147,7 +1168,7 @@ EXPORT_SYMBOL_GPL(power_supply_find_ocv2cap_table);
 int power_supply_batinfo_ocv2cap(struct power_supply_battery_info *info,
 				 int ocv, int temp)
 {
-	struct power_supply_battery_ocv_table *table;
+	const struct power_supply_battery_ocv_table *table;
 	int table_len;
 
 	table = power_supply_find_ocv2cap_table(info, temp, &table_len);
@@ -1180,8 +1201,8 @@ bool power_supply_battery_bti_in_range(struct power_supply_battery_info *info,
 }
 EXPORT_SYMBOL_GPL(power_supply_battery_bti_in_range);
 
-static bool psy_has_property(const struct power_supply_desc *psy_desc,
-			     enum power_supply_property psp)
+static bool psy_desc_has_property(const struct power_supply_desc *psy_desc,
+				  enum power_supply_property psp)
 {
 	bool found = false;
 	int i;
@@ -1196,17 +1217,57 @@ static bool psy_has_property(const struct power_supply_desc *psy_desc,
 	return found;
 }
 
+bool power_supply_ext_has_property(const struct power_supply_ext *psy_ext,
+				   enum power_supply_property psp)
+{
+	int i;
+
+	for (i = 0; i < psy_ext->num_properties; i++)
+		if (psy_ext->properties[i] == psp)
+			return true;
+
+	return false;
+}
+
+bool power_supply_has_property(struct power_supply *psy,
+			       enum power_supply_property psp)
+{
+	struct power_supply_ext_registration *reg;
+
+	if (psy_desc_has_property(psy->desc, psp))
+		return true;
+
+	if (power_supply_battery_info_has_prop(psy->battery_info, psp))
+		return true;
+
+	power_supply_for_each_extension(reg, psy) {
+		if (power_supply_ext_has_property(reg->ext, psp))
+			return true;
+	}
+
+	return false;
+}
+
 int power_supply_get_property(struct power_supply *psy,
 			    enum power_supply_property psp,
 			    union power_supply_propval *val)
 {
+	struct power_supply_ext_registration *reg;
+
 	if (atomic_read(&psy->use_cnt) <= 0) {
 		if (!psy->initialized)
 			return -EAGAIN;
 		return -ENODEV;
 	}
 
-	if (psy_has_property(psy->desc, psp))
+	scoped_guard(rwsem_read, &psy->extensions_sem) {
+		power_supply_for_each_extension(reg, psy) {
+			if (power_supply_ext_has_property(reg->ext, psp))
+				return reg->ext->get_property(psy, reg->ext, reg->data, psp, val);
+		}
+	}
+
+	if (psy_desc_has_property(psy->desc, psp))
 		return psy->desc->get_property(psy, psp, val);
 	else if (power_supply_battery_info_has_prop(psy->battery_info, psp))
 		return power_supply_battery_info_get_prop(psy->battery_info, psp, val);
@@ -1219,7 +1280,24 @@ int power_supply_set_property(struct power_supply *psy,
 			    enum power_supply_property psp,
 			    const union power_supply_propval *val)
 {
-	if (atomic_read(&psy->use_cnt) <= 0 || !psy->desc->set_property)
+	struct power_supply_ext_registration *reg;
+
+	if (atomic_read(&psy->use_cnt) <= 0)
+		return -ENODEV;
+
+	scoped_guard(rwsem_read, &psy->extensions_sem) {
+		power_supply_for_each_extension(reg, psy) {
+			if (power_supply_ext_has_property(reg->ext, psp)) {
+				if (reg->ext->set_property)
+					return reg->ext->set_property(psy, reg->ext, reg->data,
+								      psp, val);
+				else
+					return -ENODEV;
+			}
+		}
+	}
+
+	if (!psy->desc->set_property)
 		return -ENODEV;
 
 	return psy->desc->set_property(psy, psp, val);
@@ -1229,13 +1307,23 @@ EXPORT_SYMBOL_GPL(power_supply_set_property);
 int power_supply_property_is_writeable(struct power_supply *psy,
 					enum power_supply_property psp)
 {
-	if (atomic_read(&psy->use_cnt) <= 0 ||
-			!psy->desc->property_is_writeable)
-		return -ENODEV;
+	struct power_supply_ext_registration *reg;
+
+	power_supply_for_each_extension(reg, psy) {
+		if (power_supply_ext_has_property(reg->ext, psp)) {
+			if (reg->ext->property_is_writeable)
+				return reg->ext->property_is_writeable(psy, reg->ext,
+								       reg->data, psp);
+			else
+				return 0;
+		}
+	}
+
+	if (!psy->desc->property_is_writeable)
+		return 0;
 
 	return psy->desc->property_is_writeable(psy, psp);
 }
-EXPORT_SYMBOL_GPL(power_supply_property_is_writeable);
 
 void power_supply_external_power_changed(struct power_supply *psy)
 {
@@ -1253,22 +1341,105 @@ int power_supply_powers(struct power_supply *psy, struct device *dev)
 }
 EXPORT_SYMBOL_GPL(power_supply_powers);
 
+static int power_supply_update_sysfs_and_hwmon(struct power_supply *psy)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&psy->changed_lock, flags);
+	psy->update_groups = true;
+	spin_unlock_irqrestore(&psy->changed_lock, flags);
+
+	power_supply_changed(psy);
+
+	power_supply_remove_hwmon_sysfs(psy);
+	return power_supply_add_hwmon_sysfs(psy);
+}
+
+int power_supply_register_extension(struct power_supply *psy, const struct power_supply_ext *ext,
+				    struct device *dev, void *data)
+{
+	struct power_supply_ext_registration *reg;
+	size_t i;
+	int ret;
+
+	if (!psy || !dev || !ext || !ext->name || !ext->properties || !ext->num_properties)
+		return -EINVAL;
+
+	guard(rwsem_write)(&psy->extensions_sem);
+
+	power_supply_for_each_extension(reg, psy)
+		if (strcmp(ext->name, reg->ext->name) == 0)
+			return -EEXIST;
+
+	for (i = 0; i < ext->num_properties; i++)
+		if (power_supply_has_property(psy, ext->properties[i]))
+			return -EEXIST;
+
+	reg = kmalloc(sizeof(*reg), GFP_KERNEL);
+	if (!reg)
+		return -ENOMEM;
+
+	reg->ext = ext;
+	reg->dev = dev;
+	reg->data = data;
+	list_add(&reg->list_head, &psy->extensions);
+
+	ret = power_supply_sysfs_add_extension(psy, ext, dev);
+	if (ret)
+		goto sysfs_add_failed;
+
+	ret = power_supply_update_sysfs_and_hwmon(psy);
+	if (ret)
+		goto sysfs_hwmon_failed;
+
+	return 0;
+
+sysfs_hwmon_failed:
+	power_supply_sysfs_remove_extension(psy, ext);
+sysfs_add_failed:
+	list_del(&reg->list_head);
+	kfree(reg);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(power_supply_register_extension);
+
+void power_supply_unregister_extension(struct power_supply *psy, const struct power_supply_ext *ext)
+{
+	struct power_supply_ext_registration *reg;
+
+	guard(rwsem_write)(&psy->extensions_sem);
+
+	power_supply_for_each_extension(reg, psy) {
+		if (reg->ext == ext) {
+			list_del(&reg->list_head);
+			power_supply_sysfs_remove_extension(psy, ext);
+			kfree(reg);
+			power_supply_update_sysfs_and_hwmon(psy);
+			return;
+		}
+	}
+
+	dev_warn(&psy->dev, "Trying to unregister invalid extension");
+}
+EXPORT_SYMBOL_GPL(power_supply_unregister_extension);
+
 static void power_supply_dev_release(struct device *dev)
 {
 	struct power_supply *psy = to_power_supply(dev);
+
 	dev_dbg(dev, "%s\n", __func__);
 	kfree(psy);
 }
 
 int power_supply_reg_notifier(struct notifier_block *nb)
 {
-	return atomic_notifier_chain_register(&power_supply_notifier, nb);
+	return blocking_notifier_chain_register(&power_supply_notifier, nb);
 }
 EXPORT_SYMBOL_GPL(power_supply_reg_notifier);
 
 void power_supply_unreg_notifier(struct notifier_block *nb)
 {
-	atomic_notifier_chain_unregister(&power_supply_notifier, nb);
+	blocking_notifier_chain_unregister(&power_supply_notifier, nb);
 }
 EXPORT_SYMBOL_GPL(power_supply_unreg_notifier);
 
@@ -1292,7 +1463,7 @@ static int power_supply_read_temp(struct thermal_zone_device *tzd,
 	return ret;
 }
 
-static struct thermal_zone_device_ops psy_tzd_ops = {
+static const struct thermal_zone_device_ops psy_tzd_ops = {
 	.get_temp = power_supply_read_temp,
 };
 
@@ -1304,7 +1475,7 @@ static int psy_register_thermal(struct power_supply *psy)
 		return 0;
 
 	/* Register battery zone device psy reports temperature */
-	if (psy_has_property(psy->desc, POWER_SUPPLY_PROP_TEMP)) {
+	if (psy_desc_has_property(psy->desc, POWER_SUPPLY_PROP_TEMP)) {
 		/* Prefer our hwmon device and avoid duplicates */
 		struct thermal_zone_params tzp = {
 			.no_hwmon = IS_ENABLED(CONFIG_POWER_SUPPLY_HWMON)
@@ -1343,8 +1514,7 @@ static void psy_unregister_thermal(struct power_supply *psy)
 static struct power_supply *__must_check
 __power_supply_register(struct device *parent,
 				   const struct power_supply_desc *desc,
-				   const struct power_supply_config *cfg,
-				   bool ws)
+				   const struct power_supply_config *cfg)
 {
 	struct device *dev;
 	struct power_supply *psy;
@@ -1357,10 +1527,6 @@ __power_supply_register(struct device *parent,
 		pr_warn("%s: Expected proper parent device for '%s'\n",
 			__func__, desc->name);
 
-	if (psy_has_property(desc, POWER_SUPPLY_PROP_USB_TYPE) &&
-	    (!desc->usb_types || !desc->num_usb_types))
-		return ERR_PTR(-EINVAL);
-
 	psy = kzalloc(sizeof(*psy), GFP_KERNEL);
 	if (!psy)
 		return ERR_PTR(-ENOMEM);
@@ -1369,7 +1535,7 @@ __power_supply_register(struct device *parent,
 
 	device_initialize(dev);
 
-	dev->class = power_supply_class;
+	dev->class = &power_supply_class;
 	dev->type = &power_supply_dev_type;
 	dev->parent = parent;
 	dev->release = power_supply_dev_release;
@@ -1380,6 +1546,7 @@ __power_supply_register(struct device *parent,
 		psy->drv_data = cfg->drv_data;
 		psy->of_node =
 			cfg->fwnode ? to_of_node(cfg->fwnode) : cfg->of_node;
+		dev->of_node = psy->of_node;
 		psy->supplied_to = cfg->supplied_to;
 		psy->num_supplicants = cfg->num_supplicants;
 	}
@@ -1410,11 +1577,14 @@ __power_supply_register(struct device *parent,
 	}
 
 	spin_lock_init(&psy->changed_lock);
+	init_rwsem(&psy->extensions_sem);
+	INIT_LIST_HEAD(&psy->extensions);
+
 	rc = device_add(dev);
 	if (rc)
 		goto device_add_failed;
 
-	rc = device_init_wakeup(dev, ws);
+	rc = device_init_wakeup(dev, cfg ? !cfg->no_wakeup_source : true);
 	if (rc)
 		goto wakeup_init_failed;
 
@@ -1426,9 +1596,11 @@ __power_supply_register(struct device *parent,
 	if (rc)
 		goto create_triggers_failed;
 
-	rc = power_supply_add_hwmon_sysfs(psy);
-	if (rc)
-		goto add_hwmon_sysfs_failed;
+	scoped_guard(rwsem_read, &psy->extensions_sem) {
+		rc = power_supply_add_hwmon_sysfs(psy);
+		if (rc)
+			goto add_hwmon_sysfs_failed;
+	}
 
 	/*
 	 * Update use_cnt after any uevents (most notably from device_add()).
@@ -1480,32 +1652,9 @@ struct power_supply *__must_check power_supply_register(struct device *parent,
 		const struct power_supply_desc *desc,
 		const struct power_supply_config *cfg)
 {
-	return __power_supply_register(parent, desc, cfg, true);
+	return __power_supply_register(parent, desc, cfg);
 }
 EXPORT_SYMBOL_GPL(power_supply_register);
-
-/**
- * power_supply_register_no_ws() - Register new non-waking-source power supply
- * @parent:	Device to be a parent of power supply's device, usually
- *		the device which probe function calls this
- * @desc:	Description of power supply, must be valid through whole
- *		lifetime of this power supply
- * @cfg:	Run-time specific configuration accessed during registering,
- *		may be NULL
- *
- * Return: A pointer to newly allocated power_supply on success
- * or ERR_PTR otherwise.
- * Use power_supply_unregister() on returned power_supply pointer to release
- * resources.
- */
-struct power_supply *__must_check
-power_supply_register_no_ws(struct device *parent,
-		const struct power_supply_desc *desc,
-		const struct power_supply_config *cfg)
-{
-	return __power_supply_register(parent, desc, cfg, false);
-}
-EXPORT_SYMBOL_GPL(power_supply_register_no_ws);
 
 static void devm_power_supply_release(struct device *dev, void *res)
 {
@@ -1539,7 +1688,7 @@ devm_power_supply_register(struct device *parent,
 
 	if (!ptr)
 		return ERR_PTR(-ENOMEM);
-	psy = __power_supply_register(parent, desc, cfg, true);
+	psy = __power_supply_register(parent, desc, cfg);
 	if (IS_ERR(psy)) {
 		devres_free(ptr);
 	} else {
@@ -1549,42 +1698,6 @@ devm_power_supply_register(struct device *parent,
 	return psy;
 }
 EXPORT_SYMBOL_GPL(devm_power_supply_register);
-
-/**
- * devm_power_supply_register_no_ws() - Register managed non-waking-source power supply
- * @parent:	Device to be a parent of power supply's device, usually
- *		the device which probe function calls this
- * @desc:	Description of power supply, must be valid through whole
- *		lifetime of this power supply
- * @cfg:	Run-time specific configuration accessed during registering,
- *		may be NULL
- *
- * Return: A pointer to newly allocated power_supply on success
- * or ERR_PTR otherwise.
- * The returned power_supply pointer will be automatically unregistered
- * on driver detach.
- */
-struct power_supply *__must_check
-devm_power_supply_register_no_ws(struct device *parent,
-		const struct power_supply_desc *desc,
-		const struct power_supply_config *cfg)
-{
-	struct power_supply **ptr, *psy;
-
-	ptr = devres_alloc(devm_power_supply_release, sizeof(*ptr), GFP_KERNEL);
-
-	if (!ptr)
-		return ERR_PTR(-ENOMEM);
-	psy = __power_supply_register(parent, desc, cfg, false);
-	if (IS_ERR(psy)) {
-		devres_free(ptr);
-	} else {
-		*ptr = psy;
-		devres_add(parent, ptr);
-	}
-	return psy;
-}
-EXPORT_SYMBOL_GPL(devm_power_supply_register_no_ws);
 
 /**
  * power_supply_unregister() - Remove this power supply from system
@@ -1616,26 +1729,19 @@ EXPORT_SYMBOL_GPL(power_supply_get_drvdata);
 
 static int __init power_supply_class_init(void)
 {
-	power_supply_class = class_create("power_supply");
-
-	if (IS_ERR(power_supply_class))
-		return PTR_ERR(power_supply_class);
-
-	power_supply_class->dev_uevent = power_supply_uevent;
-	power_supply_init_attrs(&power_supply_dev_type);
-
-	return 0;
+	power_supply_init_attrs();
+	return class_register(&power_supply_class);
 }
 
 static void __exit power_supply_class_exit(void)
 {
-	class_destroy(power_supply_class);
+	class_unregister(&power_supply_class);
 }
 
 subsys_initcall(power_supply_class_init);
 module_exit(power_supply_class_exit);
 
 MODULE_DESCRIPTION("Universal power supply monitor class");
-MODULE_AUTHOR("Ian Molton <spyro@f2s.com>, "
-	      "Szabolcs Gyurko, "
-	      "Anton Vorontsov <cbou@mail.ru>");
+MODULE_AUTHOR("Ian Molton <spyro@f2s.com>");
+MODULE_AUTHOR("Szabolcs Gyurko");
+MODULE_AUTHOR("Anton Vorontsov <cbou@mail.ru>");

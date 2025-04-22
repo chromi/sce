@@ -17,7 +17,8 @@ dentry_operations
 
 prototypes::
 
-	int (*d_revalidate)(struct dentry *, unsigned int);
+	int (*d_revalidate)(struct inode *, const struct qstr *,
+			    struct dentry *, unsigned int);
 	int (*d_weak_revalidate)(struct dentry *, unsigned int);
 	int (*d_hash)(const struct dentry *, struct qstr *);
 	int (*d_compare)(const struct dentry *,
@@ -29,7 +30,9 @@ prototypes::
 	char *(*d_dname)((struct dentry *dentry, char *buffer, int buflen);
 	struct vfsmount *(*d_automount)(struct path *path);
 	int (*d_manage)(const struct path *, bool);
-	struct dentry *(*d_real)(struct dentry *, const struct inode *);
+	struct dentry *(*d_real)(struct dentry *, enum d_real_type type);
+	bool (*d_unalias_trylock)(const struct dentry *);
+	void (*d_unalias_unlock)(const struct dentry *);
 
 locking rules:
 
@@ -49,6 +52,8 @@ d_dname:	   no		no		no		no
 d_automount:	   no		no		yes		no
 d_manage:	   no		no		yes (ref-walk)	maybe
 d_real		   no		no		yes 		no
+d_unalias_trylock  yes		no		no 		no
+d_unalias_unlock   yes		no		no 		no
 ================== ===========	========	==============	========
 
 inode_operations
@@ -101,7 +106,7 @@ symlink:	exclusive
 mkdir:		exclusive
 unlink:		exclusive (both)
 rmdir:		exclusive (both)(see below)
-rename:		exclusive (all)	(see below)
+rename:		exclusive (both parents, some children)	(see below)
 readlink:	no
 get_link:	no
 setattr:	exclusive
@@ -123,6 +128,9 @@ get_offset_ctx  no
 	Additionally, ->rmdir(), ->unlink() and ->rename() have ->i_rwsem
 	exclusive on victim.
 	cross-directory ->rename() has (per-superblock) ->s_vfs_rename_sem.
+	->unlink() and ->rename() have ->i_rwsem exclusive on all non-directories
+	involved.
+	->rename() has ->i_rwsem exclusive on any subdirectory that changes parent.
 
 See Documentation/filesystems/directory-locking.rst for more detailed discussion
 of the locking scheme for directory operations.
@@ -248,10 +256,10 @@ prototypes::
 	void (*readahead)(struct readahead_control *);
 	int (*write_begin)(struct file *, struct address_space *mapping,
 				loff_t pos, unsigned len,
-				struct page **pagep, void **fsdata);
+				struct folio **foliop, void **fsdata);
 	int (*write_end)(struct file *, struct address_space *mapping,
 				loff_t pos, unsigned len, unsigned copied,
-				struct page *page, void *fsdata);
+				struct folio *folio, void *fsdata);
 	sector_t (*bmap)(struct address_space *, sector_t);
 	void (*invalidate_folio) (struct folio *, size_t start, size_t len);
 	bool (*release_folio)(struct folio *, gfp_t);
@@ -261,7 +269,7 @@ prototypes::
 			struct folio *src, enum migrate_mode);
 	int (*launder_folio)(struct folio *);
 	bool (*is_partially_uptodate)(struct folio *, size_t from, size_t count);
-	int (*error_remove_page)(struct address_space *, struct page *);
+	int (*error_remove_folio)(struct address_space *, struct folio *);
 	int (*swap_activate)(struct swap_info_struct *sis, struct file *f, sector_t *span)
 	int (*swap_deactivate)(struct file *);
 	int (*swap_rw)(struct kiocb *iocb, struct iov_iter *iter);
@@ -277,7 +285,7 @@ read_folio:		yes, unlocks				shared
 writepages:
 dirty_folio:		maybe
 readahead:		yes, unlocks				shared
-write_begin:		locks the page		 exclusive
+write_begin:		locks the folio		 exclusive
 write_end:		yes, unlocks		 exclusive
 bmap:
 invalidate_folio:	yes					exclusive
@@ -287,7 +295,7 @@ direct_IO:
 migrate_folio:		yes (both)
 launder_folio:		yes
 is_partially_uptodate:	yes
-error_remove_page:	yes
+error_remove_folio:	yes
 swap_activate:		no
 swap_deactivate:	no
 swap_rw:		yes, unlocks

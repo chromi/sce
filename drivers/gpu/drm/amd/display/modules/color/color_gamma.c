@@ -37,6 +37,104 @@
 
 static struct hw_x_point coordinates_x[MAX_HW_POINTS + 2];
 
+// Hardcoded table that depends on setup_x_points_distribution and sdr_level=80
+// If x points are changed, then PQ Y points will be misaligned and a new
+// table would need to be generated. Or use old method that calls compute_pq.
+// The last point is above PQ formula range (0-125 in normalized FP16)
+// The value for the last point (128) is such that interpolation from
+// 120 to 128 will give 1.0 for X = 125.0
+// first couple points are 0 - HW LUT is mirrored around zero, so making first
+// segment 0 to 0 will effectively clip it, and these are very low PQ codes
+// min nonzero value below (216825) is a little under 12-bit PQ code 1.
+static const unsigned long long pq_divider = 1000000000;
+static const unsigned long long pq_numerator[MAX_HW_POINTS + 1] = {
+		0, 0, 0, 0, 216825, 222815,
+		228691, 234460, 240128, 245702, 251187, 256587,
+		261908, 267152, 272324, 277427, 282465, 292353,
+		302011, 311456, 320704, 329768, 338661, 347394,
+		355975, 364415, 372721, 380900, 388959, 396903,
+		404739, 412471, 420104, 435089, 449727, 464042,
+		478060, 491800, 505281, 518520, 531529, 544324,
+		556916, 569316, 581533, 593576, 605454, 617175,
+		628745, 651459, 673643, 695337, 716578, 737395,
+		757817, 777869, 797572, 816947, 836012, 854782,
+		873274, 891500, 909474, 927207, 944709, 979061,
+		1012601, 1045391, 1077485, 1108931, 1139770, 1170042,
+		1199778, 1229011, 1257767, 1286071, 1313948, 1341416,
+		1368497, 1395207, 1421563, 1473272, 1523733, 1573041,
+		1621279, 1668520, 1714828, 1760262, 1804874, 1848710,
+		1891814, 1934223, 1975973, 2017096, 2057622, 2097578,
+		2136989, 2214269, 2289629, 2363216, 2435157, 2505564,
+		2574539, 2642169, 2708536, 2773711, 2837760, 2900742,
+		2962712, 3023719, 3083810, 3143025, 3201405, 3315797,
+		3427246, 3535974, 3642181, 3746038, 3847700, 3947305,
+		4044975, 4140823, 4234949, 4327445, 4418394, 4507872,
+		4595951, 4682694, 4768161, 4935487, 5098326, 5257022,
+		5411878, 5563161, 5711107, 5855928, 5997812, 6136929,
+		6273436, 6407471, 6539163, 6668629, 6795976, 6921304,
+		7044703, 7286050, 7520623, 7748950, 7971492, 8188655,
+		8400800, 8608247, 8811286, 9010175, 9205149, 9396421,
+		9584186, 9768620, 9949889, 10128140, 10303513, 10646126,
+		10978648, 11301874, 11616501, 11923142, 12222340, 12514578,
+		12800290, 13079866, 13353659, 13621988, 13885144, 14143394,
+		14396982, 14646132, 14891052, 15368951, 15832050, 16281537,
+		16718448, 17143696, 17558086, 17962337, 18357092, 18742927,
+		19120364, 19489877, 19851894, 20206810, 20554983, 20896745,
+		21232399, 21886492, 22519276, 23132491, 23727656, 24306104,
+		24869013, 25417430, 25952292, 26474438, 26984626, 27483542,
+		27971811, 28450000, 28918632, 29378184, 29829095, 30706591,
+		31554022, 32373894, 33168387, 33939412, 34688657, 35417620,
+		36127636, 36819903, 37495502, 38155408, 38800507, 39431607,
+		40049446, 40654702, 41247996, 42400951, 43512407, 44585892,
+		45624474, 46630834, 47607339, 48556082, 49478931, 50377558,
+		51253467, 52108015, 52942436, 53757848, 54555277, 55335659,
+		56099856, 57582802, 59009766, 60385607, 61714540, 63000246,
+		64245964, 65454559, 66628579, 67770304, 68881781, 69964856,
+		71021203, 72052340, 73059655, 74044414, 75007782, 76874537,
+		78667536, 80393312, 82057522, 83665098, 85220372, 86727167,
+		88188883, 89608552, 90988895, 92332363, 93641173, 94917336,
+		96162685, 97378894, 98567496, 100867409, 103072439, 105191162,
+		107230989, 109198368, 111098951, 112937723, 114719105, 116447036,
+		118125045, 119756307, 121343688, 122889787, 124396968, 125867388,
+		127303021, 130077030, 132731849, 135278464, 137726346, 140083726,
+		142357803, 144554913, 146680670, 148740067, 150737572, 152677197,
+		154562560, 156396938, 158183306, 159924378, 161622632, 164899602,
+		168030318, 171028513, 173906008, 176673051, 179338593, 181910502,
+		184395731, 186800463, 189130216, 191389941, 193584098, 195716719,
+		197791463, 199811660, 201780351, 205574133, 209192504, 212652233,
+		215967720, 219151432, 222214238, 225165676, 228014163, 230767172,
+		233431363, 236012706, 238516569, 240947800, 243310793, 245609544,
+		247847696, 252155270, 256257056, 260173059, 263920427, 267513978,
+		270966613, 274289634, 277493001, 280585542, 283575118, 286468763,
+		289272796, 291992916, 294634284, 297201585, 299699091, 304500003,
+		309064541, 313416043, 317574484, 321557096, 325378855, 329052864,
+		332590655, 336002433, 339297275, 342483294, 345567766, 348557252,
+		351457680, 354274432, 357012407, 362269536, 367260561, 372012143,
+		376547060, 380884936, 385042798, 389035522, 392876185, 396576344,
+		400146265, 403595112, 406931099, 410161619, 413293351, 416332348,
+		419284117, 424945627, 430313203, 435416697, 440281572, 444929733,
+		449380160, 453649415, 457752035, 461700854, 465507260, 469181407,
+		472732388, 476168376, 479496748, 482724188, 485856764, 491858986,
+		497542280, 502939446, 508078420, 512983199, 517674549, 522170569,
+		526487126, 530638214, 534636233, 538492233, 542216094, 545816693,
+		549302035, 552679362, 555955249, 562226134, 568156709, 573782374,
+		579133244, 584235153, 589110430, 593778512, 598256421, 602559154,
+		606699989, 610690741, 614541971, 618263157, 621862836, 625348729,
+		628727839, 635190643, 641295921, 647081261, 652578597, 657815287,
+		662814957, 667598146, 672182825, 676584810, 680818092, 684895111,
+		688826974, 692623643, 696294085, 699846401, 703287935, 709864782,
+		716071394, 721947076, 727525176, 732834238, 737898880, 742740485,
+		747377745, 751827095, 756103063, 760218552, 764185078, 768012958,
+		771711474, 775289005, 778753144, 785368225, 791604988, 797503949,
+		803099452, 808420859, 813493471, 818339244, 822977353, 827424644,
+		831695997, 835804619, 839762285, 843579541, 847265867, 850829815,
+		854279128, 860861356, 867061719, 872921445, 878475444, 883753534,
+		888781386, 893581259, 898172578, 902572393, 906795754, 910856010,
+		914765057, 918533538, 922171018, 925686119, 929086644, 935571664,
+		941675560, 947439782, 952899395, 958084324, 963020312, 967729662,
+		972231821, 976543852, 980680801, 984656009, 988481353, 992167459,
+		995723865, 999159168, 1002565681};
+
 // these are helpers for calculations to reduce stack usage
 // do not depend on these being preserved across calls
 
@@ -239,14 +337,19 @@ static void compute_hlg_oetf(struct fixed31_32 in_x, struct fixed31_32 *out_y,
 void precompute_pq(void)
 {
 	int i;
+	struct fixed31_32 *pq_table = mod_color_get_table(type_pq_table);
+
+	for (i = 0; i <= MAX_HW_POINTS; i++)
+		pq_table[i] = dc_fixpt_from_fraction(pq_numerator[i], pq_divider);
+
+	/* below is old method that uses run-time calculation in fixed pt space */
+	/* pow function has problems with arguments too small */
+	/*
 	struct fixed31_32 x;
 	const struct hw_x_point *coord_x = coordinates_x + 32;
 	struct fixed31_32 scaling_factor =
 			dc_fixpt_from_fraction(80, 10000);
 
-	struct fixed31_32 *pq_table = mod_color_get_table(type_pq_table);
-
-	/* pow function has problems with arguments too small */
 	for (i = 0; i < 32; i++)
 		pq_table[i] = dc_fixpt_zero;
 
@@ -255,6 +358,7 @@ void precompute_pq(void)
 		compute_pq(x, &pq_table[i]);
 		++coord_x;
 	}
+	*/
 }
 
 /* one-time pre-compute dePQ values - only for max pixel value 125 FP16 */
@@ -778,8 +882,6 @@ static void build_pq(struct pwl_float_data_ex *rgb_regamma,
 		/* should really not happen? */
 		if (dc_fixpt_lt(output, dc_fixpt_zero))
 			output = dc_fixpt_zero;
-		else if (dc_fixpt_lt(dc_fixpt_one, output))
-			output = dc_fixpt_one;
 
 		rgb->r = output;
 		rgb->g = output;
@@ -957,7 +1059,7 @@ static bool build_freesync_hdr(struct pwl_float_data_ex *rgb_regamma,
 	struct fixed31_32 min_display;
 	struct fixed31_32 max_content;
 	struct fixed31_32 clip = dc_fixpt_one;
-	struct fixed31_32 output;
+	struct fixed31_32 output = dc_fixpt_zero;
 	bool use_eetf = false;
 	bool is_clipped = false;
 	struct fixed31_32 sdr_white_level;
@@ -1297,71 +1399,6 @@ static void scale_gamma_dx(struct pwl_float_data *pwl_rgb,
 				pwl_rgb[i-1].b, 2), pwl_rgb[i-2].b);
 }
 
-/* todo: all these scale_gamma functions are inherently the same but
- *  take different structures as params or different format for ramp
- *  values. We could probably implement it in a more generic fashion
- */
-static void scale_user_regamma_ramp(struct pwl_float_data *pwl_rgb,
-		const struct regamma_ramp *ramp,
-		struct dividers dividers)
-{
-	unsigned short max_driver = 0xFFFF;
-	unsigned short max_os = 0xFF00;
-	unsigned short scaler = max_os;
-	uint32_t i;
-	struct pwl_float_data *rgb = pwl_rgb;
-	struct pwl_float_data *rgb_last = rgb + GAMMA_RGB_256_ENTRIES - 1;
-
-	i = 0;
-	do {
-		if (ramp->gamma[i] > max_os ||
-				ramp->gamma[i + 256] > max_os ||
-				ramp->gamma[i + 512] > max_os) {
-			scaler = max_driver;
-			break;
-		}
-		i++;
-	} while (i != GAMMA_RGB_256_ENTRIES);
-
-	i = 0;
-	do {
-		rgb->r = dc_fixpt_from_fraction(
-				ramp->gamma[i], scaler);
-		rgb->g = dc_fixpt_from_fraction(
-				ramp->gamma[i + 256], scaler);
-		rgb->b = dc_fixpt_from_fraction(
-				ramp->gamma[i + 512], scaler);
-
-		++rgb;
-		++i;
-	} while (i != GAMMA_RGB_256_ENTRIES);
-
-	rgb->r = dc_fixpt_mul(rgb_last->r,
-			dividers.divider1);
-	rgb->g = dc_fixpt_mul(rgb_last->g,
-			dividers.divider1);
-	rgb->b = dc_fixpt_mul(rgb_last->b,
-			dividers.divider1);
-
-	++rgb;
-
-	rgb->r = dc_fixpt_mul(rgb_last->r,
-			dividers.divider2);
-	rgb->g = dc_fixpt_mul(rgb_last->g,
-			dividers.divider2);
-	rgb->b = dc_fixpt_mul(rgb_last->b,
-			dividers.divider2);
-
-	++rgb;
-
-	rgb->r = dc_fixpt_mul(rgb_last->r,
-			dividers.divider3);
-	rgb->g = dc_fixpt_mul(rgb_last->g,
-			dividers.divider3);
-	rgb->b = dc_fixpt_mul(rgb_last->b,
-			dividers.divider3);
-}
-
 /*
  * RS3+ color transform DDI - 1D LUT adjustment is composed with regamma here
  * Input is evenly distributed in the output color space as specified in
@@ -1561,106 +1598,6 @@ static bool calculate_interpolated_hardware_curve(
 	return true;
 }
 
-/* The "old" interpolation uses a complicated scheme to build an array of
- * coefficients while also using an array of 0-255 normalized to 0-1
- * Then there's another loop using both of the above + new scaled user ramp
- * and we concatenate them. It also searches for points of interpolation and
- * uses enums for positions.
- *
- * This function uses a different approach:
- * user ramp is always applied on X with 0/255, 1/255, 2/255, ..., 255/255
- * To find index for hwX , we notice the following:
- * i/255 <= hwX < (i+1)/255  <=> i <= 255*hwX < i+1
- * See apply_lut_1d which is the same principle, but on 4K entry 1D LUT
- *
- * Once the index is known, combined Y is simply:
- * user_ramp(index) + (hwX-index/255)*(user_ramp(index+1) - user_ramp(index)
- *
- * We should switch to this method in all cases, it's simpler and faster
- * ToDo one day - for now this only applies to ADL regamma to avoid regression
- * for regular use cases (sRGB and PQ)
- */
-static void interpolate_user_regamma(uint32_t hw_points_num,
-		struct pwl_float_data *rgb_user,
-		bool apply_degamma,
-		struct dc_transfer_func_distributed_points *tf_pts)
-{
-	uint32_t i;
-	uint32_t color = 0;
-	int32_t index;
-	int32_t index_next;
-	struct fixed31_32 *tf_point;
-	struct fixed31_32 hw_x;
-	struct fixed31_32 norm_factor =
-			dc_fixpt_from_int(255);
-	struct fixed31_32 norm_x;
-	struct fixed31_32 index_f;
-	struct fixed31_32 lut1;
-	struct fixed31_32 lut2;
-	struct fixed31_32 delta_lut;
-	struct fixed31_32 delta_index;
-	const struct fixed31_32 one = dc_fixpt_from_int(1);
-
-	i = 0;
-	/* fixed_pt library has problems handling too small values */
-	while (i != 32) {
-		tf_pts->red[i] = dc_fixpt_zero;
-		tf_pts->green[i] = dc_fixpt_zero;
-		tf_pts->blue[i] = dc_fixpt_zero;
-		++i;
-	}
-	while (i <= hw_points_num + 1) {
-		for (color = 0; color < 3; color++) {
-			if (color == 0)
-				tf_point = &tf_pts->red[i];
-			else if (color == 1)
-				tf_point = &tf_pts->green[i];
-			else
-				tf_point = &tf_pts->blue[i];
-
-			if (apply_degamma) {
-				if (color == 0)
-					hw_x = coordinates_x[i].regamma_y_red;
-				else if (color == 1)
-					hw_x = coordinates_x[i].regamma_y_green;
-				else
-					hw_x = coordinates_x[i].regamma_y_blue;
-			} else
-				hw_x = coordinates_x[i].x;
-
-			if (dc_fixpt_le(one, hw_x))
-				hw_x = one;
-
-			norm_x = dc_fixpt_mul(norm_factor, hw_x);
-			index = dc_fixpt_floor(norm_x);
-			if (index < 0 || index > 255)
-				continue;
-
-			index_f = dc_fixpt_from_int(index);
-			index_next = (index == 255) ? index : index + 1;
-
-			if (color == 0) {
-				lut1 = rgb_user[index].r;
-				lut2 = rgb_user[index_next].r;
-			} else if (color == 1) {
-				lut1 = rgb_user[index].g;
-				lut2 = rgb_user[index_next].g;
-			} else {
-				lut1 = rgb_user[index].b;
-				lut2 = rgb_user[index_next].b;
-			}
-
-			// we have everything now, so interpolate
-			delta_lut = dc_fixpt_sub(lut2, lut1);
-			delta_index = dc_fixpt_sub(norm_x, index_f);
-
-			*tf_point = dc_fixpt_add(lut1,
-				dc_fixpt_mul(delta_index, delta_lut));
-		}
-		++i;
-	}
-}
-
 static void build_new_custom_resulted_curve(
 	uint32_t hw_points_num,
 	struct dc_transfer_func_distributed_points *tf_pts)
@@ -1678,29 +1615,6 @@ static void build_new_custom_resulted_curve(
 			tf_pts->blue[i], dc_fixpt_zero,
 			dc_fixpt_one);
 
-		++i;
-	}
-}
-
-static void apply_degamma_for_user_regamma(struct pwl_float_data_ex *rgb_regamma,
-		uint32_t hw_points_num, struct calculate_buffer *cal_buffer)
-{
-	uint32_t i;
-
-	struct gamma_coefficients coeff;
-	struct pwl_float_data_ex *rgb = rgb_regamma;
-	const struct hw_x_point *coord_x = coordinates_x;
-
-	build_coefficients(&coeff, TRANSFER_FUNCTION_SRGB);
-
-	i = 0;
-	while (i != hw_points_num + 1) {
-		rgb->r = translate_from_linear_space_ex(
-				coord_x->x, &coeff, 0, cal_buffer);
-		rgb->g = rgb->r;
-		rgb->b = rgb->r;
-		++coord_x;
-		++rgb;
 		++i;
 	}
 }
@@ -1752,125 +1666,6 @@ static bool map_regamma_hw_to_x_user(
 }
 
 #define _EXTRA_POINTS 3
-
-bool calculate_user_regamma_coeff(struct dc_transfer_func *output_tf,
-		const struct regamma_lut *regamma,
-		struct calculate_buffer *cal_buffer,
-		const struct dc_gamma *ramp)
-{
-	struct gamma_coefficients coeff;
-	const struct hw_x_point *coord_x = coordinates_x;
-	uint32_t i = 0;
-
-	do {
-		coeff.a0[i] = dc_fixpt_from_fraction(
-				regamma->coeff.A0[i], 10000000);
-		coeff.a1[i] = dc_fixpt_from_fraction(
-				regamma->coeff.A1[i], 1000);
-		coeff.a2[i] = dc_fixpt_from_fraction(
-				regamma->coeff.A2[i], 1000);
-		coeff.a3[i] = dc_fixpt_from_fraction(
-				regamma->coeff.A3[i], 1000);
-		coeff.user_gamma[i] = dc_fixpt_from_fraction(
-				regamma->coeff.gamma[i], 1000);
-
-		++i;
-	} while (i != 3);
-
-	i = 0;
-	/* fixed_pt library has problems handling too small values */
-	while (i != 32) {
-		output_tf->tf_pts.red[i] = dc_fixpt_zero;
-		output_tf->tf_pts.green[i] = dc_fixpt_zero;
-		output_tf->tf_pts.blue[i] = dc_fixpt_zero;
-		++coord_x;
-		++i;
-	}
-	while (i != MAX_HW_POINTS + 1) {
-		output_tf->tf_pts.red[i] = translate_from_linear_space_ex(
-				coord_x->x, &coeff, 0, cal_buffer);
-		output_tf->tf_pts.green[i] = translate_from_linear_space_ex(
-				coord_x->x, &coeff, 1, cal_buffer);
-		output_tf->tf_pts.blue[i] = translate_from_linear_space_ex(
-				coord_x->x, &coeff, 2, cal_buffer);
-		++coord_x;
-		++i;
-	}
-
-	if (ramp && ramp->type == GAMMA_CS_TFM_1D)
-		apply_lut_1d(ramp, MAX_HW_POINTS, &output_tf->tf_pts);
-
-	// this function just clamps output to 0-1
-	build_new_custom_resulted_curve(MAX_HW_POINTS, &output_tf->tf_pts);
-	output_tf->type = TF_TYPE_DISTRIBUTED_POINTS;
-
-	return true;
-}
-
-bool calculate_user_regamma_ramp(struct dc_transfer_func *output_tf,
-		const struct regamma_lut *regamma,
-		struct calculate_buffer *cal_buffer,
-		const struct dc_gamma *ramp)
-{
-	struct dc_transfer_func_distributed_points *tf_pts = &output_tf->tf_pts;
-	struct dividers dividers;
-
-	struct pwl_float_data *rgb_user = NULL;
-	struct pwl_float_data_ex *rgb_regamma = NULL;
-	bool ret = false;
-
-	if (regamma == NULL)
-		return false;
-
-	output_tf->type = TF_TYPE_DISTRIBUTED_POINTS;
-
-	rgb_user = kcalloc(GAMMA_RGB_256_ENTRIES + _EXTRA_POINTS,
-			   sizeof(*rgb_user),
-			   GFP_KERNEL);
-	if (!rgb_user)
-		goto rgb_user_alloc_fail;
-
-	rgb_regamma = kcalloc(MAX_HW_POINTS + _EXTRA_POINTS,
-			      sizeof(*rgb_regamma),
-			      GFP_KERNEL);
-	if (!rgb_regamma)
-		goto rgb_regamma_alloc_fail;
-
-	dividers.divider1 = dc_fixpt_from_fraction(3, 2);
-	dividers.divider2 = dc_fixpt_from_int(2);
-	dividers.divider3 = dc_fixpt_from_fraction(5, 2);
-
-	scale_user_regamma_ramp(rgb_user, &regamma->ramp, dividers);
-
-	if (regamma->flags.bits.applyDegamma == 1) {
-		apply_degamma_for_user_regamma(rgb_regamma, MAX_HW_POINTS, cal_buffer);
-		copy_rgb_regamma_to_coordinates_x(coordinates_x,
-				MAX_HW_POINTS, rgb_regamma);
-	}
-
-	interpolate_user_regamma(MAX_HW_POINTS, rgb_user,
-			regamma->flags.bits.applyDegamma, tf_pts);
-
-	// no custom HDR curves!
-	tf_pts->end_exponent = 0;
-	tf_pts->x_point_at_y1_red = 1;
-	tf_pts->x_point_at_y1_green = 1;
-	tf_pts->x_point_at_y1_blue = 1;
-
-	if (ramp && ramp->type == GAMMA_CS_TFM_1D)
-		apply_lut_1d(ramp, MAX_HW_POINTS, &output_tf->tf_pts);
-
-	// this function just clamps output to 0-1
-	build_new_custom_resulted_curve(MAX_HW_POINTS, tf_pts);
-
-	ret = true;
-
-	kfree(rgb_regamma);
-rgb_regamma_alloc_fail:
-	kfree(rgb_user);
-rgb_user_alloc_fail:
-	return ret;
-}
 
 bool mod_color_calculate_degamma_params(struct dc_color_caps *dc_caps,
 		struct dc_transfer_func *input_tf,
@@ -2192,7 +1987,8 @@ bool mod_color_calculate_regamma_params(struct dc_transfer_func *output_tf,
 			cal_buffer);
 
 	if (ret) {
-		do_clamping = !(output_tf->tf == TRANSFER_FUNCTION_GAMMA22 &&
+		do_clamping = !(output_tf->tf == TRANSFER_FUNCTION_PQ) &&
+				!(output_tf->tf == TRANSFER_FUNCTION_GAMMA22 &&
 				fs_params != NULL && fs_params->skip_tm == 0);
 
 		map_regamma_hw_to_x_user(ramp, coeff, rgb_user,

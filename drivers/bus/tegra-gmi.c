@@ -258,14 +258,12 @@ static int tegra_gmi_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int tegra_gmi_remove(struct platform_device *pdev)
+static void tegra_gmi_remove(struct platform_device *pdev)
 {
 	struct tegra_gmi *gmi = platform_get_drvdata(pdev);
 
 	of_platform_depopulate(gmi->dev);
 	tegra_gmi_disable(gmi);
-
-	return 0;
 }
 
 static int __maybe_unused tegra_gmi_runtime_resume(struct device *dev)

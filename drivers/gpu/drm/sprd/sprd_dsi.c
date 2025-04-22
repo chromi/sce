@@ -209,7 +209,7 @@ static int regmap_tst_io_read(void *context, u32 reg, u32 *val)
 	return 0;
 }
 
-static struct regmap_bus regmap_tst_io = {
+static const struct regmap_bus regmap_tst_io = {
 	.reg_write = regmap_tst_io_write,
 	.reg_read = regmap_tst_io_read,
 };
@@ -1051,13 +1051,11 @@ static int sprd_dsi_probe(struct platform_device *pdev)
 	return mipi_dsi_host_register(&dsi->host);
 }
 
-static int sprd_dsi_remove(struct platform_device *pdev)
+static void sprd_dsi_remove(struct platform_device *pdev)
 {
 	struct sprd_dsi *dsi = dev_get_drvdata(&pdev->dev);
 
 	mipi_dsi_host_unregister(&dsi->host);
-
-	return 0;
 }
 
 struct platform_driver sprd_dsi_driver = {

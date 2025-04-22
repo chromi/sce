@@ -505,7 +505,7 @@ error_pm:
 	return err;
 }
 
-static int sl3516_ce_remove(struct platform_device *pdev)
+static void sl3516_ce_remove(struct platform_device *pdev)
 {
 	struct sl3516_ce_dev *ce = platform_get_drvdata(pdev);
 
@@ -518,8 +518,6 @@ static int sl3516_ce_remove(struct platform_device *pdev)
 #ifdef CONFIG_CRYPTO_DEV_SL3516_DEBUG
 	debugfs_remove_recursive(ce->dbgfs_dir);
 #endif
-
-	return 0;
 }
 
 static const struct of_device_id sl3516_ce_crypto_of_match_table[] = {

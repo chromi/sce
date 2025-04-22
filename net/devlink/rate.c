@@ -108,12 +108,12 @@ static int devlink_nl_rate_fill(struct sk_buff *msg,
 			goto nla_put_failure;
 	}
 
-	if (nla_put_u64_64bit(msg, DEVLINK_ATTR_RATE_TX_SHARE,
-			      devlink_rate->tx_share, DEVLINK_ATTR_PAD))
+	if (devlink_nl_put_u64(msg, DEVLINK_ATTR_RATE_TX_SHARE,
+			       devlink_rate->tx_share))
 		goto nla_put_failure;
 
-	if (nla_put_u64_64bit(msg, DEVLINK_ATTR_RATE_TX_MAX,
-			      devlink_rate->tx_max, DEVLINK_ATTR_PAD))
+	if (devlink_nl_put_u64(msg, DEVLINK_ATTR_RATE_TX_MAX,
+			       devlink_rate->tx_max))
 		goto nla_put_failure;
 
 	if (nla_put_u32(msg, DEVLINK_ATTR_RATE_TX_PRIORITY,
@@ -146,7 +146,7 @@ static void devlink_rate_notify(struct devlink_rate *devlink_rate,
 
 	WARN_ON(cmd != DEVLINK_CMD_RATE_NEW && cmd != DEVLINK_CMD_RATE_DEL);
 
-	if (!xa_get_mark(&devlinks, devlink->index, DEVLINK_REGISTERED))
+	if (!devl_is_registered(devlink) || !devlink_nl_notify_need(devlink))
 		return;
 
 	msg = nlmsg_new(NLMSG_DEFAULT_SIZE, GFP_KERNEL);
@@ -159,8 +159,7 @@ static void devlink_rate_notify(struct devlink_rate *devlink_rate,
 		return;
 	}
 
-	genlmsg_multicast_netns(&devlink_nl_family, devlink_net(devlink), msg,
-				0, DEVLINK_MCGRP_CONFIG, GFP_KERNEL);
+	devlink_nl_notify_send(devlink, msg);
 }
 
 void devlink_rates_notify_register(struct devlink *devlink)
@@ -458,7 +457,7 @@ static bool devlink_rate_set_ops_supported(const struct devlink_ops *ops,
 	return true;
 }
 
-int devlink_nl_cmd_rate_set_doit(struct sk_buff *skb, struct genl_info *info)
+int devlink_nl_rate_set_doit(struct sk_buff *skb, struct genl_info *info)
 {
 	struct devlink *devlink = info->user_ptr[0];
 	struct devlink_rate *devlink_rate;
@@ -480,7 +479,7 @@ int devlink_nl_cmd_rate_set_doit(struct sk_buff *skb, struct genl_info *info)
 	return err;
 }
 
-int devlink_nl_cmd_rate_new_doit(struct sk_buff *skb, struct genl_info *info)
+int devlink_nl_rate_new_doit(struct sk_buff *skb, struct genl_info *info)
 {
 	struct devlink *devlink = info->user_ptr[0];
 	struct devlink_rate *rate_node;
@@ -536,7 +535,7 @@ err_strdup:
 	return err;
 }
 
-int devlink_nl_cmd_rate_del_doit(struct sk_buff *skb, struct genl_info *info)
+int devlink_nl_rate_del_doit(struct sk_buff *skb, struct genl_info *info)
 {
 	struct devlink *devlink = info->user_ptr[0];
 	struct devlink_rate *rate_node;

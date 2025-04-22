@@ -1714,8 +1714,8 @@ static int __comedi_get_user_chanlist(struct comedi_device *dev,
 
 	lockdep_assert_held(&dev->mutex);
 	cmd->chanlist = NULL;
-	chanlist = memdup_user(user_chanlist,
-			       cmd->chanlist_len * sizeof(unsigned int));
+	chanlist = memdup_array_user(user_chanlist,
+				     cmd->chanlist_len, sizeof(unsigned int));
 	if (IS_ERR(chanlist))
 		return PTR_ERR(chanlist);
 
@@ -2407,6 +2407,18 @@ static int comedi_mmap(struct file *file, struct vm_area_struct *vma)
 
 			start += PAGE_SIZE;
 		}
+
+#ifdef CONFIG_MMU
+		/*
+		 * Leaving behind a partial mapping of a buffer we're about to
+		 * drop is unsafe, see remap_pfn_range_notrack().
+		 * We need to zap the range here ourselves instead of relying
+		 * on the automatic zapping in remap_pfn_range() because we call
+		 * remap_pfn_range() in a loop.
+		 */
+		if (retval)
+			zap_vma_ptes(vma, vma->vm_start, size);
+#endif
 	}
 
 	if (retval == 0) {

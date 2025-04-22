@@ -1017,7 +1017,7 @@ suspend:
 	return ret;
 }
 
-static int mdc_dma_remove(struct platform_device *pdev)
+static void mdc_dma_remove(struct platform_device *pdev)
 {
 	struct mdc_dma *mdma = platform_get_drvdata(pdev);
 	struct mdc_chan *mchan, *next;
@@ -1037,8 +1037,6 @@ static int mdc_dma_remove(struct platform_device *pdev)
 	pm_runtime_disable(&pdev->dev);
 	if (!pm_runtime_status_suspended(&pdev->dev))
 		img_mdc_runtime_suspend(&pdev->dev);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP

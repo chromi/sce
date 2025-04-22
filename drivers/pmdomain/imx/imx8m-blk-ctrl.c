@@ -258,11 +258,14 @@ static int imx8m_blk_ctrl_probe(struct platform_device *pdev)
 
 		domain->power_dev =
 			dev_pm_domain_attach_by_name(dev, data->gpc_name);
-		if (IS_ERR(domain->power_dev)) {
-			dev_err_probe(dev, PTR_ERR(domain->power_dev),
+		if (IS_ERR_OR_NULL(domain->power_dev)) {
+			if (!domain->power_dev)
+				ret = -ENODEV;
+			else
+				ret = PTR_ERR(domain->power_dev);
+			dev_err_probe(dev, ret,
 				      "failed to attach power domain \"%s\"\n",
 				      data->gpc_name);
-			ret = PTR_ERR(domain->power_dev);
 			goto cleanup_pds;
 		}
 
@@ -330,7 +333,7 @@ cleanup_pds:
 	return ret;
 }
 
-static int imx8m_blk_ctrl_remove(struct platform_device *pdev)
+static void imx8m_blk_ctrl_remove(struct platform_device *pdev)
 {
 	struct imx8m_blk_ctrl *bc = dev_get_drvdata(&pdev->dev);
 	int i;
@@ -347,8 +350,6 @@ static int imx8m_blk_ctrl_remove(struct platform_device *pdev)
 	dev_pm_genpd_remove_notifier(bc->bus_power_dev);
 
 	dev_pm_domain_detach(bc->bus_power_dev, true);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -893,6 +894,7 @@ static struct platform_driver imx8m_blk_ctrl_driver = {
 		.name = "imx8m-blk-ctrl",
 		.pm = &imx8m_blk_ctrl_pm_ops,
 		.of_match_table = imx8m_blk_ctrl_of_match,
+		.suppress_bind_attrs = true,
 	},
 };
 module_platform_driver(imx8m_blk_ctrl_driver);

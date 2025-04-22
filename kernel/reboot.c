@@ -55,13 +55,29 @@ struct sys_off_handler {
 	enum sys_off_mode mode;
 	bool blocking;
 	void *list;
+	struct device *dev;
 };
+
+/*
+ * This variable is used to indicate if a halt was initiated instead of a
+ * reboot when the reboot call was invoked with LINUX_REBOOT_CMD_POWER_OFF, but
+ * the system cannot be powered off. This allowes kernel_halt() to notify users
+ * of that.
+ */
+static bool poweroff_fallback_to_halt;
 
 /*
  * Temporary stub that prevents linkage failure while we're in process
  * of removing all uses of legacy pm_power_off() around the kernel.
  */
 void __weak (*pm_power_off)(void);
+
+/*
+ *	Notifier list for kernel code which wants to be called
+ *	at shutdown. This is used to stop any idling DMA operations
+ *	and the like.
+ */
+static BLOCKING_NOTIFIER_HEAD(reboot_notifier_list);
 
 /**
  *	emergency_restart - reboot the system
@@ -74,6 +90,7 @@ void __weak (*pm_power_off)(void);
 void emergency_restart(void)
 {
 	kmsg_dump(KMSG_DUMP_EMERG);
+	system_state = SYSTEM_RESTART;
 	machine_emergency_restart();
 }
 EXPORT_SYMBOL_GPL(emergency_restart);
@@ -295,7 +312,10 @@ void kernel_halt(void)
 	kernel_shutdown_prepare(SYSTEM_HALT);
 	migrate_to_reboot_cpu();
 	syscore_shutdown();
-	pr_emerg("System halted\n");
+	if (poweroff_fallback_to_halt)
+		pr_emerg("Power off not available: System halted instead\n");
+	else
+		pr_emerg("System halted\n");
 	kmsg_dump(KMSG_DUMP_SHUTDOWN);
 	machine_halt();
 }
@@ -323,6 +343,7 @@ static int sys_off_notify(struct notifier_block *nb,
 	data.cb_data = handler->cb_data;
 	data.mode = mode;
 	data.cmd = cmd;
+	data.dev = handler->dev;
 
 	return handler->sys_off_cb(&data);
 }
@@ -510,6 +531,7 @@ int devm_register_sys_off_handler(struct device *dev,
 	handler = register_sys_off_handler(mode, priority, callback, cb_data);
 	if (IS_ERR(handler))
 		return PTR_ERR(handler);
+	handler->dev = dev;
 
 	return devm_add_action_or_reset(dev, devm_unregister_sys_off_handler,
 					handler);
@@ -728,8 +750,10 @@ SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,
 	/* Instead of trying to make the power_off code look like
 	 * halt when pm_power_off is not set do it the easy way.
 	 */
-	if ((cmd == LINUX_REBOOT_CMD_POWER_OFF) && !kernel_can_power_off())
+	if ((cmd == LINUX_REBOOT_CMD_POWER_OFF) && !kernel_can_power_off()) {
+		poweroff_fallback_to_halt = true;
 		cmd = LINUX_REBOOT_CMD_HALT;
+	}
 
 	mutex_lock(&system_transition_mutex);
 	switch (cmd) {
@@ -953,21 +977,24 @@ static void hw_failure_emergency_poweroff(int poweroff_delay_ms)
 }
 
 /**
- * hw_protection_shutdown - Trigger an emergency system poweroff
+ * __hw_protection_shutdown - Trigger an emergency system shutdown or reboot
  *
- * @reason:		Reason of emergency shutdown to be printed.
- * @ms_until_forced:	Time to wait for orderly shutdown before tiggering a
- *			forced shudown. Negative value disables the forced
- *			shutdown.
+ * @reason:		Reason of emergency shutdown or reboot to be printed.
+ * @ms_until_forced:	Time to wait for orderly shutdown or reboot before
+ *			triggering it. Negative value disables the forced
+ *			shutdown or reboot.
+ * @shutdown:		If true, indicates that a shutdown will happen
+ *			after the critical tempeature is reached.
+ *			If false, indicates that a reboot will happen
+ *			after the critical tempeature is reached.
  *
- * Initiate an emergency system shutdown in order to protect hardware from
- * further damage. Usage examples include a thermal protection or a voltage or
- * current regulator failures.
- * NOTE: The request is ignored if protection shutdown is already pending even
- * if the previous request has given a large timeout for forced shutdown.
- * Can be called from any context.
+ * Initiate an emergency system shutdown or reboot in order to protect
+ * hardware from further damage. Usage examples include a thermal protection.
+ * NOTE: The request is ignored if protection shutdown or reboot is already
+ * pending even if the previous request has given a large timeout for forced
+ * shutdown/reboot.
  */
-void hw_protection_shutdown(const char *reason, int ms_until_forced)
+void __hw_protection_shutdown(const char *reason, int ms_until_forced, bool shutdown)
 {
 	static atomic_t allow_proceed = ATOMIC_INIT(1);
 
@@ -982,9 +1009,12 @@ void hw_protection_shutdown(const char *reason, int ms_until_forced)
 	 * orderly_poweroff failure
 	 */
 	hw_failure_emergency_poweroff(ms_until_forced);
-	orderly_poweroff(true);
+	if (shutdown)
+		orderly_poweroff(true);
+	else
+		orderly_reboot();
 }
-EXPORT_SYMBOL_GPL(hw_protection_shutdown);
+EXPORT_SYMBOL_GPL(__hw_protection_shutdown);
 
 static int __init reboot_setup(char *str)
 {
@@ -1107,7 +1137,7 @@ static ssize_t mode_show(struct kobject *kobj, struct kobj_attribute *attr, char
 		val = REBOOT_UNDEFINED_STR;
 	}
 
-	return sprintf(buf, "%s\n", val);
+	return sysfs_emit(buf, "%s\n", val);
 }
 static ssize_t mode_store(struct kobject *kobj, struct kobj_attribute *attr,
 			  const char *buf, size_t count)
@@ -1137,7 +1167,7 @@ static struct kobj_attribute reboot_mode_attr = __ATTR_RW(mode);
 #ifdef CONFIG_X86
 static ssize_t force_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
-	return sprintf(buf, "%d\n", reboot_force);
+	return sysfs_emit(buf, "%d\n", reboot_force);
 }
 static ssize_t force_store(struct kobject *kobj, struct kobj_attribute *attr,
 			  const char *buf, size_t count)
@@ -1184,7 +1214,7 @@ static ssize_t type_show(struct kobject *kobj, struct kobj_attribute *attr, char
 		val = REBOOT_UNDEFINED_STR;
 	}
 
-	return sprintf(buf, "%s\n", val);
+	return sysfs_emit(buf, "%s\n", val);
 }
 static ssize_t type_store(struct kobject *kobj, struct kobj_attribute *attr,
 			  const char *buf, size_t count)
@@ -1217,7 +1247,7 @@ static struct kobj_attribute reboot_type_attr = __ATTR_RW(type);
 #ifdef CONFIG_SMP
 static ssize_t cpu_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
-	return sprintf(buf, "%d\n", reboot_cpu);
+	return sysfs_emit(buf, "%d\n", reboot_cpu);
 }
 static ssize_t cpu_store(struct kobject *kobj, struct kobj_attribute *attr,
 			  const char *buf, size_t count)
@@ -1257,7 +1287,7 @@ static struct attribute *reboot_attrs[] = {
 };
 
 #ifdef CONFIG_SYSCTL
-static struct ctl_table kern_reboot_table[] = {
+static const struct ctl_table kern_reboot_table[] = {
 	{
 		.procname       = "poweroff_cmd",
 		.data           = &poweroff_cmd,
@@ -1272,7 +1302,6 @@ static struct ctl_table kern_reboot_table[] = {
 		.mode           = 0644,
 		.proc_handler   = proc_dointvec,
 	},
-	{ }
 };
 
 static void __init kernel_reboot_sysctls_init(void)

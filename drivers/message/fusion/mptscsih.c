@@ -1071,7 +1071,7 @@ EXPORT_SYMBOL(mptscsih_flush_running_cmds);
  *
  *	Returns: None.
  *
- *	Called from slave_destroy.
+ *	Called from sdev_destroy.
  */
 static void
 mptscsih_search_running_cmds(MPT_SCSI_HOST *hd, VirtDevice *vdevice)
@@ -1793,7 +1793,7 @@ mptscsih_abort(struct scsi_cmnd * SCpnt)
 
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
 /**
- *	mptscsih_dev_reset - Perform a SCSI TARGET_RESET!  new_eh variant
+ *	mptscsih_dev_reset - Perform a SCSI LOGICAL_UNIT_RESET!
  *	@SCpnt: Pointer to scsi_cmnd structure, IO which reset is due to
  *
  *	(linux scsi_host_template.eh_dev_reset_handler routine)
@@ -1802,6 +1802,58 @@ mptscsih_abort(struct scsi_cmnd * SCpnt)
  **/
 int
 mptscsih_dev_reset(struct scsi_cmnd * SCpnt)
+{
+	MPT_SCSI_HOST	*hd;
+	int		 retval;
+	VirtDevice	 *vdevice;
+	MPT_ADAPTER	*ioc;
+
+	/* If we can't locate our host adapter structure, return FAILED status.
+	 */
+	if ((hd = shost_priv(SCpnt->device->host)) == NULL){
+		printk(KERN_ERR MYNAM ": lun reset: "
+		   "Can't locate host! (sc=%p)\n", SCpnt);
+		return FAILED;
+	}
+
+	ioc = hd->ioc;
+	printk(MYIOC_s_INFO_FMT "attempting lun reset! (sc=%p)\n",
+	       ioc->name, SCpnt);
+	scsi_print_command(SCpnt);
+
+	vdevice = SCpnt->device->hostdata;
+	if (!vdevice || !vdevice->vtarget) {
+		retval = 0;
+		goto out;
+	}
+
+	retval = mptscsih_IssueTaskMgmt(hd,
+				MPI_SCSITASKMGMT_TASKTYPE_LOGICAL_UNIT_RESET,
+				vdevice->vtarget->channel,
+				vdevice->vtarget->id, vdevice->lun, 0,
+				mptscsih_get_tm_timeout(ioc));
+
+ out:
+	printk (MYIOC_s_INFO_FMT "lun reset: %s (sc=%p)\n",
+	    ioc->name, ((retval == 0) ? "SUCCESS" : "FAILED" ), SCpnt);
+
+	if (retval == 0)
+		return SUCCESS;
+	else
+		return FAILED;
+}
+
+/*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
+/**
+ *	mptscsih_target_reset - Perform a SCSI TARGET_RESET!
+ *	@SCpnt: Pointer to scsi_cmnd structure, IO which reset is due to
+ *
+ *	(linux scsi_host_template.eh_target_reset_handler routine)
+ *
+ *	Returns SUCCESS or FAILED.
+ **/
+int
+mptscsih_target_reset(struct scsi_cmnd * SCpnt)
 {
 	MPT_SCSI_HOST	*hd;
 	int		 retval;
@@ -2279,7 +2331,7 @@ EXPORT_SYMBOL(mptscsih_raid_id_to_num);
  *	Called if no device present or device being unloaded
  */
 void
-mptscsih_slave_destroy(struct scsi_device *sdev)
+mptscsih_sdev_destroy(struct scsi_device *sdev)
 {
 	struct Scsi_Host	*host = sdev->host;
 	MPT_SCSI_HOST		*hd = shost_priv(host);
@@ -2347,7 +2399,7 @@ mptscsih_change_queue_depth(struct scsi_device *sdev, int qdepth)
  *	Return non-zero if fails.
  */
 int
-mptscsih_slave_configure(struct scsi_device *sdev)
+mptscsih_sdev_configure(struct scsi_device *sdev, struct queue_limits *lim)
 {
 	struct Scsi_Host	*sh = sdev->host;
 	VirtTarget		*vtarget;
@@ -2385,8 +2437,6 @@ mptscsih_slave_configure(struct scsi_device *sdev)
 	dsprintk(ioc, printk(MYIOC_s_DEBUG_FMT
 		"tagged %d, simple %d\n",
 		ioc->name,sdev->tagged_supported, sdev->simple_tags));
-
-	blk_queue_dma_alignment (sdev->request_queue, 512 - 1);
 
 	return 0;
 }
@@ -3252,10 +3302,11 @@ EXPORT_SYMBOL(mptscsih_resume);
 EXPORT_SYMBOL(mptscsih_show_info);
 EXPORT_SYMBOL(mptscsih_info);
 EXPORT_SYMBOL(mptscsih_qcmd);
-EXPORT_SYMBOL(mptscsih_slave_destroy);
-EXPORT_SYMBOL(mptscsih_slave_configure);
+EXPORT_SYMBOL(mptscsih_sdev_destroy);
+EXPORT_SYMBOL(mptscsih_sdev_configure);
 EXPORT_SYMBOL(mptscsih_abort);
 EXPORT_SYMBOL(mptscsih_dev_reset);
+EXPORT_SYMBOL(mptscsih_target_reset);
 EXPORT_SYMBOL(mptscsih_bus_reset);
 EXPORT_SYMBOL(mptscsih_host_reset);
 EXPORT_SYMBOL(mptscsih_bios_param);

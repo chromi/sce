@@ -384,12 +384,11 @@ static int jz4780_nemc_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int jz4780_nemc_remove(struct platform_device *pdev)
+static void jz4780_nemc_remove(struct platform_device *pdev)
 {
 	struct jz4780_nemc *nemc = platform_get_drvdata(pdev);
 
 	clk_disable_unprepare(nemc->clk);
-	return 0;
 }
 
 static const struct jz_soc_info jz4740_soc_info = {

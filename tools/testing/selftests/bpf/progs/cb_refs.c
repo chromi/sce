@@ -2,7 +2,7 @@
 #include <vmlinux.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_helpers.h>
-#include "../bpf_testmod/bpf_testmod_kfunc.h"
+#include "../test_kmods/bpf_testmod_kfunc.h"
 
 struct map_value {
 	struct prog_test_ref_kfunc __kptr *ptr;
@@ -33,6 +33,7 @@ int underflow_prog(void *ctx)
 	if (!p)
 		return 0;
 	bpf_for_each_map_elem(&array_map, cb1, &p, 0);
+	bpf_kfunc_call_test_release(p);
 	return 0;
 }
 

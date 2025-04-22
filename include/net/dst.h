@@ -222,13 +222,6 @@ static inline unsigned long dst_metric_rtt(const struct dst_entry *dst, int metr
 	return msecs_to_jiffies(dst_metric(dst, metric));
 }
 
-static inline u32
-dst_allfrag(const struct dst_entry *dst)
-{
-	int ret = dst_feature(dst,  RTAX_FEATURE_ALLFRAG);
-	return ret;
-}
-
 static inline int
 dst_metric_locked(const struct dst_entry *dst, int metric)
 {
@@ -314,7 +307,7 @@ static inline bool dst_hold_safe(struct dst_entry *dst)
  * @skb: buffer
  *
  * If dst is not yet refcounted and not destroyed, grab a ref on it.
- * Returns true if dst is refcounted.
+ * Returns: true if dst is refcounted.
  */
 static inline bool skb_dst_force(struct sk_buff *skb)
 {
@@ -348,7 +341,7 @@ static inline void __skb_tunnel_rx(struct sk_buff *skb, struct net_device *dev,
 	skb->dev = dev;
 
 	/*
-	 * Clear hash so that we can recalulate the hash for the
+	 * Clear hash so that we can recalculate the hash for the
 	 * encapsulated packet, unless we have already determine the hash
 	 * over the L4 4-tuple.
 	 */
@@ -392,12 +385,11 @@ static inline int dst_discard(struct sk_buff *skb)
 {
 	return dst_discard_out(&init_net, skb->sk, skb);
 }
-void *dst_alloc(struct dst_ops *ops, struct net_device *dev, int initial_ref,
+void *dst_alloc(struct dst_ops *ops, struct net_device *dev,
 		int initial_obsolete, unsigned short flags);
 void dst_init(struct dst_entry *dst, struct dst_ops *ops,
-	      struct net_device *dev, int initial_ref, int initial_obsolete,
+	      struct net_device *dev, int initial_obsolete,
 	      unsigned short flags);
-struct dst_entry *dst_destroy(struct dst_entry *dst);
 void dst_dev_put(struct dst_entry *dst);
 
 static inline void dst_confirm(struct dst_entry *dst)
@@ -446,6 +438,15 @@ static inline void dst_set_expires(struct dst_entry *dst, int timeout)
 
 	if (dst->expires == 0 || time_before(expires, dst->expires))
 		dst->expires = expires;
+}
+
+static inline unsigned int dst_dev_overhead(struct dst_entry *dst,
+					    struct sk_buff *skb)
+{
+	if (likely(dst))
+		return LL_RESERVED_SPACE(dst->dev);
+
+	return skb->mac_len;
 }
 
 INDIRECT_CALLABLE_DECLARE(int ip6_output(struct net *, struct sock *,

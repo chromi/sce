@@ -426,22 +426,21 @@ static int __init ifb_init_module(void)
 {
 	int i, err;
 
-	down_write(&pernet_ops_rwsem);
-	rtnl_lock();
-	err = __rtnl_link_register(&ifb_link_ops);
+	err = rtnl_link_register(&ifb_link_ops);
 	if (err < 0)
-		goto out;
+		return err;
+
+	rtnl_net_lock(&init_net);
 
 	for (i = 0; i < numifbs && !err; i++) {
 		err = ifb_init_one(i);
 		cond_resched();
 	}
-	if (err)
-		__rtnl_link_unregister(&ifb_link_ops);
 
-out:
-	rtnl_unlock();
-	up_write(&pernet_ops_rwsem);
+	rtnl_net_unlock(&init_net);
+
+	if (err)
+		rtnl_link_unregister(&ifb_link_ops);
 
 	return err;
 }
@@ -454,5 +453,6 @@ static void __exit ifb_cleanup_module(void)
 module_init(ifb_init_module);
 module_exit(ifb_cleanup_module);
 MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("Intermediate Functional Block (ifb) netdevice driver for sharing of resources and ingress packet queuing");
 MODULE_AUTHOR("Jamal Hadi Salim");
 MODULE_ALIAS_RTNL_LINK("ifb");

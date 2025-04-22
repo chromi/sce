@@ -15,8 +15,6 @@
 #define TPS65219_GPIO0_DIR_MASK		BIT(3)
 #define TPS65219_GPIO0_OFFSET		2
 #define TPS65219_GPIO0_IDX		0
-#define TPS65219_GPIO_DIR_IN		1
-#define TPS65219_GPIO_DIR_OUT		0
 
 struct tps65219_gpio {
 	struct gpio_chip gpio_chip;
@@ -61,7 +59,7 @@ static int tps65219_gpio_get(struct gpio_chip *gc, unsigned int offset)
 	 * status bit.
 	 */
 
-	if (tps65219_gpio_get_direction(gc, offset) == TPS65219_GPIO_DIR_OUT)
+	if (tps65219_gpio_get_direction(gc, offset) == GPIO_LINE_DIRECTION_OUT)
 		return -ENOTSUPP;
 
 	return ret;
@@ -96,16 +94,16 @@ static int tps65219_gpio_change_direction(struct gpio_chip *gc, unsigned int off
 	 * Below can be used for test purpose only.
 	 */
 
-	if (IS_ENABLED(CONFIG_DEBUG_GPIO)) {
-		int ret = regmap_update_bits(gpio->tps->regmap, TPS65219_REG_MFP_1_CONFIG,
-					     TPS65219_GPIO0_DIR_MASK, direction);
-		if (ret) {
-			dev_err(dev,
-				"GPIO DEBUG enabled: Fail to change direction to %u for GPIO%d.\n",
-				direction, offset);
-			return ret;
-		}
+#if 0
+	int ret = regmap_update_bits(gpio->tps->regmap, TPS65219_REG_MFP_1_CONFIG,
+				     TPS65219_GPIO0_DIR_MASK, direction);
+	if (ret) {
+		dev_err(dev,
+			"GPIO DEBUG enabled: Fail to change direction to %u for GPIO%d.\n",
+			direction, offset);
+		return ret;
 	}
+#endif
 
 	dev_err(dev,
 		"GPIO%d direction set by NVM, change to %u failed, not allowed by specification\n",
@@ -124,10 +122,10 @@ static int tps65219_gpio_direction_input(struct gpio_chip *gc, unsigned int offs
 		return -ENOTSUPP;
 	}
 
-	if (tps65219_gpio_get_direction(gc, offset) == TPS65219_GPIO_DIR_IN)
+	if (tps65219_gpio_get_direction(gc, offset) == GPIO_LINE_DIRECTION_IN)
 		return 0;
 
-	return tps65219_gpio_change_direction(gc, offset, TPS65219_GPIO_DIR_IN);
+	return tps65219_gpio_change_direction(gc, offset, GPIO_LINE_DIRECTION_IN);
 }
 
 static int tps65219_gpio_direction_output(struct gpio_chip *gc, unsigned int offset, int value)
@@ -136,10 +134,10 @@ static int tps65219_gpio_direction_output(struct gpio_chip *gc, unsigned int off
 	if (offset != TPS65219_GPIO0_IDX)
 		return 0;
 
-	if (tps65219_gpio_get_direction(gc, offset) == TPS65219_GPIO_DIR_OUT)
+	if (tps65219_gpio_get_direction(gc, offset) == GPIO_LINE_DIRECTION_OUT)
 		return 0;
 
-	return tps65219_gpio_change_direction(gc, offset, TPS65219_GPIO_DIR_OUT);
+	return tps65219_gpio_change_direction(gc, offset, GPIO_LINE_DIRECTION_OUT);
 }
 
 static const struct gpio_chip tps65219_template_chip = {

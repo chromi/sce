@@ -13,9 +13,7 @@
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/ahci_platform.h>
-#include <linux/of_address.h>
-#include <linux/of_device.h>
-#include <linux/of_irq.h>
+#include <linux/of.h>
 #include <linux/phy/phy.h>
 #include "ahci.h"
 
@@ -536,7 +534,7 @@ softreset_retry:
 
 /**
  * xgene_ahci_handle_broken_edge_irq - Handle the broken irq.
- * @host: Host that recieved the irq
+ * @host: Host that received the irq
  * @irq_masked: HOST_IRQ_STAT value
  *
  * For hardware with broken edge trigger latch
@@ -735,7 +733,6 @@ static int xgene_ahci_probe(struct platform_device *pdev)
 	struct ahci_host_priv *hpriv;
 	struct xgene_ahci_context *ctx;
 	struct resource *res;
-	const struct of_device_id *of_devid;
 	enum xgene_ahci_version version = XGENE_AHCI_V1;
 	const struct ata_port_info *ppi[] = { &xgene_ahci_v1_port_info,
 					      &xgene_ahci_v2_port_info };
@@ -778,10 +775,8 @@ static int xgene_ahci_probe(struct platform_device *pdev)
 		ctx->csr_mux = csr;
 	}
 
-	of_devid = of_match_device(xgene_ahci_of_match, dev);
-	if (of_devid) {
-		if (of_devid->data)
-			version = (unsigned long) of_devid->data;
+	if (dev->of_node) {
+		version = (enum xgene_ahci_version)of_device_get_match_data(dev);
 	}
 #ifdef CONFIG_ACPI
 	else {
@@ -864,7 +859,7 @@ disable_resources:
 
 static struct platform_driver xgene_ahci_driver = {
 	.probe = xgene_ahci_probe,
-	.remove_new = ata_platform_remove_one,
+	.remove = ata_platform_remove_one,
 	.driver = {
 		.name = DRV_NAME,
 		.of_match_table = xgene_ahci_of_match,

@@ -1380,13 +1380,11 @@ static int korina_probe(struct platform_device *pdev)
 	return rc;
 }
 
-static int korina_remove(struct platform_device *pdev)
+static void korina_remove(struct platform_device *pdev)
 {
 	struct net_device *dev = platform_get_drvdata(pdev);
 
 	unregister_netdev(dev);
-
-	return 0;
 }
 
 #ifdef CONFIG_OF

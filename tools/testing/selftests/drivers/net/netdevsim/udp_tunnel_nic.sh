@@ -142,7 +142,7 @@ function pre_ethtool {
 }
 
 function check_table {
-    local path=$NSIM_DEV_DFS/ports/$port/udp_ports_table$1
+    local path=$NSIM_DEV_DFS/ports/$port/udp_ports/table$1
     local -n expected=$2
     local last=$3
 
@@ -212,7 +212,7 @@ function check_tables {
 }
 
 function print_table {
-    local path=$NSIM_DEV_DFS/ports/$port/udp_ports_table$1
+    local path=$NSIM_DEV_DFS/ports/$port/udp_ports/table$1
     read -a have < $path
 
     tree $NSIM_DEV_DFS/
@@ -233,6 +233,7 @@ function print_tables {
 function get_netdev_name {
     local -n old=$1
 
+    udevadm settle
     new=$(ls /sys/class/net)
 
     for netdev in $new; do
@@ -269,6 +270,7 @@ for port in 0 1; do
 	echo 1 > $NSIM_DEV_SYS/new_port
     fi
     NSIM_NETDEV=`get_netdev_name old_netdevs`
+    ip link set dev $NSIM_NETDEV up
 
     msg="new NIC device created"
     exp0=( 0 0 0 0 )
@@ -282,8 +284,8 @@ for port in 0 1; do
 
     msg="VxLAN v4 devices go down"
     exp0=( 0 0 0 0 )
-    ifconfig vxlan1 down
-    ifconfig vxlan0 down
+    ip link set dev vxlan1 down
+    ip link set dev vxlan0 down
     check_tables
 
     msg="VxLAN v6 devices"
@@ -291,7 +293,7 @@ for port in 0 1; do
     new_vxlan vxlanA 4789 $NSIM_NETDEV 6
 
     for ifc in vxlan0 vxlan1; do
-	ifconfig $ifc up
+	ip link set dev $ifc up
     done
 
     new_vxlan vxlanB 4789 $NSIM_NETDEV 6
@@ -305,14 +307,14 @@ for port in 0 1; do
     new_geneve gnv0 6081
 
     msg="NIC device goes down"
-    ifconfig $NSIM_NETDEV down
+    ip link set dev $NSIM_NETDEV down
     if [ $port -eq 1 ]; then
 	exp0=( 0 0 0 0 )
 	exp1=( 0 0 0 0 )
     fi
     check_tables
     msg="NIC device goes up again"
-    ifconfig $NSIM_NETDEV up
+    ip link set dev $NSIM_NETDEV up
     exp0=( `mke 4789 1` `mke 4790 1` 0 0 )
     exp1=( `mke 6081 2` 0 0 0 )
     check_tables
@@ -430,7 +432,8 @@ for port in 0 1; do
     fi
 
     echo $port > $NSIM_DEV_SYS/new_port
-    ifconfig $NSIM_NETDEV up
+    NSIM_NETDEV=`get_netdev_name old_netdevs`
+    ip link set dev $NSIM_NETDEV up
 
     overflow_table0 "overflow NIC table"
     overflow_table1 "overflow NIC table"
@@ -487,7 +490,8 @@ for port in 0 1; do
     fi
 
     echo $port > $NSIM_DEV_SYS/new_port
-    ifconfig $NSIM_NETDEV up
+    NSIM_NETDEV=`get_netdev_name old_netdevs`
+    ip link set dev $NSIM_NETDEV up
 
     overflow_table0 "overflow NIC table"
     overflow_table1 "overflow NIC table"
@@ -543,7 +547,8 @@ for port in 0 1; do
     fi
 
     echo $port > $NSIM_DEV_SYS/new_port
-    ifconfig $NSIM_NETDEV up
+    NSIM_NETDEV=`get_netdev_name old_netdevs`
+    ip link set dev $NSIM_NETDEV up
 
     overflow_table0 "destroy NIC"
     overflow_table1 "destroy NIC"
@@ -572,7 +577,8 @@ for port in 0 1; do
     fi
 
     echo $port > $NSIM_DEV_SYS/new_port
-    ifconfig $NSIM_NETDEV up
+    NSIM_NETDEV=`get_netdev_name old_netdevs`
+    ip link set dev $NSIM_NETDEV up
 
     msg="create VxLANs v6"
     new_vxlan vxlanA0 10000 $NSIM_NETDEV 6
@@ -632,9 +638,10 @@ for port in 0 1; do
     fi
 
     echo $port > $NSIM_DEV_SYS/new_port
-    ifconfig $NSIM_NETDEV up
+    NSIM_NETDEV=`get_netdev_name old_netdevs`
+    ip link set dev $NSIM_NETDEV up
 
-    echo 110 > $NSIM_DEV_DFS/ports/$port/udp_ports_inject_error
+    echo 110 > $NSIM_DEV_DFS/ports/$port/udp_ports/inject_error
 
     msg="1 - create VxLANs v6"
     exp0=( 0 0 0 0 )
@@ -656,7 +663,7 @@ for port in 0 1; do
     new_geneve gnv0 20000
 
     msg="2 - destroy GENEVE"
-    echo 2 > $NSIM_DEV_DFS/ports/$port/udp_ports_inject_error
+    echo 2 > $NSIM_DEV_DFS/ports/$port/udp_ports/inject_error
     exp1=( `mke 20000 2` 0 0 0 )
     del_dev gnv0
 
@@ -687,7 +694,8 @@ for port in 0 1; do
     fi
 
     echo $port > $NSIM_DEV_SYS/new_port
-    ifconfig $NSIM_NETDEV up
+    NSIM_NETDEV=`get_netdev_name old_netdevs`
+    ip link set dev $NSIM_NETDEV up
 
     msg="create VxLANs v6"
     exp0=( `mke 10000 1` 0 0 0 )
@@ -746,7 +754,8 @@ for port in 0 1; do
     fi
 
     echo $port > $NSIM_DEV_SYS/new_port
-    ifconfig $NSIM_NETDEV up
+    NSIM_NETDEV=`get_netdev_name old_netdevs`
+    ip link set dev $NSIM_NETDEV up
 
     msg="create VxLANs v6"
     exp0=( `mke 10000 1` 0 0 0 )
@@ -755,22 +764,22 @@ for port in 0 1; do
     msg="create VxLANs v4"
     new_vxlan vxlan0 10000 $NSIM_NETDEV
 
-    echo 1 > $NSIM_DEV_DFS/ports/$port/udp_ports_reset
+    echo 1 > $NSIM_DEV_DFS/ports/$port/udp_ports/reset
     check_tables
 
     msg="NIC device goes down"
-    ifconfig $NSIM_NETDEV down
+    ip link set dev $NSIM_NETDEV down
     if [ $port -eq 1 ]; then
 	exp0=( 0 0 0 0 )
 	exp1=( 0 0 0 0 )
     fi
     check_tables
 
-    echo 1 > $NSIM_DEV_DFS/ports/$port/udp_ports_reset
+    echo 1 > $NSIM_DEV_DFS/ports/$port/udp_ports/reset
     check_tables
 
     msg="NIC device goes up again"
-    ifconfig $NSIM_NETDEV up
+    ip link set dev $NSIM_NETDEV up
     exp0=( `mke 10000 1` 0 0 0 )
     check_tables
 
@@ -780,7 +789,7 @@ for port in 0 1; do
     del_dev vxlan0
     check_tables
 
-    echo 1 > $NSIM_DEV_DFS/ports/$port/udp_ports_reset
+    echo 1 > $NSIM_DEV_DFS/ports/$port/udp_ports/reset
     check_tables
 
     msg="destroy NIC"
@@ -818,12 +827,12 @@ new_vxlan vxlan1 4789 $NSIM_NETDEV2
 
 msg="VxLAN v4 devices go down"
 exp0=( 0 0 0 0 )
-ifconfig vxlan1 down
-ifconfig vxlan0 down
+ip link set dev vxlan1 down
+ip link set dev vxlan0 down
 check_tables
 
 for ifc in vxlan0 vxlan1; do
-    ifconfig $ifc up
+    ip link set dev $ifc up
 done
 
 msg="VxLAN v6 device"
@@ -835,11 +844,11 @@ exp1=( `mke 6081 2` 0 0 0 )
 new_geneve gnv0 6081
 
 msg="NIC device goes down"
-ifconfig $NSIM_NETDEV down
+ip link set dev $NSIM_NETDEV down
 check_tables
 
 msg="NIC device goes up again"
-ifconfig $NSIM_NETDEV up
+ip link set dev $NSIM_NETDEV up
 check_tables
 
 for i in `seq 2`; do
@@ -876,6 +885,7 @@ msg="re-add a port"
 
 echo 2 > $NSIM_DEV_SYS/del_port
 echo 2 > $NSIM_DEV_SYS/new_port
+NSIM_NETDEV=`get_netdev_name old_netdevs`
 check_tables
 
 msg="replace VxLAN in overflow table"
@@ -886,7 +896,7 @@ msg="vacate VxLAN in overflow table"
 exp0=( `mke 10000 1` `mke 10004 1` 0 `mke 10003 1` )
 del_dev vxlan2
 
-echo 1 > $NSIM_DEV_DFS/ports/$port/udp_ports_reset
+echo 1 > $NSIM_DEV_DFS/ports/$port/udp_ports/reset
 check_tables
 
 msg="tunnels destroyed 2"

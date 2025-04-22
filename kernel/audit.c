@@ -123,7 +123,7 @@ static u32	audit_backlog_wait_time = AUDIT_BACKLOG_WAIT_TIME;
 /* The identity of the user shutting down the audit system. */
 static kuid_t		audit_sig_uid = INVALID_UID;
 static pid_t		audit_sig_pid = -1;
-static u32		audit_sig_sid;
+static struct lsm_prop	audit_sig_lsm;
 
 /* Records can be lost in several ways:
    0) [suppressed in audit_alloc]
@@ -487,15 +487,19 @@ static void auditd_conn_free(struct rcu_head *rcu)
  * @pid: auditd PID
  * @portid: auditd netlink portid
  * @net: auditd network namespace pointer
+ * @skb: the netlink command from the audit daemon
+ * @ack: netlink ack flag, cleared if ack'd here
  *
  * Description:
  * This function will obtain and drop network namespace references as
  * necessary.  Returns zero on success, negative values on failure.
  */
-static int auditd_set(struct pid *pid, u32 portid, struct net *net)
+static int auditd_set(struct pid *pid, u32 portid, struct net *net,
+		      struct sk_buff *skb, bool *ack)
 {
 	unsigned long flags;
 	struct auditd_connection *ac_old, *ac_new;
+	struct nlmsghdr *nlh;
 
 	if (!pid || !net)
 		return -EINVAL;
@@ -506,6 +510,13 @@ static int auditd_set(struct pid *pid, u32 portid, struct net *net)
 	ac_new->pid = get_pid(pid);
 	ac_new->portid = portid;
 	ac_new->net = get_net(net);
+
+	/* send the ack now to avoid a race with the queue backlog */
+	if (*ack) {
+		nlh = nlmsg_hdr(skb);
+		netlink_ack(skb, nlh, 0, NULL);
+		*ack = false;
+	}
 
 	spin_lock_irqsave(&auditd_conn_lock, flags);
 	ac_old = rcu_dereference_protected(auditd_conn,
@@ -1200,7 +1211,8 @@ static int audit_replace(struct pid *pid)
 	return auditd_send_unicast_skb(skb);
 }
 
-static int audit_receive_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
+static int audit_receive_msg(struct sk_buff *skb, struct nlmsghdr *nlh,
+			     bool *ack)
 {
 	u32			seq;
 	void			*data;
@@ -1209,8 +1221,7 @@ static int audit_receive_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
 	struct audit_buffer	*ab;
 	u16			msg_type = nlh->nlmsg_type;
 	struct audit_sig_info   *sig_data;
-	char			*ctx = NULL;
-	u32			len;
+	struct lsm_context	lsmctx = { NULL, 0, 0 };
 
 	err = audit_netlink_ok(skb, msg_type);
 	if (err)
@@ -1293,7 +1304,8 @@ static int audit_receive_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
 				/* register a new auditd connection */
 				err = auditd_set(req_pid,
 						 NETLINK_CB(skb).portid,
-						 sock_net(NETLINK_CB(skb).sk));
+						 sock_net(NETLINK_CB(skb).sk),
+						 skb, ack);
 				if (audit_enabled != AUDIT_OFF)
 					audit_log_config_change("audit_pid",
 								new_pid,
@@ -1459,26 +1471,28 @@ static int audit_receive_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
 		break;
 	}
 	case AUDIT_SIGNAL_INFO:
-		len = 0;
-		if (audit_sig_sid) {
-			err = security_secid_to_secctx(audit_sig_sid, &ctx, &len);
-			if (err)
+		if (lsmprop_is_set(&audit_sig_lsm)) {
+			err = security_lsmprop_to_secctx(&audit_sig_lsm,
+							 &lsmctx);
+			if (err < 0)
 				return err;
 		}
-		sig_data = kmalloc(struct_size(sig_data, ctx, len), GFP_KERNEL);
+		sig_data = kmalloc(struct_size(sig_data, ctx, lsmctx.len),
+				   GFP_KERNEL);
 		if (!sig_data) {
-			if (audit_sig_sid)
-				security_release_secctx(ctx, len);
+			if (lsmprop_is_set(&audit_sig_lsm))
+				security_release_secctx(&lsmctx);
 			return -ENOMEM;
 		}
 		sig_data->uid = from_kuid(&init_user_ns, audit_sig_uid);
 		sig_data->pid = audit_sig_pid;
-		if (audit_sig_sid) {
-			memcpy(sig_data->ctx, ctx, len);
-			security_release_secctx(ctx, len);
+		if (lsmprop_is_set(&audit_sig_lsm)) {
+			memcpy(sig_data->ctx, lsmctx.context, lsmctx.len);
+			security_release_secctx(&lsmctx);
 		}
 		audit_send_reply(skb, seq, AUDIT_SIGNAL_INFO, 0, 0,
-				 sig_data, struct_size(sig_data, ctx, len));
+				 sig_data, struct_size(sig_data, ctx,
+						       lsmctx.len));
 		kfree(sig_data);
 		break;
 	case AUDIT_TTY_GET: {
@@ -1538,9 +1552,10 @@ static int audit_receive_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
  * Parse the provided skb and deal with any messages that may be present,
  * malformed skbs are discarded.
  */
-static void audit_receive(struct sk_buff  *skb)
+static void audit_receive(struct sk_buff *skb)
 {
 	struct nlmsghdr *nlh;
+	bool ack;
 	/*
 	 * len MUST be signed for nlmsg_next to be able to dec it below 0
 	 * if the nlmsg_len was not aligned
@@ -1553,9 +1568,12 @@ static void audit_receive(struct sk_buff  *skb)
 
 	audit_ctl_lock();
 	while (nlmsg_ok(nlh, len)) {
-		err = audit_receive_msg(skb, nlh);
-		/* if err or if this message says it wants a response */
-		if (err || (nlh->nlmsg_flags & NLM_F_ACK))
+		ack = nlh->nlmsg_flags & NLM_F_ACK;
+		err = audit_receive_msg(skb, nlh, &ack);
+
+		/* send an ack if the user asked for one and audit_receive_msg
+		 * didn't already do it, or if there was an error. */
+		if (ack || err)
 			netlink_ack(skb, nlh, err, NULL);
 
 		nlh = nlmsg_next(nlh, &len);
@@ -1595,7 +1613,7 @@ static void audit_log_multicast(int group, const char *op, int err)
 	cred = current_cred();
 	tty = audit_get_tty();
 	audit_log_format(ab, "pid=%u uid=%u auid=%u tty=%s ses=%u",
-			 task_pid_nr(current),
+			 task_tgid_nr(current),
 			 from_kuid(&init_user_ns, cred->uid),
 			 from_kuid(&init_user_ns, audit_get_loginuid(current)),
 			 tty ? tty_name(tty) : "(none)",
@@ -1676,9 +1694,7 @@ static int __init audit_init(void)
 	if (audit_initialized == AUDIT_DISABLED)
 		return 0;
 
-	audit_buffer_cache = kmem_cache_create("audit_buffer",
-					       sizeof(struct audit_buffer),
-					       0, SLAB_PANIC, NULL);
+	audit_buffer_cache = KMEM_CACHE(audit_buffer, SLAB_PANIC);
 
 	skb_queue_head_init(&audit_queue);
 	skb_queue_head_init(&audit_retry_queue);
@@ -1691,7 +1707,7 @@ static int __init audit_init(void)
 	audit_cmd_mutex.owner = NULL;
 
 	pr_info("initializing netlink subsys (%s)\n",
-		audit_default ? "enabled" : "disabled");
+		str_enabled_disabled(audit_default));
 	register_pernet_subsys(&audit_net_ops);
 
 	audit_initialized = AUDIT_INITIALIZED;
@@ -2087,8 +2103,8 @@ bool audit_string_contains_control(const char *string, size_t len)
 /**
  * audit_log_n_untrustedstring - log a string that may contain random characters
  * @ab: audit_buffer
- * @len: length of string (not including trailing null)
  * @string: string to be logged
+ * @len: length of string (not including trailing null)
  *
  * This code will escape a string that is passed to it if the string
  * contains a control character, unprintable character, double quote mark,
@@ -2163,24 +2179,23 @@ void audit_log_key(struct audit_buffer *ab, char *key)
 
 int audit_log_task_context(struct audit_buffer *ab)
 {
-	char *ctx = NULL;
-	unsigned len;
+	struct lsm_prop prop;
+	struct lsm_context ctx;
 	int error;
-	u32 sid;
 
-	security_current_getsecid_subj(&sid);
-	if (!sid)
+	security_current_getlsmprop_subj(&prop);
+	if (!lsmprop_is_set(&prop))
 		return 0;
 
-	error = security_secid_to_secctx(sid, &ctx, &len);
-	if (error) {
+	error = security_lsmprop_to_secctx(&prop, &ctx);
+	if (error < 0) {
 		if (error != -EINVAL)
 			goto error_path;
 		return 0;
 	}
 
-	audit_log_format(ab, " subj=%s", ctx);
-	security_release_secctx(ctx, len);
+	audit_log_format(ab, " subj=%s", ctx.context);
+	security_release_secctx(&ctx);
 	return 0;
 
 error_path:
@@ -2389,7 +2404,7 @@ int audit_signal_info(int sig, struct task_struct *t)
 			audit_sig_uid = auid;
 		else
 			audit_sig_uid = uid;
-		security_current_getsecid_subj(&audit_sig_sid);
+		security_current_getlsmprop_subj(&audit_sig_lsm);
 	}
 
 	return audit_signal_info_syscall(t);

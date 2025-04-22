@@ -305,6 +305,8 @@ try_again:
 
 	/* do the multiway lock magic */
 	trap = lock_rename(cache->graveyard, dir);
+	if (IS_ERR(trap))
+		return PTR_ERR(trap);
 
 	/* do some checks before getting the grave dentry */
 	if (rep->d_parent != dir || IS_DEADDIR(d_inode(rep))) {
@@ -561,8 +563,7 @@ static bool cachefiles_open_file(struct cachefiles_object *object,
 	 */
 	path.mnt = cache->mnt;
 	path.dentry = dentry;
-	file = kernel_file_open(&path, O_RDWR | O_LARGEFILE | O_DIRECT,
-				d_backing_inode(dentry), cache->cache_cred);
+	file = kernel_file_open(&path, O_RDWR | O_LARGEFILE | O_DIRECT, cache->cache_cred);
 	if (IS_ERR(file)) {
 		trace_cachefiles_vfs_error(object, d_backing_inode(dentry),
 					   PTR_ERR(file),
@@ -594,14 +595,12 @@ static bool cachefiles_open_file(struct cachefiles_object *object,
 	 * write and readdir but not lookup or open).
 	 */
 	touch_atime(&file->f_path);
-	dput(dentry);
 	return true;
 
 check_failed:
 	fscache_cookie_lookup_negative(object->cookie);
 	cachefiles_unmark_inode_in_use(object, file);
 	fput(file);
-	dput(dentry);
 	if (ret == -ESTALE)
 		return cachefiles_create_file(object);
 	return false;
@@ -610,7 +609,6 @@ error_fput:
 	fput(file);
 error:
 	cachefiles_do_unmark_inode_in_use(object, d_inode(dentry));
-	dput(dentry);
 	return false;
 }
 
@@ -653,7 +651,9 @@ bool cachefiles_look_up_object(struct cachefiles_object *object)
 		goto new_file;
 	}
 
-	if (!cachefiles_open_file(object, dentry))
+	ret = cachefiles_open_file(object, dentry);
+	dput(dentry);
+	if (!ret)
 		return false;
 
 	_leave(" = t [%lu]", file_inode(object->file)->i_ino);
@@ -691,11 +691,6 @@ bool cachefiles_commit_tmpfile(struct cachefiles_cache *cache,
 	}
 
 	if (!d_is_negative(dentry)) {
-		if (d_backing_inode(dentry) == file_inode(object->file)) {
-			success = true;
-			goto out_dput;
-		}
-
 		ret = cachefiles_unlink(volume->cache, object, fan, dentry,
 					FSCACHE_OBJECT_IS_STALE);
 		if (ret < 0)

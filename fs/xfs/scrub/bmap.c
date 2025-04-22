@@ -19,9 +19,14 @@
 #include "xfs_bmap_btree.h"
 #include "xfs_rmap.h"
 #include "xfs_rmap_btree.h"
+#include "xfs_rtgroup.h"
+#include "xfs_health.h"
+#include "xfs_rtalloc.h"
+#include "xfs_rtrmap_btree.h"
 #include "scrub/scrub.h"
 #include "scrub/common.h"
 #include "scrub/btree.h"
+#include "scrub/health.h"
 #include "xfs_ag.h"
 
 /* Set us up with an inode's bmap. */
@@ -48,8 +53,17 @@ xchk_setup_inode_bmap(
 	if (S_ISREG(VFS_I(sc->ip)->i_mode) &&
 	    sc->sm->sm_type != XFS_SCRUB_TYPE_BMBTA) {
 		struct address_space	*mapping = VFS_I(sc->ip)->i_mapping;
+		bool			is_repair = xchk_could_repair(sc);
 
 		xchk_ilock(sc, XFS_MMAPLOCK_EXCL);
+
+		/* Break all our leases, we're going to mess with things. */
+		if (is_repair) {
+			error = xfs_break_layouts(VFS_I(sc->ip),
+					&sc->ilock_flags, BREAK_WRITE);
+			if (error)
+				goto out;
+		}
 
 		inode_dio_wait(VFS_I(sc->ip));
 
@@ -71,10 +85,23 @@ xchk_setup_inode_bmap(
 			error = filemap_fdatawait_keep_errors(mapping);
 		if (error && (error != -ENOSPC && error != -EIO))
 			goto out;
+
+		/* Drop the page cache if we're repairing block mappings. */
+		if (is_repair) {
+			error = invalidate_inode_pages2(
+					VFS_I(sc->ip)->i_mapping);
+			if (error)
+				goto out;
+		}
+
 	}
 
 	/* Got the inode, lock it and we're ready to go. */
 	error = xchk_trans_alloc(sc, 0);
+	if (error)
+		goto out;
+
+	error = xchk_ino_dqattach(sc);
 	if (error)
 		goto out;
 
@@ -118,14 +145,21 @@ static inline bool
 xchk_bmap_get_rmap(
 	struct xchk_bmap_info	*info,
 	struct xfs_bmbt_irec	*irec,
-	xfs_agblock_t		agbno,
+	xfs_agblock_t		bno,
 	uint64_t		owner,
 	struct xfs_rmap_irec	*rmap)
 {
+	struct xfs_btree_cur	**curp = &info->sc->sa.rmap_cur;
 	xfs_fileoff_t		offset;
 	unsigned int		rflags = 0;
 	int			has_rmap;
 	int			error;
+
+	if (xfs_ifork_is_realtime(info->sc->ip, info->whichfork))
+		curp = &info->sc->sr.rmap_cur;
+
+	if (*curp == NULL)
+		return false;
 
 	if (info->whichfork == XFS_ATTR_FORK)
 		rflags |= XFS_RMAP_ATTR_FORK;
@@ -147,13 +181,13 @@ xchk_bmap_get_rmap(
 	 * range rmap lookup to make sure we get the correct owner/offset.
 	 */
 	if (info->is_shared) {
-		error = xfs_rmap_lookup_le_range(info->sc->sa.rmap_cur, agbno,
-				owner, offset, rflags, rmap, &has_rmap);
+		error = xfs_rmap_lookup_le_range(*curp, bno, owner, offset,
+				rflags, rmap, &has_rmap);
 	} else {
-		error = xfs_rmap_lookup_le(info->sc->sa.rmap_cur, agbno,
-				owner, offset, rflags, rmap, &has_rmap);
+		error = xfs_rmap_lookup_le(*curp, bno, owner, offset,
+				rflags, rmap, &has_rmap);
 	}
-	if (!xchk_should_check_xref(info->sc, &error, &info->sc->sa.rmap_cur))
+	if (!xchk_should_check_xref(info->sc, &error, curp))
 		return false;
 
 	if (!has_rmap)
@@ -167,29 +201,29 @@ STATIC void
 xchk_bmap_xref_rmap(
 	struct xchk_bmap_info	*info,
 	struct xfs_bmbt_irec	*irec,
-	xfs_agblock_t		agbno)
+	xfs_agblock_t		bno)
 {
 	struct xfs_rmap_irec	rmap;
 	unsigned long long	rmap_end;
 	uint64_t		owner = info->sc->ip->i_ino;
 
-	if (!info->sc->sa.rmap_cur || xchk_skip_xref(info->sc->sm))
+	if (xchk_skip_xref(info->sc->sm))
 		return;
 
 	/* Find the rmap record for this irec. */
-	if (!xchk_bmap_get_rmap(info, irec, agbno, owner, &rmap))
+	if (!xchk_bmap_get_rmap(info, irec, bno, owner, &rmap))
 		return;
 
 	/*
 	 * The rmap must be an exact match for this incore file mapping record,
 	 * which may have arisen from multiple ondisk records.
 	 */
-	if (rmap.rm_startblock != agbno)
+	if (rmap.rm_startblock != bno)
 		xchk_fblock_xref_set_corrupt(info->sc, info->whichfork,
 				irec->br_startoff);
 
 	rmap_end = (unsigned long long)rmap.rm_startblock + rmap.rm_blockcount;
-	if (rmap_end != agbno + irec->br_blockcount)
+	if (rmap_end != bno + irec->br_blockcount)
 		xchk_fblock_xref_set_corrupt(info->sc, info->whichfork,
 				irec->br_startoff);
 
@@ -234,7 +268,7 @@ STATIC void
 xchk_bmap_xref_rmap_cow(
 	struct xchk_bmap_info	*info,
 	struct xfs_bmbt_irec	*irec,
-	xfs_agblock_t		agbno)
+	xfs_agblock_t		bno)
 {
 	struct xfs_rmap_irec	rmap;
 	unsigned long long	rmap_end;
@@ -244,7 +278,7 @@ xchk_bmap_xref_rmap_cow(
 		return;
 
 	/* Find the rmap record for this irec. */
-	if (!xchk_bmap_get_rmap(info, irec, agbno, owner, &rmap))
+	if (!xchk_bmap_get_rmap(info, irec, bno, owner, &rmap))
 		return;
 
 	/*
@@ -252,12 +286,12 @@ xchk_bmap_xref_rmap_cow(
 	 * can start before and end after the physical space allocated to this
 	 * mapping.  There are no offsets to check.
 	 */
-	if (rmap.rm_startblock > agbno)
+	if (rmap.rm_startblock > bno)
 		xchk_fblock_xref_set_corrupt(info->sc, info->whichfork,
 				irec->br_startoff);
 
 	rmap_end = (unsigned long long)rmap.rm_startblock + rmap.rm_blockcount;
-	if (rmap_end < agbno + irec->br_blockcount)
+	if (rmap_end < bno + irec->br_blockcount)
 		xchk_fblock_xref_set_corrupt(info->sc, info->whichfork,
 				irec->br_startoff);
 
@@ -290,8 +324,58 @@ xchk_bmap_rt_iextent_xref(
 	struct xchk_bmap_info	*info,
 	struct xfs_bmbt_irec	*irec)
 {
+	struct xfs_owner_info	oinfo;
+	xfs_rgblock_t		rgbno;
+	int			error;
+
+	error = xchk_rtgroup_init_existing(info->sc,
+			xfs_rtb_to_rgno(ip->i_mount, irec->br_startblock),
+			&info->sc->sr);
+	if (!xchk_fblock_process_error(info->sc, info->whichfork,
+			irec->br_startoff, &error))
+		return;
+
+	error = xchk_rtgroup_lock(info->sc, &info->sc->sr, XCHK_RTGLOCK_ALL);
+	if (!xchk_fblock_process_error(info->sc, info->whichfork,
+			irec->br_startoff, &error))
+		goto out_free;
+
 	xchk_xref_is_used_rt_space(info->sc, irec->br_startblock,
 			irec->br_blockcount);
+
+	if (!xfs_has_rtrmapbt(info->sc->mp))
+		goto out_cur;
+
+	rgbno = xfs_rtb_to_rgbno(info->sc->mp, irec->br_startblock);
+
+	switch (info->whichfork) {
+	case XFS_DATA_FORK:
+		xchk_bmap_xref_rmap(info, irec, rgbno);
+		if (!xfs_is_reflink_inode(info->sc->ip)) {
+			xfs_rmap_ino_owner(&oinfo, info->sc->ip->i_ino,
+					info->whichfork, irec->br_startoff);
+			xchk_xref_is_only_rt_owned_by(info->sc, rgbno,
+					irec->br_blockcount, &oinfo);
+			xchk_xref_is_not_rt_shared(info->sc, rgbno,
+					irec->br_blockcount);
+		}
+		xchk_xref_is_not_rt_cow_staging(info->sc, rgbno,
+				irec->br_blockcount);
+		break;
+	case XFS_COW_FORK:
+		xchk_bmap_xref_rmap_cow(info, irec, rgbno);
+		xchk_xref_is_only_rt_owned_by(info->sc, rgbno,
+				irec->br_blockcount, &XFS_RMAP_OINFO_COW);
+		xchk_xref_is_rt_cow_staging(info->sc, rgbno,
+				irec->br_blockcount);
+		xchk_xref_is_not_rt_shared(info->sc, rgbno,
+				irec->br_blockcount);
+		break;
+	}
+out_cur:
+	xchk_rtgroup_btcur_free(&info->sc->sr);
+out_free:
+	xchk_rtgroup_free(info->sc, &info->sc->sr);
 }
 
 /* Cross-reference a single datadev extent record. */
@@ -410,7 +494,7 @@ xchk_bmap_iextent(
 
 	/* Make sure the extent points to a valid place. */
 	if (info->is_rt &&
-	    !xfs_verify_rtext(mp, irec->br_startblock, irec->br_blockcount))
+	    !xfs_verify_rtbext(mp, irec->br_startblock, irec->br_blockcount))
 		xchk_fblock_set_corrupt(info->sc, info->whichfork,
 				irec->br_startoff);
 	if (!info->is_rt &&
@@ -576,9 +660,8 @@ xchk_bmap_check_rmap(
 		if (irec.br_startoff != check_rec.rm_offset)
 			xchk_fblock_set_corrupt(sc, sbcri->whichfork,
 					check_rec.rm_offset);
-		if (irec.br_startblock != XFS_AGB_TO_FSB(sc->mp,
-				cur->bc_ag.pag->pag_agno,
-				check_rec.rm_startblock))
+		if (irec.br_startblock !=
+		    xfs_gbno_to_fsb(cur->bc_group, check_rec.rm_startblock))
 			xchk_fblock_set_corrupt(sc, sbcri->whichfork,
 					check_rec.rm_offset);
 		if (irec.br_blockcount > check_rec.rm_blockcount)
@@ -632,6 +715,102 @@ xchk_bmap_check_ag_rmaps(
 	return error;
 }
 
+/* Make sure each rt rmap has a corresponding bmbt entry. */
+STATIC int
+xchk_bmap_check_rt_rmaps(
+	struct xfs_scrub		*sc,
+	struct xfs_rtgroup		*rtg)
+{
+	struct xchk_bmap_check_rmap_info sbcri;
+	struct xfs_btree_cur		*cur;
+	int				error;
+
+	xfs_rtgroup_lock(rtg, XFS_RTGLOCK_RMAP);
+	cur = xfs_rtrmapbt_init_cursor(sc->tp, rtg);
+
+	sbcri.sc = sc;
+	sbcri.whichfork = XFS_DATA_FORK;
+	error = xfs_rmap_query_all(cur, xchk_bmap_check_rmap, &sbcri);
+	if (error == -ECANCELED)
+		error = 0;
+
+	xfs_btree_del_cursor(cur, error);
+	xfs_rtgroup_unlock(rtg, XFS_RTGLOCK_RMAP);
+	return error;
+}
+
+/*
+ * Decide if we want to scan the reverse mappings to determine if the attr
+ * fork /really/ has zero space mappings.
+ */
+STATIC bool
+xchk_bmap_check_empty_attrfork(
+	struct xfs_inode	*ip)
+{
+	struct xfs_ifork	*ifp = &ip->i_af;
+
+	/*
+	 * If the dinode repair found a bad attr fork, it will reset the fork
+	 * to extents format with zero records and wait for the this scrubber
+	 * to reconstruct the block mappings.  If the fork is not in this
+	 * state, then the fork cannot have been zapped.
+	 */
+	if (ifp->if_format != XFS_DINODE_FMT_EXTENTS || ifp->if_nextents != 0)
+		return false;
+
+	/*
+	 * Files can have an attr fork in EXTENTS format with zero records for
+	 * several reasons:
+	 *
+	 * a) an attr set created a fork but ran out of space
+	 * b) attr replace deleted an old attr but failed during the set step
+	 * c) the data fork was in btree format when all attrs were deleted, so
+	 *    the fork was left in place
+	 * d) the inode repair code zapped the fork
+	 *
+	 * Only in case (d) do we want to scan the rmapbt to see if we need to
+	 * rebuild the attr fork.  The fork zap code clears all DAC permission
+	 * bits and zeroes the uid and gid, so avoid the scan if any of those
+	 * three conditions are not met.
+	 */
+	if ((VFS_I(ip)->i_mode & 0777) != 0)
+		return false;
+	if (!uid_eq(VFS_I(ip)->i_uid, GLOBAL_ROOT_UID))
+		return false;
+	if (!gid_eq(VFS_I(ip)->i_gid, GLOBAL_ROOT_GID))
+		return false;
+
+	return true;
+}
+
+/*
+ * Decide if we want to scan the reverse mappings to determine if the data
+ * fork /really/ has zero space mappings.
+ */
+STATIC bool
+xchk_bmap_check_empty_datafork(
+	struct xfs_inode	*ip)
+{
+	struct xfs_ifork	*ifp = &ip->i_df;
+
+	/*
+	 * If the dinode repair found a bad data fork, it will reset the fork
+	 * to extents format with zero records and wait for the this scrubber
+	 * to reconstruct the block mappings.  If the fork is not in this
+	 * state, then the fork cannot have been zapped.
+	 */
+	if (ifp->if_format != XFS_DINODE_FMT_EXTENTS || ifp->if_nextents != 0)
+		return false;
+
+	/*
+	 * If we encounter an empty data fork along with evidence that the fork
+	 * might not really be empty, we need to scan the reverse mappings to
+	 * decide if we're going to rebuild the fork.  Data forks with nonzero
+	 * file size are scanned.
+	 */
+	return i_size_read(VFS_I(ip)) != 0;
+}
+
 /*
  * Decide if we want to walk every rmap btree in the fs to make sure that each
  * rmap for this file fork has corresponding bmbt entries.
@@ -641,7 +820,6 @@ xchk_bmap_want_check_rmaps(
 	struct xchk_bmap_info	*info)
 {
 	struct xfs_scrub	*sc = info->sc;
-	struct xfs_ifork	*ifp;
 
 	if (!xfs_has_rmapbt(sc->mp))
 		return false;
@@ -650,28 +828,10 @@ xchk_bmap_want_check_rmaps(
 	if (sc->sm->sm_flags & XFS_SCRUB_OFLAG_CORRUPT)
 		return false;
 
-	/* Don't support realtime rmap checks yet. */
-	if (info->is_rt)
-		return false;
+	if (info->whichfork == XFS_ATTR_FORK)
+		return xchk_bmap_check_empty_attrfork(sc->ip);
 
-	/*
-	 * The inode repair code zaps broken inode forks by resetting them back
-	 * to EXTENTS format and zero extent records.  If we encounter a fork
-	 * in this state along with evidence that the fork isn't supposed to be
-	 * empty, we need to scan the reverse mappings to decide if we're going
-	 * to rebuild the fork.  Data forks with nonzero file size are scanned.
-	 * xattr forks are never empty of content, so they are always scanned.
-	 */
-	ifp = xfs_ifork_ptr(sc->ip, info->whichfork);
-	if (ifp->if_format == XFS_DINODE_FMT_EXTENTS && ifp->if_nextents == 0) {
-		if (info->whichfork == XFS_DATA_FORK &&
-		    i_size_read(VFS_I(sc->ip)) == 0)
-			return false;
-
-		return true;
-	}
-
-	return false;
+	return xchk_bmap_check_empty_datafork(sc->ip);
 }
 
 /* Make sure each rmap has a corresponding bmbt entry. */
@@ -680,11 +840,25 @@ xchk_bmap_check_rmaps(
 	struct xfs_scrub	*sc,
 	int			whichfork)
 {
-	struct xfs_perag	*pag;
-	xfs_agnumber_t		agno;
+	struct xfs_perag	*pag = NULL;
 	int			error;
 
-	for_each_perag(sc->mp, agno, pag) {
+	if (xfs_ifork_is_realtime(sc->ip, whichfork)) {
+		struct xfs_rtgroup	*rtg = NULL;
+
+		while ((rtg = xfs_rtgroup_next(sc->mp, rtg))) {
+			error = xchk_bmap_check_rt_rmaps(sc, rtg);
+			if (error ||
+			    (sc->sm->sm_flags & XFS_SCRUB_OFLAG_CORRUPT)) {
+				xfs_rtgroup_rele(rtg);
+				return error;
+			}
+		}
+
+		return 0;
+	}
+
+	while ((pag = xfs_perag_next(sc->mp, pag))) {
 		error = xchk_bmap_check_ag_rmaps(sc, whichfork, pag);
 		if (error ||
 		    (sc->sm->sm_flags & XFS_SCRUB_OFLAG_CORRUPT)) {
@@ -741,9 +915,12 @@ xchk_bmap_iext_mapping(
 /* Are these two mappings contiguous with each other? */
 static inline bool
 xchk_are_bmaps_contiguous(
+	const struct xchk_bmap_info	*info,
 	const struct xfs_bmbt_irec	*b1,
 	const struct xfs_bmbt_irec	*b2)
 {
+	struct xfs_mount		*mp = info->sc->mp;
+
 	/* Don't try to combine unallocated mappings. */
 	if (!xfs_bmap_is_real_extent(b1))
 		return false;
@@ -757,6 +934,17 @@ xchk_are_bmaps_contiguous(
 		return false;
 	if (b1->br_state != b2->br_state)
 		return false;
+
+	/*
+	 * Don't combine bmaps that would cross rtgroup boundaries.  This is a
+	 * valid state, but if combined they will fail rtb extent checks.
+	 */
+	if (info->is_rt && xfs_has_rtgroups(mp)) {
+		if (xfs_rtb_to_rgno(mp, b1->br_startblock) !=
+		    xfs_rtb_to_rgno(mp, b2->br_startblock))
+			return false;
+	}
+
 	return true;
 }
 
@@ -794,7 +982,7 @@ xchk_bmap_iext_iter(
 	 * that we just read, if possible.
 	 */
 	while (xfs_iext_peek_next_extent(ifp, &info->icur, &got)) {
-		if (!xchk_are_bmaps_contiguous(irec, &got))
+		if (!xchk_are_bmaps_contiguous(info, irec, &got))
 			break;
 
 		if (!xchk_bmap_iext_mapping(info, &got)) {
@@ -843,7 +1031,7 @@ xchk_bmap(
 	if (!ifp)
 		return -ENOENT;
 
-	info.is_rt = whichfork == XFS_DATA_FORK && XFS_IS_REALTIME_INODE(ip);
+	info.is_rt = xfs_ifork_is_realtime(ip, whichfork);
 	info.whichfork = whichfork;
 	info.is_shared = whichfork == XFS_DATA_FORK && xfs_is_reflink_inode(ip);
 	info.sc = sc;
@@ -857,7 +1045,13 @@ xchk_bmap(
 		}
 		break;
 	case XFS_ATTR_FORK:
-		if (!xfs_has_attr(mp) && !xfs_has_attr2(mp))
+		/*
+		 * "attr" means that an attr fork was created at some point in
+		 * the life of this filesystem.  "attr2" means that inodes have
+		 * variable-sized data/attr fork areas.  Hence we only check
+		 * attr here.
+		 */
+		if (!xfs_has_attr(mp))
 			xchk_ino_set_corrupt(sc, sc->ip->i_ino);
 		break;
 	default:
@@ -870,6 +1064,7 @@ xchk_bmap(
 	case XFS_DINODE_FMT_UUID:
 	case XFS_DINODE_FMT_DEV:
 	case XFS_DINODE_FMT_LOCAL:
+	case XFS_DINODE_FMT_META_BTREE:
 		/* No mappings to check. */
 		if (whichfork == XFS_COW_FORK)
 			xchk_fblock_set_corrupt(sc, whichfork, 0);
@@ -939,7 +1134,20 @@ int
 xchk_bmap_data(
 	struct xfs_scrub	*sc)
 {
-	return xchk_bmap(sc, XFS_DATA_FORK);
+	int			error;
+
+	if (xchk_file_looks_zapped(sc, XFS_SICK_INO_BMBTD_ZAPPED)) {
+		xchk_ino_set_corrupt(sc, sc->ip->i_ino);
+		return 0;
+	}
+
+	error = xchk_bmap(sc, XFS_DATA_FORK);
+	if (error)
+		return error;
+
+	/* If the data fork is clean, it is clearly not zapped. */
+	xchk_mark_healthy_if_clean(sc, XFS_SICK_INO_BMBTD_ZAPPED);
+	return 0;
 }
 
 /* Scrub an inode's attr fork. */
@@ -947,7 +1155,27 @@ int
 xchk_bmap_attr(
 	struct xfs_scrub	*sc)
 {
-	return xchk_bmap(sc, XFS_ATTR_FORK);
+	int			error;
+
+	/*
+	 * If the attr fork has been zapped, it's possible that forkoff was
+	 * reset to zero and hence sc->ip->i_afp is NULL.  We don't want the
+	 * NULL ifp check in xchk_bmap to conclude that the attr fork is ok,
+	 * so short circuit that logic by setting the corruption flag and
+	 * returning immediately.
+	 */
+	if (xchk_file_looks_zapped(sc, XFS_SICK_INO_BMBTA_ZAPPED)) {
+		xchk_ino_set_corrupt(sc, sc->ip->i_ino);
+		return 0;
+	}
+
+	error = xchk_bmap(sc, XFS_ATTR_FORK);
+	if (error)
+		return error;
+
+	/* If the attr fork is clean, it is clearly not zapped. */
+	xchk_mark_healthy_if_clean(sc, XFS_SICK_INO_BMBTA_ZAPPED);
+	return 0;
 }
 
 /* Scrub an inode's CoW fork. */

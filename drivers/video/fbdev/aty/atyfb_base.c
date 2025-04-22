@@ -301,6 +301,7 @@ static struct fb_ops atyfb_ops = {
 	.owner		= THIS_MODULE,
 	.fb_open	= atyfb_open,
 	.fb_release	= atyfb_release,
+	__FB_DEFAULT_IOMEM_OPS_RDWR,
 	.fb_check_var	= atyfb_check_var,
 	.fb_set_par	= atyfb_set_par,
 	.fb_setcolreg	= atyfb_setcolreg,
@@ -315,6 +316,8 @@ static struct fb_ops atyfb_ops = {
 	.fb_imageblit	= atyfb_imageblit,
 #ifdef __sparc__
 	.fb_mmap	= atyfb_mmap,
+#else
+	__FB_DEFAULT_IOMEM_OPS_MMAP,
 #endif
 	.fb_sync	= atyfb_sync,
 };
@@ -2269,7 +2272,7 @@ static void aty_bl_init(struct atyfb_par *par)
 			    0xFF * FB_BACKLIGHT_MAX / MAX_LEVEL);
 
 	bd->props.brightness = bd->props.max_brightness;
-	bd->props.power = FB_BLANK_UNBLANK;
+	bd->props.power = BACKLIGHT_POWER_ON;
 	backlight_update_status(bd);
 
 	printk("aty: Backlight initialized (%s)\n", name);

@@ -892,7 +892,7 @@ exit_remove_files:
 	return err;
 }
 
-static int vt8231_remove(struct platform_device *pdev)
+static void vt8231_remove(struct platform_device *pdev)
 {
 	struct vt8231_data *data = platform_get_drvdata(pdev);
 	int i;
@@ -906,13 +906,11 @@ static int vt8231_remove(struct platform_device *pdev)
 		sysfs_remove_group(&pdev->dev.kobj, &vt8231_group_temps[i]);
 
 	sysfs_remove_group(&pdev->dev.kobj, &vt8231_group);
-
-	return 0;
 }
 
 
 static struct platform_driver vt8231_driver = {
-	.driver = {
+	.driver	= {
 		.name	= DRIVER_NAME,
 	},
 	.probe	= vt8231_probe,

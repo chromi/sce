@@ -16,11 +16,9 @@
 #include <linux/of_address.h>
 #include <linux/of_pci.h>
 #include <linux/of_platform.h>
-#include <linux/pci.h>
-#include <linux/platform_device.h>
-#include <linux/pci-ecam.h>
 
 #include "../pci.h"
+#include "pcie-xilinx-common.h"
 
 /* Register definitions */
 #define XILINX_CPM_PCIE_REG_IDR		0x00000E10
@@ -32,35 +30,16 @@
 #define XILINX_CPM_PCIE_REG_IDRN_MASK	0x00000E3C
 #define XILINX_CPM_PCIE_MISC_IR_STATUS	0x00000340
 #define XILINX_CPM_PCIE_MISC_IR_ENABLE	0x00000348
-#define XILINX_CPM_PCIE_MISC_IR_LOCAL	BIT(1)
+#define XILINX_CPM_PCIE0_MISC_IR_LOCAL	BIT(1)
+#define XILINX_CPM_PCIE1_MISC_IR_LOCAL	BIT(2)
 
-#define XILINX_CPM_PCIE_IR_STATUS       0x000002A0
-#define XILINX_CPM_PCIE_IR_ENABLE       0x000002A8
-#define XILINX_CPM_PCIE_IR_LOCAL        BIT(0)
+#define XILINX_CPM_PCIE0_IR_STATUS	0x000002A0
+#define XILINX_CPM_PCIE1_IR_STATUS	0x000002B4
+#define XILINX_CPM_PCIE0_IR_ENABLE	0x000002A8
+#define XILINX_CPM_PCIE1_IR_ENABLE	0x000002BC
+#define XILINX_CPM_PCIE_IR_LOCAL	BIT(0)
 
-/* Interrupt registers definitions */
-#define XILINX_CPM_PCIE_INTR_LINK_DOWN		0
-#define XILINX_CPM_PCIE_INTR_HOT_RESET		3
-#define XILINX_CPM_PCIE_INTR_CFG_PCIE_TIMEOUT	4
-#define XILINX_CPM_PCIE_INTR_CFG_TIMEOUT	8
-#define XILINX_CPM_PCIE_INTR_CORRECTABLE	9
-#define XILINX_CPM_PCIE_INTR_NONFATAL		10
-#define XILINX_CPM_PCIE_INTR_FATAL		11
-#define XILINX_CPM_PCIE_INTR_CFG_ERR_POISON	12
-#define XILINX_CPM_PCIE_INTR_PME_TO_ACK_RCVD	15
-#define XILINX_CPM_PCIE_INTR_INTX		16
-#define XILINX_CPM_PCIE_INTR_PM_PME_RCVD	17
-#define XILINX_CPM_PCIE_INTR_SLV_UNSUPP		20
-#define XILINX_CPM_PCIE_INTR_SLV_UNEXP		21
-#define XILINX_CPM_PCIE_INTR_SLV_COMPL		22
-#define XILINX_CPM_PCIE_INTR_SLV_ERRP		23
-#define XILINX_CPM_PCIE_INTR_SLV_CMPABT		24
-#define XILINX_CPM_PCIE_INTR_SLV_ILLBUR		25
-#define XILINX_CPM_PCIE_INTR_MST_DECERR		26
-#define XILINX_CPM_PCIE_INTR_MST_SLVERR		27
-#define XILINX_CPM_PCIE_INTR_SLV_PCIE_TIMEOUT	28
-
-#define IMR(x) BIT(XILINX_CPM_PCIE_INTR_ ##x)
+#define IMR(x) BIT(XILINX_PCIE_INTR_ ##x)
 
 #define XILINX_CPM_PCIE_IMR_ALL_MASK			\
 	(						\
@@ -104,14 +83,21 @@
 enum xilinx_cpm_version {
 	CPM,
 	CPM5,
+	CPM5_HOST1,
 };
 
 /**
  * struct xilinx_cpm_variant - CPM variant information
  * @version: CPM version
+ * @ir_status: Offset for the error interrupt status register
+ * @ir_enable: Offset for the CPM5 local error interrupt enable register
+ * @ir_misc_value: A bitmask for the miscellaneous interrupt status
  */
 struct xilinx_cpm_variant {
 	enum xilinx_cpm_version version;
+	u32 ir_status;
+	u32 ir_enable;
+	u32 ir_misc_value;
 };
 
 /**
@@ -293,6 +279,7 @@ static void xilinx_cpm_pcie_event_flow(struct irq_desc *desc)
 {
 	struct xilinx_cpm_pcie *port = irq_desc_get_handler_data(desc);
 	struct irq_chip *chip = irq_desc_get_chip(desc);
+	const struct xilinx_cpm_variant *variant = port->variant;
 	unsigned long val;
 	int i;
 
@@ -303,11 +290,11 @@ static void xilinx_cpm_pcie_event_flow(struct irq_desc *desc)
 		generic_handle_domain_irq(port->cpm_domain, i);
 	pcie_write(port, val, XILINX_CPM_PCIE_REG_IDR);
 
-	if (port->variant->version == CPM5) {
-		val = readl_relaxed(port->cpm_base + XILINX_CPM_PCIE_IR_STATUS);
+	if (variant->ir_status) {
+		val = readl_relaxed(port->cpm_base + variant->ir_status);
 		if (val)
 			writel_relaxed(val, port->cpm_base +
-					    XILINX_CPM_PCIE_IR_STATUS);
+				       variant->ir_status);
 	}
 
 	/*
@@ -323,7 +310,7 @@ static void xilinx_cpm_pcie_event_flow(struct irq_desc *desc)
 }
 
 #define _IC(x, s)                              \
-	[XILINX_CPM_PCIE_INTR_ ## x] = { __stringify(x), s }
+	[XILINX_PCIE_INTR_ ## x] = { __stringify(x), s }
 
 static const struct {
 	const char      *sym;
@@ -359,9 +346,9 @@ static irqreturn_t xilinx_cpm_pcie_intr_handler(int irq, void *dev_id)
 	d = irq_domain_get_irq_data(port->cpm_domain, irq);
 
 	switch (d->hwirq) {
-	case XILINX_CPM_PCIE_INTR_CORRECTABLE:
-	case XILINX_CPM_PCIE_INTR_NONFATAL:
-	case XILINX_CPM_PCIE_INTR_FATAL:
+	case XILINX_PCIE_INTR_CORRECTABLE:
+	case XILINX_PCIE_INTR_NONFATAL:
+	case XILINX_PCIE_INTR_FATAL:
 		cpm_pcie_clear_err_interrupts(port);
 		fallthrough;
 
@@ -466,7 +453,7 @@ static int xilinx_cpm_setup_irq(struct xilinx_cpm_pcie *port)
 	}
 
 	port->intx_irq = irq_create_mapping(port->cpm_domain,
-					    XILINX_CPM_PCIE_INTR_INTX);
+					    XILINX_PCIE_INTR_INTX);
 	if (!port->intx_irq) {
 		dev_err(dev, "Failed to map INTx interrupt\n");
 		return -ENXIO;
@@ -489,6 +476,8 @@ static int xilinx_cpm_setup_irq(struct xilinx_cpm_pcie *port)
  */
 static void xilinx_cpm_pcie_init_port(struct xilinx_cpm_pcie *port)
 {
+	const struct xilinx_cpm_variant *variant = port->variant;
+
 	if (cpm_pcie_link_up(port))
 		dev_info(port->dev, "PCIe Link is UP\n");
 	else
@@ -507,15 +496,15 @@ static void xilinx_cpm_pcie_init_port(struct xilinx_cpm_pcie *port)
 	 * XILINX_CPM_PCIE_MISC_IR_ENABLE register is mapped to
 	 * CPM SLCR block.
 	 */
-	writel(XILINX_CPM_PCIE_MISC_IR_LOCAL,
+	writel(variant->ir_misc_value,
 	       port->cpm_base + XILINX_CPM_PCIE_MISC_IR_ENABLE);
 
-	if (port->variant->version == CPM5) {
+	if (variant->ir_enable) {
 		writel(XILINX_CPM_PCIE_IR_LOCAL,
-		       port->cpm_base + XILINX_CPM_PCIE_IR_ENABLE);
+		       port->cpm_base + variant->ir_enable);
 	}
 
-	/* Enable the Bridge enable bit */
+	/* Set Bridge enable bit */
 	pcie_write(port, pcie_read(port, XILINX_CPM_PCIE_REG_RPSC) |
 		   XILINX_CPM_PCIE_REG_RPSC_BEN,
 		   XILINX_CPM_PCIE_REG_RPSC);
@@ -633,10 +622,21 @@ err_parse_dt:
 
 static const struct xilinx_cpm_variant cpm_host = {
 	.version = CPM,
+	.ir_misc_value = XILINX_CPM_PCIE0_MISC_IR_LOCAL,
 };
 
 static const struct xilinx_cpm_variant cpm5_host = {
 	.version = CPM5,
+	.ir_misc_value = XILINX_CPM_PCIE0_MISC_IR_LOCAL,
+	.ir_status = XILINX_CPM_PCIE0_IR_STATUS,
+	.ir_enable = XILINX_CPM_PCIE0_IR_ENABLE,
+};
+
+static const struct xilinx_cpm_variant cpm5_host1 = {
+	.version = CPM5_HOST1,
+	.ir_misc_value = XILINX_CPM_PCIE1_MISC_IR_LOCAL,
+	.ir_status = XILINX_CPM_PCIE1_IR_STATUS,
+	.ir_enable = XILINX_CPM_PCIE1_IR_ENABLE,
 };
 
 static const struct of_device_id xilinx_cpm_pcie_of_match[] = {
@@ -647,6 +647,10 @@ static const struct of_device_id xilinx_cpm_pcie_of_match[] = {
 	{
 		.compatible = "xlnx,versal-cpm5-host",
 		.data = &cpm5_host,
+	},
+	{
+		.compatible = "xlnx,versal-cpm5-host1",
+		.data = &cpm5_host1,
 	},
 	{}
 };

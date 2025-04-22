@@ -145,8 +145,13 @@ static int extlog_print(struct notifier_block *nb, unsigned long val,
 	static u32 err_seq;
 
 	estatus = extlog_elog_entry_check(cpu, bank);
-	if (estatus == NULL || (mce->kflags & MCE_HANDLED_CEC))
+	if (!estatus)
 		return NOTIFY_DONE;
+
+	if (mce->kflags & MCE_HANDLED_CEC) {
+		estatus->block_status = 0;
+		return NOTIFY_DONE;
+	}
 
 	memcpy(elog_buf, (void *)estatus, ELOG_ENTRY_LEN);
 	/* clear record status to enable BIOS to update it again */
@@ -246,6 +251,10 @@ static int __init extlog_init(void)
 	}
 
 	extlog_l1_hdr = acpi_os_map_iomem(l1_dirbase, l1_hdr_size);
+	if (!extlog_l1_hdr) {
+		rc = -ENOMEM;
+		goto err_release_l1_hdr;
+	}
 	l1_head = (struct extlog_l1_head *)extlog_l1_hdr;
 	l1_size = l1_head->total_len;
 	l1_percpu_entry = l1_head->entries;
@@ -263,6 +272,10 @@ static int __init extlog_init(void)
 		goto err;
 	}
 	extlog_l1_addr = acpi_os_map_iomem(l1_dirbase, l1_size);
+	if (!extlog_l1_addr) {
+		rc = -ENOMEM;
+		goto err_release_l1_dir;
+	}
 	l1_entry_base = (u64 *)((u8 *)extlog_l1_addr + l1_hdr_size);
 
 	/* remap elog table */
@@ -274,6 +287,10 @@ static int __init extlog_init(void)
 		goto err_release_l1_dir;
 	}
 	elog_addr = acpi_os_map_iomem(elog_base, elog_size);
+	if (!elog_addr) {
+		rc = -ENOMEM;
+		goto err_release_elog;
+	}
 
 	rc = -ENOMEM;
 	/* allocate buffer to save elog record */
@@ -295,6 +312,8 @@ err_release_l1_dir:
 	if (extlog_l1_addr)
 		acpi_os_unmap_iomem(extlog_l1_addr, l1_size);
 	release_mem_region(l1_dirbase, l1_size);
+err_release_l1_hdr:
+	release_mem_region(l1_dirbase, l1_hdr_size);
 err:
 	pr_warn(FW_BUG "Extended error log disabled because of problems parsing f/w tables\n");
 	return rc;
@@ -303,9 +322,10 @@ err:
 static void __exit extlog_exit(void)
 {
 	mce_unregister_decode_chain(&extlog_mce_dec);
-	((struct extlog_l1_head *)extlog_l1_addr)->flags &= ~FLAG_OS_OPTIN;
-	if (extlog_l1_addr)
+	if (extlog_l1_addr) {
+		((struct extlog_l1_head *)extlog_l1_addr)->flags &= ~FLAG_OS_OPTIN;
 		acpi_os_unmap_iomem(extlog_l1_addr, l1_size);
+	}
 	if (elog_addr)
 		acpi_os_unmap_iomem(elog_addr, elog_size);
 	release_mem_region(elog_base, elog_size);

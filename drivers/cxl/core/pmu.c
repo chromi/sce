@@ -23,7 +23,7 @@ const struct device_type cxl_pmu_type = {
 
 static void remove_dev(void *dev)
 {
-	device_del(dev);
+	device_unregister(dev);
 }
 
 int devm_cxl_pmu_add(struct device *parent, struct cxl_pmu_regs *regs,
@@ -65,4 +65,4 @@ err:
 	put_device(&pmu->dev);
 	return rc;
 }
-EXPORT_SYMBOL_NS_GPL(devm_cxl_pmu_add, CXL);
+EXPORT_SYMBOL_NS_GPL(devm_cxl_pmu_add, "CXL");

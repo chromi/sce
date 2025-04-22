@@ -811,7 +811,7 @@ static int ax_init_dev(struct net_device *dev)
 	return ret;
 }
 
-static int ax_remove(struct platform_device *pdev)
+static void ax_remove(struct platform_device *pdev)
 {
 	struct net_device *dev = platform_get_drvdata(pdev);
 	struct ei_device *ei_local = netdev_priv(dev);
@@ -832,8 +832,6 @@ static int ax_remove(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, NULL);
 	free_netdev(dev);
-
-	return 0;
 }
 
 /*

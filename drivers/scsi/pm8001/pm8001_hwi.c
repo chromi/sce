@@ -1180,65 +1180,6 @@ void pm8001_chip_iounmap(struct pm8001_hba_info *pm8001_ha)
 	}
 }
 
-#ifndef PM8001_USE_MSIX
-/**
- * pm8001_chip_intx_interrupt_enable - enable PM8001 chip interrupt
- * @pm8001_ha: our hba card information
- */
-static void
-pm8001_chip_intx_interrupt_enable(struct pm8001_hba_info *pm8001_ha)
-{
-	pm8001_cw32(pm8001_ha, 0, MSGU_ODMR, ODMR_CLEAR_ALL);
-	pm8001_cw32(pm8001_ha, 0, MSGU_ODCR, ODCR_CLEAR_ALL);
-}
-
-/**
- * pm8001_chip_intx_interrupt_disable - disable PM8001 chip interrupt
- * @pm8001_ha: our hba card information
- */
-static void
-pm8001_chip_intx_interrupt_disable(struct pm8001_hba_info *pm8001_ha)
-{
-	pm8001_cw32(pm8001_ha, 0, MSGU_ODMR, ODMR_MASK_ALL);
-}
-
-#else
-
-/**
- * pm8001_chip_msix_interrupt_enable - enable PM8001 chip interrupt
- * @pm8001_ha: our hba card information
- * @int_vec_idx: interrupt number to enable
- */
-static void
-pm8001_chip_msix_interrupt_enable(struct pm8001_hba_info *pm8001_ha,
-	u32 int_vec_idx)
-{
-	u32 msi_index;
-	u32 value;
-	msi_index = int_vec_idx * MSIX_TABLE_ELEMENT_SIZE;
-	msi_index += MSIX_TABLE_BASE;
-	pm8001_cw32(pm8001_ha, 0, msi_index, MSIX_INTERRUPT_ENABLE);
-	value = (1 << int_vec_idx);
-	pm8001_cw32(pm8001_ha, 0,  MSGU_ODCR, value);
-
-}
-
-/**
- * pm8001_chip_msix_interrupt_disable - disable PM8001 chip interrupt
- * @pm8001_ha: our hba card information
- * @int_vec_idx: interrupt number to disable
- */
-static void
-pm8001_chip_msix_interrupt_disable(struct pm8001_hba_info *pm8001_ha,
-	u32 int_vec_idx)
-{
-	u32 msi_index;
-	msi_index = int_vec_idx * MSIX_TABLE_ELEMENT_SIZE;
-	msi_index += MSIX_TABLE_BASE;
-	pm8001_cw32(pm8001_ha, 0,  msi_index, MSIX_INTERRUPT_DISABLE);
-}
-#endif
-
 /**
  * pm8001_chip_interrupt_enable - enable PM8001 chip interrupt
  * @pm8001_ha: our hba card information
@@ -1247,11 +1188,14 @@ pm8001_chip_msix_interrupt_disable(struct pm8001_hba_info *pm8001_ha,
 static void
 pm8001_chip_interrupt_enable(struct pm8001_hba_info *pm8001_ha, u8 vec)
 {
-#ifdef PM8001_USE_MSIX
-	pm8001_chip_msix_interrupt_enable(pm8001_ha, 0);
-#else
-	pm8001_chip_intx_interrupt_enable(pm8001_ha);
-#endif
+	if (pm8001_ha->use_msix) {
+		pm8001_cw32(pm8001_ha, 0, MSIX_TABLE_BASE,
+			    MSIX_INTERRUPT_ENABLE);
+		pm8001_cw32(pm8001_ha, 0,  MSGU_ODCR, 1);
+	} else {
+		pm8001_cw32(pm8001_ha, 0, MSGU_ODMR, ODMR_CLEAR_ALL);
+		pm8001_cw32(pm8001_ha, 0, MSGU_ODCR, ODCR_CLEAR_ALL);
+	}
 }
 
 /**
@@ -1262,11 +1206,11 @@ pm8001_chip_interrupt_enable(struct pm8001_hba_info *pm8001_ha, u8 vec)
 static void
 pm8001_chip_interrupt_disable(struct pm8001_hba_info *pm8001_ha, u8 vec)
 {
-#ifdef PM8001_USE_MSIX
-	pm8001_chip_msix_interrupt_disable(pm8001_ha, 0);
-#else
-	pm8001_chip_intx_interrupt_disable(pm8001_ha);
-#endif
+	if (pm8001_ha->use_msix)
+		pm8001_cw32(pm8001_ha, 0, MSIX_TABLE_BASE,
+			    MSIX_INTERRUPT_DISABLE);
+	else
+		pm8001_cw32(pm8001_ha, 0, MSGU_ODMR, ODMR_MASK_ALL);
 }
 
 /**
@@ -3528,12 +3472,13 @@ int pm8001_mpi_task_abort_resp(struct pm8001_hba_info *pm8001_ha, void *piomb)
 			   status, tag, scp);
 	switch (status) {
 	case IO_SUCCESS:
-		pm8001_dbg(pm8001_ha, EH, "IO_SUCCESS\n");
+		pm8001_dbg(pm8001_ha, FAIL, "ABORT IO_SUCCESS for tag %#x\n",
+			   tag);
 		ts->resp = SAS_TASK_COMPLETE;
 		ts->stat = SAS_SAM_STAT_GOOD;
 		break;
 	case IO_NOT_VALID:
-		pm8001_dbg(pm8001_ha, EH, "IO_NOT_VALID\n");
+		pm8001_dbg(pm8001_ha, FAIL, "IO_NOT_VALID for tag %#x\n", tag);
 		ts->resp = TMF_RESP_FUNC_FAILED;
 		break;
 	}
@@ -4309,16 +4254,15 @@ static int pm8001_chip_phy_ctl_req(struct pm8001_hba_info *pm8001_ha,
 
 static u32 pm8001_chip_is_our_interrupt(struct pm8001_hba_info *pm8001_ha)
 {
-#ifdef PM8001_USE_MSIX
-	return 1;
-#else
 	u32 value;
+
+	if (pm8001_ha->use_msix)
+		return 1;
 
 	value = pm8001_cr32(pm8001_ha, 0, MSGU_ODR);
 	if (value)
 		return 1;
 	return 0;
-#endif
 }
 
 /**

@@ -517,15 +517,13 @@ static int socfpga_a10_fpga_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int socfpga_a10_fpga_remove(struct platform_device *pdev)
+static void socfpga_a10_fpga_remove(struct platform_device *pdev)
 {
 	struct fpga_manager *mgr = platform_get_drvdata(pdev);
 	struct a10_fpga_priv *priv = mgr->priv;
 
 	fpga_mgr_unregister(mgr);
 	clk_disable_unprepare(priv->clk);
-
-	return 0;
 }
 
 static const struct of_device_id socfpga_a10_fpga_of_match[] = {

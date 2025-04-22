@@ -2223,7 +2223,7 @@ static int f71882fg_create_fan_sysfs_files(
 	return err;
 }
 
-static int f71882fg_remove(struct platform_device *pdev)
+static void f71882fg_remove(struct platform_device *pdev)
 {
 	struct f71882fg_data *data = platform_get_drvdata(pdev);
 	int nr_fans = f71882fg_nr_fans[data->type];
@@ -2333,7 +2333,6 @@ static int f71882fg_remove(struct platform_device *pdev)
 				ARRAY_SIZE(fxxxx_auto_pwm_attr[0]) * nr_fans);
 		}
 	}
-	return 0;
 }
 
 static int f71882fg_probe(struct platform_device *pdev)

@@ -36,6 +36,8 @@ enum {
 	BLK_MQ_TAG_MAX		= BLK_MQ_NO_TAG - 1,
 };
 
+#define BLK_MQ_CPU_WORK_BATCH	(8)
+
 typedef unsigned int __bitwise blk_insert_t;
 #define BLK_MQ_INSERT_AT_HEAD		((__force blk_insert_t)0x01)
 
@@ -153,7 +155,7 @@ struct blk_mq_alloc_data {
 
 	/* allocate multiple requests/tags in one go */
 	unsigned int nr_tags;
-	struct request **cached_rq;
+	struct rq_list *cached_rqs;
 
 	/* input & output parameter */
 	struct blk_mq_ctx *ctx;
@@ -161,11 +163,8 @@ struct blk_mq_alloc_data {
 };
 
 struct blk_mq_tags *blk_mq_init_tags(unsigned int nr_tags,
-		unsigned int reserved_tags, int node, int alloc_policy);
+		unsigned int reserved_tags, unsigned int flags, int node);
 void blk_mq_free_tags(struct blk_mq_tags *tags);
-int blk_mq_init_bitmaps(struct sbitmap_queue *bitmap_tags,
-		struct sbitmap_queue *breserved_tags, unsigned int queue_depth,
-		unsigned int reserved, int node, int alloc_policy);
 
 unsigned int blk_mq_get_tag(struct blk_mq_alloc_data *data);
 unsigned long blk_mq_get_tags(struct blk_mq_alloc_data *data, int nr_tags,
@@ -228,6 +227,19 @@ static inline struct blk_mq_tags *blk_mq_tags_from_data(struct blk_mq_alloc_data
 
 static inline bool blk_mq_hctx_stopped(struct blk_mq_hw_ctx *hctx)
 {
+	/* Fast path: hardware queue is not stopped most of the time. */
+	if (likely(!test_bit(BLK_MQ_S_STOPPED, &hctx->state)))
+		return false;
+
+	/*
+	 * This barrier is used to order adding of dispatch list before and
+	 * the test of BLK_MQ_S_STOPPED below. Pairs with the memory barrier
+	 * in blk_mq_start_stopped_hw_queue() so that dispatch code could
+	 * either see BLK_MQ_S_STOPPED is cleared or dispatch list is not
+	 * empty to avoid missing dispatching requests.
+	 */
+	smp_mb();
+
 	return test_bit(BLK_MQ_S_STOPPED, &hctx->state);
 }
 
@@ -271,12 +283,18 @@ static inline int blk_mq_get_rq_budget_token(struct request *rq)
 	return -1;
 }
 
-static inline void __blk_mq_inc_active_requests(struct blk_mq_hw_ctx *hctx)
+static inline void __blk_mq_add_active_requests(struct blk_mq_hw_ctx *hctx,
+						int val)
 {
 	if (blk_mq_is_shared_tags(hctx->flags))
-		atomic_inc(&hctx->queue->nr_active_requests_shared_tags);
+		atomic_add(val, &hctx->queue->nr_active_requests_shared_tags);
 	else
-		atomic_inc(&hctx->nr_active);
+		atomic_add(val, &hctx->nr_active);
+}
+
+static inline void __blk_mq_inc_active_requests(struct blk_mq_hw_ctx *hctx)
+{
+	__blk_mq_add_active_requests(hctx, 1);
 }
 
 static inline void __blk_mq_sub_active_requests(struct blk_mq_hw_ctx *hctx,
@@ -293,6 +311,32 @@ static inline void __blk_mq_dec_active_requests(struct blk_mq_hw_ctx *hctx)
 	__blk_mq_sub_active_requests(hctx, 1);
 }
 
+static inline void blk_mq_add_active_requests(struct blk_mq_hw_ctx *hctx,
+					      int val)
+{
+	if (hctx->flags & BLK_MQ_F_TAG_QUEUE_SHARED)
+		__blk_mq_add_active_requests(hctx, val);
+}
+
+static inline void blk_mq_inc_active_requests(struct blk_mq_hw_ctx *hctx)
+{
+	if (hctx->flags & BLK_MQ_F_TAG_QUEUE_SHARED)
+		__blk_mq_inc_active_requests(hctx);
+}
+
+static inline void blk_mq_sub_active_requests(struct blk_mq_hw_ctx *hctx,
+					      int val)
+{
+	if (hctx->flags & BLK_MQ_F_TAG_QUEUE_SHARED)
+		__blk_mq_sub_active_requests(hctx, val);
+}
+
+static inline void blk_mq_dec_active_requests(struct blk_mq_hw_ctx *hctx)
+{
+	if (hctx->flags & BLK_MQ_F_TAG_QUEUE_SHARED)
+		__blk_mq_dec_active_requests(hctx);
+}
+
 static inline int __blk_mq_active_requests(struct blk_mq_hw_ctx *hctx)
 {
 	if (blk_mq_is_shared_tags(hctx->flags))
@@ -302,13 +346,9 @@ static inline int __blk_mq_active_requests(struct blk_mq_hw_ctx *hctx)
 static inline void __blk_mq_put_driver_tag(struct blk_mq_hw_ctx *hctx,
 					   struct request *rq)
 {
+	blk_mq_dec_active_requests(hctx);
 	blk_mq_put_tag(hctx->tags, rq->mq_ctx, rq->tag);
 	rq->tag = BLK_MQ_NO_TAG;
-
-	if (rq->rq_flags & RQF_MQ_INFLIGHT) {
-		rq->rq_flags &= ~RQF_MQ_INFLIGHT;
-		__blk_mq_dec_active_requests(hctx);
-	}
 }
 
 static inline void blk_mq_put_driver_tag(struct request *rq)
@@ -319,19 +359,14 @@ static inline void blk_mq_put_driver_tag(struct request *rq)
 	__blk_mq_put_driver_tag(rq->mq_hctx, rq);
 }
 
-bool __blk_mq_get_driver_tag(struct blk_mq_hw_ctx *hctx, struct request *rq);
+bool __blk_mq_alloc_driver_tag(struct request *rq);
 
 static inline bool blk_mq_get_driver_tag(struct request *rq)
 {
-	struct blk_mq_hw_ctx *hctx = rq->mq_hctx;
+	if (rq->tag == BLK_MQ_NO_TAG && !__blk_mq_alloc_driver_tag(rq))
+		return false;
 
-	if (rq->tag != BLK_MQ_NO_TAG &&
-	    !(hctx->flags & BLK_MQ_F_TAG_QUEUE_SHARED)) {
-		hctx->tags->rqs[rq->tag] = rq;
-		return true;
-	}
-
-	return __blk_mq_get_driver_tag(hctx, rq);
+	return true;
 }
 
 static inline void blk_mq_clear_mq_map(struct blk_mq_queue_map *qmap)
@@ -340,37 +375,6 @@ static inline void blk_mq_clear_mq_map(struct blk_mq_queue_map *qmap)
 
 	for_each_possible_cpu(cpu)
 		qmap->mq_map[cpu] = 0;
-}
-
-/*
- * blk_mq_plug() - Get caller context plug
- * @bio : the bio being submitted by the caller context
- *
- * Plugging, by design, may delay the insertion of BIOs into the elevator in
- * order to increase BIO merging opportunities. This however can cause BIO
- * insertion order to change from the order in which submit_bio() is being
- * executed in the case of multiple contexts concurrently issuing BIOs to a
- * device, even if these context are synchronized to tightly control BIO issuing
- * order. While this is not a problem with regular block devices, this ordering
- * change can cause write BIO failures with zoned block devices as these
- * require sequential write patterns to zones. Prevent this from happening by
- * ignoring the plug state of a BIO issuing context if it is for a zoned block
- * device and the BIO to plug is a write operation.
- *
- * Return current->plug if the bio can be plugged and NULL otherwise
- */
-static inline struct blk_plug *blk_mq_plug( struct bio *bio)
-{
-	/* Zoned block device write operation case: do not plug the BIO */
-	if (IS_ENABLED(CONFIG_BLK_DEV_ZONED) &&
-	    bdev_op_is_zoned_write(bio->bi_bdev, bio_op(bio)))
-		return NULL;
-
-	/*
-	 * For regular block devices or read operations, use the context plug
-	 * which may be NULL if blk_start_plug() was not executed.
-	 */
-	return current->plug;
 }
 
 /* Free all requests on the list */
@@ -443,5 +447,11 @@ do {								\
 
 #define blk_mq_run_dispatch_ops(q, dispatch_ops)		\
 	__blk_mq_run_dispatch_ops(q, true, dispatch_ops)	\
+
+static inline bool blk_mq_can_poll(struct request_queue *q)
+{
+	return (q->limits.features & BLK_FEAT_POLL) &&
+		q->tag_set->map[HCTX_TYPE_POLL].nr_queues;
+}
 
 #endif

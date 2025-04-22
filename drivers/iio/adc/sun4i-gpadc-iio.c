@@ -114,11 +114,8 @@ struct sun4i_gpadc_iio {
 	.datasheet_name = _name,				\
 }
 
-static struct iio_map sun4i_gpadc_hwmon_maps[] = {
-	{
-		.adc_channel_label = "temp_adc",
-		.consumer_dev_name = "iio_hwmon.0",
-	},
+static const struct iio_map sun4i_gpadc_hwmon_maps[] = {
+	IIO_MAP("temp_adc", "iio_hwmon.0", NULL),
 	{ /* sentinel */ },
 };
 
@@ -669,7 +666,7 @@ err_map:
 	return ret;
 }
 
-static int sun4i_gpadc_remove(struct platform_device *pdev)
+static void sun4i_gpadc_remove(struct platform_device *pdev)
 {
 	struct iio_dev *indio_dev = platform_get_drvdata(pdev);
 	struct sun4i_gpadc_iio *info = iio_priv(indio_dev);
@@ -678,12 +675,10 @@ static int sun4i_gpadc_remove(struct platform_device *pdev)
 	pm_runtime_disable(&pdev->dev);
 
 	if (!IS_ENABLED(CONFIG_THERMAL_OF))
-		return 0;
+		return;
 
 	if (!info->no_irq)
 		iio_map_array_unregister(indio_dev);
-
-	return 0;
 }
 
 static const struct platform_device_id sun4i_gpadc_id[] = {

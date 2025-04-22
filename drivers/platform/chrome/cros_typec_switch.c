@@ -297,12 +297,11 @@ static int cros_typec_switch_probe(struct platform_device *pdev)
 	return cros_typec_register_switches(sdata);
 }
 
-static int cros_typec_switch_remove(struct platform_device *pdev)
+static void cros_typec_switch_remove(struct platform_device *pdev)
 {
 	struct cros_typec_switch_data *sdata = platform_get_drvdata(pdev);
 
 	cros_typec_unregister_switches(sdata);
-	return 0;
 }
 
 #ifdef CONFIG_ACPI

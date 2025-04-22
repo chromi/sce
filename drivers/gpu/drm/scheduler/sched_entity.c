@@ -51,7 +51,7 @@
  * drm_sched_entity_set_priority(). For changing the set of schedulers
  * @sched_list at runtime see drm_sched_entity_modify_sched().
  *
- * An entity is cleaned up by callind drm_sched_entity_fini(). See also
+ * An entity is cleaned up by calling drm_sched_entity_fini(). See also
  * drm_sched_entity_destroy().
  *
  * Returns 0 on success or a negative error code on failure.
@@ -71,19 +71,41 @@ int drm_sched_entity_init(struct drm_sched_entity *entity,
 	entity->guilty = guilty;
 	entity->num_sched_list = num_sched_list;
 	entity->priority = priority;
+	/*
+	 * It's perfectly valid to initialize an entity without having a valid
+	 * scheduler attached. It's just not valid to use the scheduler before it
+	 * is initialized itself.
+	 */
 	entity->sched_list = num_sched_list > 1 ? sched_list : NULL;
 	RCU_INIT_POINTER(entity->last_scheduled, NULL);
 	RB_CLEAR_NODE(&entity->rb_tree_node);
 
-	if(num_sched_list)
-		entity->rq = &sched_list[0]->sched_rq[entity->priority];
+	if (num_sched_list && !sched_list[0]->sched_rq) {
+		/* Since every entry covered by num_sched_list
+		 * should be non-NULL and therefore we warn drivers
+		 * not to do this and to fix their DRM calling order.
+		 */
+		pr_warn("%s: called with uninitialized scheduler\n", __func__);
+	} else if (num_sched_list) {
+		/* The "priority" of an entity cannot exceed the number of run-queues of a
+		 * scheduler. Protect against num_rqs being 0, by converting to signed. Choose
+		 * the lowest priority available.
+		 */
+		if (entity->priority >= sched_list[0]->num_rqs) {
+			drm_err(sched_list[0], "entity with out-of-bounds priority:%u num_rqs:%u\n",
+				entity->priority, sched_list[0]->num_rqs);
+			entity->priority = max_t(s32, (s32) sched_list[0]->num_rqs - 1,
+						 (s32) DRM_SCHED_PRIORITY_KERNEL);
+		}
+		entity->rq = sched_list[0]->sched_rq[entity->priority];
+	}
 
 	init_completion(&entity->entity_idle);
 
 	/* We start in an idle state. */
 	complete_all(&entity->entity_idle);
 
-	spin_lock_init(&entity->rq_lock);
+	spin_lock_init(&entity->lock);
 	spsc_queue_init(&entity->job_queue);
 
 	atomic_set(&entity->fence_seq, 0);
@@ -111,8 +133,10 @@ void drm_sched_entity_modify_sched(struct drm_sched_entity *entity,
 {
 	WARN_ON(!num_sched_list || !sched_list);
 
+	spin_lock(&entity->lock);
 	entity->sched_list = sched_list;
 	entity->num_sched_list = num_sched_list;
+	spin_unlock(&entity->lock);
 }
 EXPORT_SYMBOL(drm_sched_entity_modify_sched);
 
@@ -220,10 +244,10 @@ static void drm_sched_entity_kill(struct drm_sched_entity *entity)
 	if (!entity->rq)
 		return;
 
-	spin_lock(&entity->rq_lock);
+	spin_lock(&entity->lock);
 	entity->stopped = true;
 	drm_sched_rq_remove_entity(entity->rq, entity);
-	spin_unlock(&entity->rq_lock);
+	spin_unlock(&entity->lock);
 
 	/* Make sure this entity is not used by the scheduler at the moment */
 	wait_for_completion(&entity->entity_idle);
@@ -235,9 +259,16 @@ static void drm_sched_entity_kill(struct drm_sched_entity *entity)
 		struct drm_sched_fence *s_fence = job->s_fence;
 
 		dma_fence_get(&s_fence->finished);
-		if (!prev || dma_fence_add_callback(prev, &job->finish_cb,
-					   drm_sched_entity_kill_jobs_cb))
+		if (!prev ||
+		    dma_fence_add_callback(prev, &job->finish_cb,
+					   drm_sched_entity_kill_jobs_cb)) {
+			/*
+			 * Adding callback above failed.
+			 * dma_fence_put() checks for NULL.
+			 */
+			dma_fence_put(prev);
 			drm_sched_entity_kill_jobs_cb(NULL, &job->finish_cb);
+		}
 
 		prev = &s_fence->finished;
 	}
@@ -348,8 +379,8 @@ static void drm_sched_entity_clear_dep(struct dma_fence *f,
 }
 
 /*
- * drm_sched_entity_clear_dep - callback to clear the entities dependency and
- * wake up scheduler
+ * drm_sched_entity_wakeup - callback to clear the entity's dependency and
+ * wake up the scheduler
  */
 static void drm_sched_entity_wakeup(struct dma_fence *f,
 				    struct dma_fence_cb *cb)
@@ -358,7 +389,7 @@ static void drm_sched_entity_wakeup(struct dma_fence *f,
 		container_of(cb, struct drm_sched_entity, cb);
 
 	drm_sched_entity_clear_dep(f, cb);
-	drm_sched_wakeup_if_can_queue(entity->rq->sched);
+	drm_sched_wakeup(entity->rq->sched);
 }
 
 /**
@@ -367,14 +398,14 @@ static void drm_sched_entity_wakeup(struct dma_fence *f,
  * @entity: scheduler entity
  * @priority: scheduler priority
  *
- * Update the priority of runqueus used for the entity.
+ * Update the priority of runqueues used for the entity.
  */
 void drm_sched_entity_set_priority(struct drm_sched_entity *entity,
 				   enum drm_sched_priority priority)
 {
-	spin_lock(&entity->rq_lock);
+	spin_lock(&entity->lock);
 	entity->priority = priority;
-	spin_unlock(&entity->rq_lock);
+	spin_unlock(&entity->lock);
 }
 EXPORT_SYMBOL(drm_sched_entity_set_priority);
 
@@ -490,8 +521,17 @@ struct drm_sched_job *drm_sched_entity_pop_job(struct drm_sched_entity *entity)
 		struct drm_sched_job *next;
 
 		next = to_drm_sched_job(spsc_queue_peek(&entity->job_queue));
-		if (next)
-			drm_sched_rq_update_fifo(entity, next->submit_ts);
+		if (next) {
+			struct drm_sched_rq *rq;
+
+			spin_lock(&entity->lock);
+			rq = entity->rq;
+			spin_lock(&rq->lock);
+			drm_sched_rq_update_fifo_locked(entity, rq,
+							next->submit_ts);
+			spin_unlock(&rq->lock);
+			spin_unlock(&entity->lock);
+		}
 	}
 
 	/* Jobs and entities might have different lifecycles. Since we're
@@ -531,14 +571,14 @@ void drm_sched_entity_select_rq(struct drm_sched_entity *entity)
 	if (fence && !dma_fence_is_signaled(fence))
 		return;
 
-	spin_lock(&entity->rq_lock);
+	spin_lock(&entity->lock);
 	sched = drm_sched_pick_best(entity->sched_list, entity->num_sched_list);
-	rq = sched ? &sched->sched_rq[entity->priority] : NULL;
+	rq = sched ? sched->sched_rq[entity->priority] : NULL;
 	if (rq != entity->rq) {
 		drm_sched_rq_remove_entity(entity->rq, entity);
 		entity->rq = rq;
 	}
-	spin_unlock(&entity->rq_lock);
+	spin_unlock(&entity->lock);
 
 	if (entity->num_sched_list == 1)
 		entity->sched_list = NULL;
@@ -552,8 +592,6 @@ void drm_sched_entity_select_rq(struct drm_sched_entity *entity)
  * fence sequence number this function should be called with drm_sched_job_arm()
  * under common lock for the struct drm_sched_entity that was set up for
  * @sched_job in drm_sched_job_init().
- *
- * Returns 0 for success, negative error code otherwise.
  */
 void drm_sched_entity_push_job(struct drm_sched_job *sched_job)
 {
@@ -575,22 +613,31 @@ void drm_sched_entity_push_job(struct drm_sched_job *sched_job)
 
 	/* first job wakes up scheduler */
 	if (first) {
+		struct drm_gpu_scheduler *sched;
+		struct drm_sched_rq *rq;
+
 		/* Add the entity to the run queue */
-		spin_lock(&entity->rq_lock);
+		spin_lock(&entity->lock);
 		if (entity->stopped) {
-			spin_unlock(&entity->rq_lock);
+			spin_unlock(&entity->lock);
 
 			DRM_ERROR("Trying to push to a killed entity\n");
 			return;
 		}
 
-		drm_sched_rq_add_entity(entity->rq, entity);
-		spin_unlock(&entity->rq_lock);
+		rq = entity->rq;
+		sched = rq->sched;
+
+		spin_lock(&rq->lock);
+		drm_sched_rq_add_entity(rq, entity);
 
 		if (drm_sched_policy == DRM_SCHED_POLICY_FIFO)
-			drm_sched_rq_update_fifo(entity, submit_ts);
+			drm_sched_rq_update_fifo_locked(entity, rq, submit_ts);
 
-		drm_sched_wakeup_if_can_queue(entity->rq->sched);
+		spin_unlock(&rq->lock);
+		spin_unlock(&entity->lock);
+
+		drm_sched_wakeup(sched);
 	}
 }
 EXPORT_SYMBOL(drm_sched_entity_push_job);

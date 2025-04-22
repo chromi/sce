@@ -15,7 +15,6 @@
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_platform.h>
 #include <linux/iio/consumer.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/platform_device.h>
@@ -612,13 +611,7 @@ static int cpcap_usb_phy_probe(struct platform_device *pdev)
 	struct phy *generic_phy;
 	struct phy_provider *phy_provider;
 	struct usb_otg *otg;
-	const struct of_device_id *of_id;
 	int error;
-
-	of_id = of_match_device(of_match_ptr(cpcap_usb_phy_id_table),
-				&pdev->dev);
-	if (!of_id)
-		return -EINVAL;
 
 	ddata = devm_kzalloc(&pdev->dev, sizeof(*ddata), GFP_KERNEL);
 	if (!ddata)
@@ -711,7 +704,7 @@ static void cpcap_usb_phy_remove(struct platform_device *pdev)
 
 static struct platform_driver cpcap_usb_phy_driver = {
 	.probe		= cpcap_usb_phy_probe,
-	.remove_new	= cpcap_usb_phy_remove,
+	.remove		= cpcap_usb_phy_remove,
 	.driver		= {
 		.name	= "cpcap-usb-phy",
 		.of_match_table = of_match_ptr(cpcap_usb_phy_id_table),

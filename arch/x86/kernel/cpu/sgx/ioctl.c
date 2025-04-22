@@ -64,6 +64,13 @@ static int sgx_encl_create(struct sgx_encl *encl, struct sgx_secs *secs)
 	struct file *backing;
 	long ret;
 
+	/*
+	 * ECREATE would detect this too, but checking here also ensures
+	 * that the 'encl_size' calculations below can never overflow.
+	 */
+	if (!is_power_of_2(secs->size))
+		return -EINVAL;
+
 	va_page = sgx_encl_grow(encl, true);
 	if (IS_ERR(va_page))
 		return PTR_ERR(va_page);
@@ -581,7 +588,7 @@ err_out:
  *
  * Flush any outstanding enqueued EADD operations and perform EINIT.  The
  * Launch Enclave Public Key Hash MSRs are rewritten as necessary to match
- * the enclave's MRSIGNER, which is caculated from the provided sigstruct.
+ * the enclave's MRSIGNER, which is calculated from the provided sigstruct.
  *
  * Return:
  * - 0:		Success.

@@ -30,7 +30,7 @@ struct p9_sbe_occ {
 #define to_p9_sbe_occ(x)	container_of((x), struct p9_sbe_occ, occ)
 
 static ssize_t ffdc_read(struct file *filp, struct kobject *kobj,
-			 struct bin_attribute *battr, char *buf, loff_t pos,
+			 const struct bin_attribute *battr, char *buf, loff_t pos,
 			 size_t count)
 {
 	ssize_t rc = 0;
@@ -48,7 +48,7 @@ static ssize_t ffdc_read(struct file *filp, struct kobject *kobj,
 
 	return rc;
 }
-static BIN_ATTR_RO(ffdc, OCC_MAX_RESP_WORDS * 4);
+static const BIN_ATTR_RO(ffdc, OCC_MAX_RESP_WORDS * 4);
 
 static bool p9_sbe_occ_save_ffdc(struct p9_sbe_occ *ctx, const void *resp,
 				 size_t resp_len)
@@ -167,7 +167,7 @@ static int p9_sbe_occ_probe(struct platform_device *pdev)
 	return rc;
 }
 
-static int p9_sbe_occ_remove(struct platform_device *pdev)
+static void p9_sbe_occ_remove(struct platform_device *pdev)
 {
 	struct occ *occ = platform_get_drvdata(pdev);
 	struct p9_sbe_occ *ctx = to_p9_sbe_occ(occ);
@@ -178,8 +178,6 @@ static int p9_sbe_occ_remove(struct platform_device *pdev)
 	occ_shutdown(occ);
 
 	kvfree(ctx->ffdc);
-
-	return 0;
 }
 
 static const struct of_device_id p9_sbe_occ_of_match[] = {
@@ -194,7 +192,7 @@ static struct platform_driver p9_sbe_occ_driver = {
 		.name = "occ-hwmon",
 		.of_match_table = p9_sbe_occ_of_match,
 	},
-	.probe	= p9_sbe_occ_probe,
+	.probe = p9_sbe_occ_probe,
 	.remove = p9_sbe_occ_remove,
 };
 

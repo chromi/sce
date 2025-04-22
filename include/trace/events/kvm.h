@@ -62,7 +62,7 @@ TRACE_EVENT(kvm_vcpu_wakeup,
 		  __entry->valid ? "valid" : "invalid")
 );
 
-#if defined(CONFIG_HAVE_KVM_IRQFD)
+#if defined(CONFIG_HAVE_KVM_IRQCHIP)
 TRACE_EVENT(kvm_set_irq,
 	TP_PROTO(unsigned int gsi, int level, int irq_source_id),
 	TP_ARGS(gsi, level, irq_source_id),
@@ -82,7 +82,7 @@ TRACE_EVENT(kvm_set_irq,
 	TP_printk("gsi %u level %d source %d",
 		  __entry->gsi, __entry->level, __entry->irq_source_id)
 );
-#endif /* defined(CONFIG_HAVE_KVM_IRQFD) */
+#endif /* defined(CONFIG_HAVE_KVM_IRQCHIP) */
 
 #if defined(__KVM_HAVE_IOAPIC)
 #define kvm_deliver_mode		\
@@ -170,7 +170,7 @@ TRACE_EVENT(kvm_msi_set_irq,
 
 #endif /* defined(__KVM_HAVE_IOAPIC) */
 
-#if defined(CONFIG_HAVE_KVM_IRQFD)
+#if defined(CONFIG_HAVE_KVM_IRQCHIP)
 
 #ifdef kvm_irqchips
 #define kvm_ack_irq_string "irqchip %s pin %u"
@@ -197,7 +197,7 @@ TRACE_EVENT(kvm_ack_irq,
 	TP_printk(kvm_ack_irq_string, kvm_ack_irq_parm)
 );
 
-#endif /* defined(CONFIG_HAVE_KVM_IRQFD) */
+#endif /* defined(CONFIG_HAVE_KVM_IRQCHIP) */
 
 
 
@@ -233,6 +233,41 @@ TRACE_EVENT(kvm_mmio,
 
 	TP_printk("mmio %s len %u gpa 0x%llx val 0x%llx",
 		  __print_symbolic(__entry->type, kvm_trace_symbol_mmio),
+		  __entry->len, __entry->gpa, __entry->val)
+);
+
+#define KVM_TRACE_IOCSR_READ_UNSATISFIED 0
+#define KVM_TRACE_IOCSR_READ 1
+#define KVM_TRACE_IOCSR_WRITE 2
+
+#define kvm_trace_symbol_iocsr \
+	{ KVM_TRACE_IOCSR_READ_UNSATISFIED, "unsatisfied-read" }, \
+	{ KVM_TRACE_IOCSR_READ, "read" }, \
+	{ KVM_TRACE_IOCSR_WRITE, "write" }
+
+TRACE_EVENT(kvm_iocsr,
+	TP_PROTO(int type, int len, u64 gpa, void *val),
+	TP_ARGS(type, len, gpa, val),
+
+	TP_STRUCT__entry(
+		__field(	u32,	type	)
+		__field(	u32,	len	)
+		__field(	u64,	gpa	)
+		__field(	u64,	val	)
+	),
+
+	TP_fast_assign(
+		__entry->type		= type;
+		__entry->len		= len;
+		__entry->gpa		= gpa;
+		__entry->val		= 0;
+		if (val)
+			memcpy(&__entry->val, val,
+			       min_t(u32, sizeof(__entry->val), len));
+	),
+
+	TP_printk("iocsr %s len %u gpa 0x%llx val 0x%llx",
+		  __print_symbolic(__entry->type, kvm_trace_symbol_iocsr),
 		  __entry->len, __entry->gpa, __entry->val)
 );
 
@@ -454,21 +489,6 @@ TRACE_EVENT(kvm_unmap_hva_range,
 
 	TP_printk("mmu notifier unmap range: %#016lx -- %#016lx",
 		  __entry->start, __entry->end)
-);
-
-TRACE_EVENT(kvm_set_spte_hva,
-	TP_PROTO(unsigned long hva),
-	TP_ARGS(hva),
-
-	TP_STRUCT__entry(
-		__field(	unsigned long,	hva		)
-	),
-
-	TP_fast_assign(
-		__entry->hva		= hva;
-	),
-
-	TP_printk("mmu notifier set pte hva: %#016lx", __entry->hva)
 );
 
 TRACE_EVENT(kvm_age_hva,

@@ -267,15 +267,13 @@ static int surface_gpe_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static int surface_gpe_remove(struct platform_device *pdev)
+static void surface_gpe_remove(struct platform_device *pdev)
 {
 	struct surface_lid_device *lid = dev_get_drvdata(&pdev->dev);
 
 	/* restore default behavior without this module */
 	surface_lid_enable_wakeup(&pdev->dev, false);
 	acpi_disable_gpe(NULL, lid->gpe_number);
-
-	return 0;
 }
 
 static struct platform_driver surface_gpe_driver = {

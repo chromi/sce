@@ -153,19 +153,19 @@ static void max8997_haptic_enable(struct max8997_haptic *chip)
 {
 	int error;
 
-	mutex_lock(&chip->mutex);
+	guard(mutex)(&chip->mutex);
 
 	error = max8997_haptic_set_duty_cycle(chip);
 	if (error) {
 		dev_err(chip->dev, "set_pwm_cycle failed, error: %d\n", error);
-		goto out;
+		return;
 	}
 
 	if (!chip->enabled) {
 		error = regulator_enable(chip->regulator);
 		if (error) {
 			dev_err(chip->dev, "Failed to enable regulator\n");
-			goto out;
+			return;
 		}
 		max8997_haptic_configure(chip);
 		if (chip->mode == MAX8997_EXTERNAL_MODE) {
@@ -173,19 +173,16 @@ static void max8997_haptic_enable(struct max8997_haptic *chip)
 			if (error) {
 				dev_err(chip->dev, "Failed to enable PWM\n");
 				regulator_disable(chip->regulator);
-				goto out;
+				return;
 			}
 		}
 		chip->enabled = true;
 	}
-
-out:
-	mutex_unlock(&chip->mutex);
 }
 
 static void max8997_haptic_disable(struct max8997_haptic *chip)
 {
-	mutex_lock(&chip->mutex);
+	guard(mutex)(&chip->mutex);
 
 	if (chip->enabled) {
 		chip->enabled = false;
@@ -194,8 +191,6 @@ static void max8997_haptic_disable(struct max8997_haptic *chip)
 			pwm_disable(chip->pwm);
 		regulator_disable(chip->regulator);
 	}
-
-	mutex_unlock(&chip->mutex);
 }
 
 static void max8997_haptic_play_effect_work(struct work_struct *work)
@@ -249,7 +244,7 @@ static int max8997_haptic_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	chip = kzalloc(sizeof(struct max8997_haptic), GFP_KERNEL);
+	chip = kzalloc(sizeof(*chip), GFP_KERNEL);
 	input_dev = input_allocate_device();
 	if (!chip || !input_dev) {
 		dev_err(&pdev->dev, "unable to allocate memory\n");
@@ -351,7 +346,7 @@ err_free_mem:
 	return error;
 }
 
-static int max8997_haptic_remove(struct platform_device *pdev)
+static void max8997_haptic_remove(struct platform_device *pdev)
 {
 	struct max8997_haptic *chip = platform_get_drvdata(pdev);
 
@@ -362,8 +357,6 @@ static int max8997_haptic_remove(struct platform_device *pdev)
 		pwm_put(chip->pwm);
 
 	kfree(chip);
-
-	return 0;
 }
 
 static int max8997_haptic_suspend(struct device *dev)

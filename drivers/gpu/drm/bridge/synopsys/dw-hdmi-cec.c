@@ -145,6 +145,10 @@ static irqreturn_t dw_hdmi_cec_hardirq(int irq, void *data)
 		cec->tx_status = CEC_TX_STATUS_NACK;
 		cec->tx_done = true;
 		ret = IRQ_WAKE_THREAD;
+	} else if (stat & CEC_STAT_ARBLOST) {
+		cec->tx_status = CEC_TX_STATUS_ARB_LOST;
+		cec->tx_done = true;
+		ret = IRQ_WAKE_THREAD;
 	}
 
 	if (stat & CEC_STAT_EOM) {
@@ -209,7 +213,7 @@ static int dw_hdmi_cec_enable(struct cec_adapter *adap, bool enable)
 		cec->ops->enable(cec->hdmi);
 
 		irqs = CEC_STAT_ERROR_INIT | CEC_STAT_NACK | CEC_STAT_EOM |
-		       CEC_STAT_DONE;
+		       CEC_STAT_ARBLOST | CEC_STAT_DONE;
 		dw_hdmi_write(cec, irqs, HDMI_CEC_POLARITY);
 		dw_hdmi_write(cec, ~irqs, HDMI_CEC_MASK);
 		dw_hdmi_write(cec, ~irqs, HDMI_IH_MUTE_CEC_STAT0);
@@ -308,7 +312,7 @@ static void dw_hdmi_cec_remove(struct platform_device *pdev)
 	cec_unregister_adapter(cec->adap);
 }
 
-static int __maybe_unused dw_hdmi_cec_resume(struct device *dev)
+static int dw_hdmi_cec_resume(struct device *dev)
 {
 	struct dw_hdmi_cec *cec = dev_get_drvdata(dev);
 
@@ -324,7 +328,7 @@ static int __maybe_unused dw_hdmi_cec_resume(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused dw_hdmi_cec_suspend(struct device *dev)
+static int dw_hdmi_cec_suspend(struct device *dev)
 {
 	struct dw_hdmi_cec *cec = dev_get_drvdata(dev);
 
@@ -337,15 +341,15 @@ static int __maybe_unused dw_hdmi_cec_suspend(struct device *dev)
 }
 
 static const struct dev_pm_ops dw_hdmi_cec_pm = {
-	SET_SYSTEM_SLEEP_PM_OPS(dw_hdmi_cec_suspend, dw_hdmi_cec_resume)
+	SYSTEM_SLEEP_PM_OPS(dw_hdmi_cec_suspend, dw_hdmi_cec_resume)
 };
 
 static struct platform_driver dw_hdmi_cec_driver = {
 	.probe	= dw_hdmi_cec_probe,
-	.remove_new = dw_hdmi_cec_remove,
+	.remove = dw_hdmi_cec_remove,
 	.driver = {
 		.name = "dw-hdmi-cec",
-		.pm = &dw_hdmi_cec_pm,
+		.pm = pm_ptr(&dw_hdmi_cec_pm),
 	},
 };
 module_platform_driver(dw_hdmi_cec_driver);

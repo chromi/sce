@@ -53,7 +53,7 @@ static const struct jh71x0_clk_data jh7110_ispclk_data[] = {
 		    JH7110_ISPCLK_MIPI_RX0_PXL),
 	JH71X0_GATE(JH7110_ISPCLK_VIN_PIXEL_IF3, "vin_pixel_if3", 0,
 		    JH7110_ISPCLK_MIPI_RX0_PXL),
-	JH71X0__MUX(JH7110_ISPCLK_VIN_P_AXI_WR, "vin_p_axi_wr", 2,
+	JH71X0__MUX(JH7110_ISPCLK_VIN_P_AXI_WR, "vin_p_axi_wr", 0, 2,
 		    JH7110_ISPCLK_MIPI_RX0_PXL,
 		    JH7110_ISPCLK_DVP_INV),
 	/* ispv2_top_wrapper */
@@ -73,17 +73,6 @@ static inline int jh7110_isp_top_rst_init(struct jh71x0_clk_priv *priv)
 				     "failed to get top resets\n");
 
 	return reset_control_deassert(top_rsts);
-}
-
-static struct clk_hw *jh7110_ispclk_get(struct of_phandle_args *clkspec, void *data)
-{
-	struct jh71x0_clk_priv *priv = data;
-	unsigned int idx = clkspec->args[0];
-
-	if (idx < JH7110_ISPCLK_END)
-		return &priv->reg[idx].hw;
-
-	return ERR_PTR(-EINVAL);
 }
 
 #ifdef CONFIG_PM
@@ -126,6 +115,7 @@ static int jh7110_ispcrg_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	spin_lock_init(&priv->rmw_lock);
+	priv->num_reg = JH7110_ISPCLK_END;
 	priv->dev = &pdev->dev;
 	priv->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(priv->base))
@@ -186,7 +176,7 @@ static int jh7110_ispcrg_probe(struct platform_device *pdev)
 			goto err_exit;
 	}
 
-	ret = devm_of_clk_add_hw_provider(&pdev->dev, jh7110_ispclk_get, priv);
+	ret = devm_of_clk_add_hw_provider(&pdev->dev, jh71x0_clk_get, priv);
 	if (ret)
 		goto err_exit;
 
@@ -202,12 +192,10 @@ err_exit:
 	return ret;
 }
 
-static int jh7110_ispcrg_remove(struct platform_device *pdev)
+static void jh7110_ispcrg_remove(struct platform_device *pdev)
 {
 	pm_runtime_put_sync(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
-
-	return 0;
 }
 
 static const struct of_device_id jh7110_ispcrg_match[] = {

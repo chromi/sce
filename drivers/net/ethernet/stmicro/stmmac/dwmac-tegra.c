@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
+#include <linux/iommu.h>
 #include <linux/platform_device.h>
 #include <linux/of.h>
 #include <linux/module.h>
@@ -18,6 +19,8 @@ struct tegra_mgbe {
 
 	struct reset_control *rst_mac;
 	struct reset_control *rst_pcs;
+
+	u32 iommu_sid;
 
 	void __iomem *hv;
 	void __iomem *regs;
@@ -50,7 +53,6 @@ struct tegra_mgbe {
 #define MGBE_WRAP_COMMON_INTR_ENABLE	0x8704
 #define MAC_SBD_INTR			BIT(2)
 #define MGBE_WRAP_AXI_ASID0_CTRL	0x8400
-#define MGBE_SID			0x6
 
 static int __maybe_unused tegra_mgbe_suspend(struct device *dev)
 {
@@ -84,7 +86,7 @@ static int __maybe_unused tegra_mgbe_resume(struct device *dev)
 	writel(MAC_SBD_INTR, mgbe->regs + MGBE_WRAP_COMMON_INTR_ENABLE);
 
 	/* Program SID */
-	writel(MGBE_SID, mgbe->hv + MGBE_WRAP_AXI_ASID0_CTRL);
+	writel(mgbe->iommu_sid, mgbe->hv + MGBE_WRAP_AXI_ASID0_CTRL);
 
 	value = readl(mgbe->xpcs + XPCS_WRAP_UPHY_STATUS);
 	if ((value & XPCS_WRAP_UPHY_STATUS_TX_P_UP) == 0) {
@@ -127,10 +129,12 @@ static int mgbe_uphy_lane_bringup_serdes_up(struct net_device *ndev, void *mgbe_
 	value &= ~XPCS_WRAP_UPHY_RX_CONTROL_AUX_RX_IDDQ;
 	writel(value, mgbe->xpcs + XPCS_WRAP_UPHY_RX_CONTROL);
 
+	usleep_range(10, 20);  /* 50ns min delay needed as per HW design */
 	value = readl(mgbe->xpcs + XPCS_WRAP_UPHY_RX_CONTROL);
 	value &= ~XPCS_WRAP_UPHY_RX_CONTROL_RX_SLEEP;
 	writel(value, mgbe->xpcs + XPCS_WRAP_UPHY_RX_CONTROL);
 
+	usleep_range(10, 20);  /* 500ns min delay needed as per HW design */
 	value = readl(mgbe->xpcs + XPCS_WRAP_UPHY_RX_CONTROL);
 	value |= XPCS_WRAP_UPHY_RX_CONTROL_RX_CAL_EN;
 	writel(value, mgbe->xpcs + XPCS_WRAP_UPHY_RX_CONTROL);
@@ -143,20 +147,28 @@ static int mgbe_uphy_lane_bringup_serdes_up(struct net_device *ndev, void *mgbe_
 		return err;
 	}
 
+	usleep_range(10, 20);  /* 50ns min delay needed as per HW design */
 	value = readl(mgbe->xpcs + XPCS_WRAP_UPHY_RX_CONTROL);
 	value |= XPCS_WRAP_UPHY_RX_CONTROL_RX_DATA_EN;
 	writel(value, mgbe->xpcs + XPCS_WRAP_UPHY_RX_CONTROL);
 
 	value = readl(mgbe->xpcs + XPCS_WRAP_UPHY_RX_CONTROL);
+	value &= ~XPCS_WRAP_UPHY_RX_CONTROL_RX_PCS_PHY_RDY;
+	writel(value, mgbe->xpcs + XPCS_WRAP_UPHY_RX_CONTROL);
+
+	usleep_range(10, 20);  /* 50ns min delay needed as per HW design */
+	value = readl(mgbe->xpcs + XPCS_WRAP_UPHY_RX_CONTROL);
 	value |= XPCS_WRAP_UPHY_RX_CONTROL_RX_CDR_RESET;
 	writel(value, mgbe->xpcs + XPCS_WRAP_UPHY_RX_CONTROL);
 
-	value = readl(mgbe->xpcs + XPCS_WRAP_UPHY_RX_CONTROL);
-	value &= ~XPCS_WRAP_UPHY_RX_CONTROL_RX_CDR_RESET;
-	writel(value, mgbe->xpcs + XPCS_WRAP_UPHY_RX_CONTROL);
-
+	usleep_range(10, 20);  /* 50ns min delay needed as per HW design */
 	value = readl(mgbe->xpcs + XPCS_WRAP_UPHY_RX_CONTROL);
 	value |= XPCS_WRAP_UPHY_RX_CONTROL_RX_PCS_PHY_RDY;
+	writel(value, mgbe->xpcs + XPCS_WRAP_UPHY_RX_CONTROL);
+
+	msleep(30);  /* 30ms delay needed as per HW design */
+	value = readl(mgbe->xpcs + XPCS_WRAP_UPHY_RX_CONTROL);
+	value &= ~XPCS_WRAP_UPHY_RX_CONTROL_RX_CDR_RESET;
 	writel(value, mgbe->xpcs + XPCS_WRAP_UPHY_RX_CONTROL);
 
 	err = readl_poll_timeout(mgbe->xpcs + XPCS_WRAP_IRQ_STATUS, value,
@@ -231,6 +243,12 @@ static int tegra_mgbe_probe(struct platform_device *pdev)
 	if (IS_ERR(mgbe->xpcs))
 		return PTR_ERR(mgbe->xpcs);
 
+	/* get controller's stream id from iommu property in device tree */
+	if (!tegra_dev_iommu_get_stream_id(mgbe->dev, &mgbe->iommu_sid)) {
+		dev_err(mgbe->dev, "failed to get iommu stream id\n");
+		return -EINVAL;
+	}
+
 	res.addr = mgbe->regs;
 	res.irq = irq;
 
@@ -284,7 +302,7 @@ static int tegra_mgbe_probe(struct platform_device *pdev)
 	if (err < 0)
 		goto disable_clks;
 
-	plat = stmmac_probe_config_dt(pdev, res.mac);
+	plat = devm_stmmac_probe_config_dt(pdev, res.mac);
 	if (IS_ERR(plat)) {
 		err = PTR_ERR(plat);
 		goto disable_clks;
@@ -303,7 +321,7 @@ static int tegra_mgbe_probe(struct platform_device *pdev)
 						   GFP_KERNEL);
 		if (!plat->mdio_bus_data) {
 			err = -ENOMEM;
-			goto remove;
+			goto disable_clks;
 		}
 	}
 
@@ -321,7 +339,7 @@ static int tegra_mgbe_probe(struct platform_device *pdev)
 				 500, 500 * 2000);
 	if (err < 0) {
 		dev_err(mgbe->dev, "timeout waiting for TX lane to become enabled\n");
-		goto remove;
+		goto disable_clks;
 	}
 
 	plat->serdes_powerup = mgbe_uphy_lane_bringup_serdes_up;
@@ -336,18 +354,16 @@ static int tegra_mgbe_probe(struct platform_device *pdev)
 	writel(MAC_SBD_INTR, mgbe->regs + MGBE_WRAP_COMMON_INTR_ENABLE);
 
 	/* Program SID */
-	writel(MGBE_SID, mgbe->hv + MGBE_WRAP_AXI_ASID0_CTRL);
+	writel(mgbe->iommu_sid, mgbe->hv + MGBE_WRAP_AXI_ASID0_CTRL);
 
 	plat->flags |= STMMAC_FLAG_SERDES_UP_AFTER_PHY_LINKUP;
 
 	err = stmmac_dvr_probe(&pdev->dev, plat, &res);
 	if (err < 0)
-		goto remove;
+		goto disable_clks;
 
 	return 0;
 
-remove:
-	stmmac_remove_config_dt(pdev, plat);
 disable_clks:
 	clk_bulk_disable_unprepare(ARRAY_SIZE(mgbe_clks), mgbe->clks);
 
@@ -373,7 +389,7 @@ static SIMPLE_DEV_PM_OPS(tegra_mgbe_pm_ops, tegra_mgbe_suspend, tegra_mgbe_resum
 
 static struct platform_driver tegra_mgbe_driver = {
 	.probe = tegra_mgbe_probe,
-	.remove_new = tegra_mgbe_remove,
+	.remove = tegra_mgbe_remove,
 	.driver = {
 		.name = "tegra-mgbe",
 		.pm		= &tegra_mgbe_pm_ops,

@@ -167,7 +167,6 @@ struct imxdma_channel {
 
 enum imx_dma_type {
 	IMX1_DMA,
-	IMX21_DMA,
 	IMX27_DMA,
 };
 
@@ -194,8 +193,6 @@ struct imxdma_filter_data {
 static const struct of_device_id imx_dma_of_dev_id[] = {
 	{
 		.compatible = "fsl,imx1-dma", .data = (const void *)IMX1_DMA,
-	}, {
-		.compatible = "fsl,imx21-dma", .data = (const void *)IMX21_DMA,
 	}, {
 		.compatible = "fsl,imx27-dma", .data = (const void *)IMX27_DMA,
 	}, {
@@ -1216,7 +1213,7 @@ static void imxdma_free_irq(struct platform_device *pdev, struct imxdma_engine *
 	}
 }
 
-static int imxdma_remove(struct platform_device *pdev)
+static void imxdma_remove(struct platform_device *pdev)
 {
 	struct imxdma_engine *imxdma = platform_get_drvdata(pdev);
 
@@ -1229,8 +1226,6 @@ static int imxdma_remove(struct platform_device *pdev)
 
 	clk_disable_unprepare(imxdma->dma_ipg);
 	clk_disable_unprepare(imxdma->dma_ahb);
-
-        return 0;
 }
 
 static struct platform_driver imxdma_driver = {

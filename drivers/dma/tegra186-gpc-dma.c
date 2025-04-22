@@ -221,7 +221,7 @@ struct tegra_dma_desc {
 	unsigned int sg_count;
 	struct virt_dma_desc vd;
 	struct tegra_dma_channel *tdc;
-	struct tegra_dma_sg_req sg_req[];
+	struct tegra_dma_sg_req sg_req[] __counted_by(sg_count);
 };
 
 /*
@@ -231,6 +231,7 @@ struct tegra_dma_channel {
 	bool config_init;
 	char name[30];
 	enum dma_transfer_direction sid_dir;
+	enum dma_status status;
 	int id;
 	int irq;
 	int slave_id;
@@ -393,6 +394,8 @@ static int tegra_dma_pause(struct tegra_dma_channel *tdc)
 		tegra_dma_dump_chan_regs(tdc);
 	}
 
+	tdc->status = DMA_PAUSED;
+
 	return ret;
 }
 
@@ -419,6 +422,8 @@ static void tegra_dma_resume(struct tegra_dma_channel *tdc)
 	val = tdc_read(tdc, TEGRA_GPCDMA_CHAN_CSRE);
 	val &= ~TEGRA_GPCDMA_CHAN_CSRE_PAUSE;
 	tdc_write(tdc, TEGRA_GPCDMA_CHAN_CSRE, val);
+
+	tdc->status = DMA_IN_PROGRESS;
 }
 
 static int tegra_dma_device_resume(struct dma_chan *dc)
@@ -544,6 +549,7 @@ static void tegra_dma_xfer_complete(struct tegra_dma_channel *tdc)
 
 	tegra_dma_sid_free(tdc);
 	tdc->dma_desc = NULL;
+	tdc->status = DMA_COMPLETE;
 }
 
 static void tegra_dma_chan_decode_error(struct tegra_dma_channel *tdc,
@@ -716,6 +722,7 @@ static int tegra_dma_terminate_all(struct dma_chan *dc)
 		tdc->dma_desc = NULL;
 	}
 
+	tdc->status = DMA_COMPLETE;
 	tegra_dma_sid_free(tdc);
 	vchan_get_all_descriptors(&tdc->vc, &head);
 	spin_unlock_irqrestore(&tdc->vc.lock, flags);
@@ -746,6 +753,9 @@ static int tegra_dma_get_residual(struct tegra_dma_channel *tdc)
 	bytes_xfer = dma_desc->bytes_xfer +
 		     sg_req[dma_desc->sg_idx].len - (wcount * 4);
 
+	if (dma_desc->bytes_req == bytes_xfer)
+		return 0;
+
 	residual = dma_desc->bytes_req - (bytes_xfer % dma_desc->bytes_req);
 
 	return residual;
@@ -765,6 +775,9 @@ static enum dma_status tegra_dma_tx_status(struct dma_chan *dc,
 	ret = dma_cookie_status(dc, cookie, txstate);
 	if (ret == DMA_COMPLETE)
 		return ret;
+
+	if (tdc->status == DMA_PAUSED)
+		ret = DMA_PAUSED;
 
 	spin_lock_irqsave(&tdc->vc.lock, flags);
 	vd = vchan_find_desc(&tdc->vc, cookie);
@@ -1348,8 +1361,8 @@ static int tegra_dma_program_sid(struct tegra_dma_channel *tdc, int stream_id)
 static int tegra_dma_probe(struct platform_device *pdev)
 {
 	const struct tegra_dma_chip_data *cdata = NULL;
-	struct iommu_fwspec *iommu_spec;
-	unsigned int stream_id, i;
+	unsigned int i;
+	u32 stream_id;
 	struct tegra_dma *tdma;
 	int ret;
 
@@ -1378,12 +1391,10 @@ static int tegra_dma_probe(struct platform_device *pdev)
 
 	tdma->dma_dev.dev = &pdev->dev;
 
-	iommu_spec = dev_iommu_fwspec_get(&pdev->dev);
-	if (!iommu_spec) {
+	if (!tegra_dev_iommu_get_stream_id(&pdev->dev, &stream_id)) {
 		dev_err(&pdev->dev, "Missing iommu stream-id\n");
 		return -EINVAL;
 	}
-	stream_id = iommu_spec->ids[0] & 0xffff;
 
 	ret = device_property_read_u32(&pdev->dev, "dma-channel-mask",
 				       &tdma->chan_mask);
@@ -1473,14 +1484,12 @@ static int tegra_dma_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int tegra_dma_remove(struct platform_device *pdev)
+static void tegra_dma_remove(struct platform_device *pdev)
 {
 	struct tegra_dma *tdma = platform_get_drvdata(pdev);
 
 	of_dma_controller_free(pdev->dev.of_node);
 	dma_async_device_unregister(&tdma->dma_dev);
-
-	return 0;
 }
 
 static int __maybe_unused tegra_dma_pm_suspend(struct device *dev)

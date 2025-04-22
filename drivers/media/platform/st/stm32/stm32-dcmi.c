@@ -20,7 +20,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/of_graph.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/platform_device.h>
@@ -899,8 +898,6 @@ static const struct vb2_ops dcmi_video_qops = {
 	.buf_queue		= dcmi_buf_queue,
 	.start_streaming	= dcmi_start_streaming,
 	.stop_streaming		= dcmi_stop_streaming,
-	.wait_prepare		= vb2_ops_wait_prepare,
-	.wait_finish		= vb2_ops_wait_finish,
 };
 
 static int dcmi_g_fmt_vid_cap(struct file *file, void *priv,
@@ -1856,7 +1853,7 @@ static int dcmi_graph_init(struct stm32_dcmi *dcmi)
 	struct device_node *ep;
 	int ret;
 
-	ep = of_graph_get_next_endpoint(dcmi->dev->of_node, NULL);
+	ep = of_graph_get_endpoint_by_regs(dcmi->dev->of_node, 0, -1);
 	if (!ep) {
 		dev_err(dcmi->dev, "Failed to get next endpoint\n");
 		return -EINVAL;
@@ -1890,7 +1887,6 @@ static int dcmi_graph_init(struct stm32_dcmi *dcmi)
 static int dcmi_probe(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
-	const struct of_device_id *match = NULL;
 	struct v4l2_fwnode_endpoint ep = { .bus_type = 0 };
 	struct stm32_dcmi *dcmi;
 	struct vb2_queue *q;
@@ -1898,12 +1894,6 @@ static int dcmi_probe(struct platform_device *pdev)
 	struct dma_slave_caps caps;
 	struct clk *mclk;
 	int ret = 0;
-
-	match = of_match_device(of_match_ptr(stm32_dcmi_of_match), &pdev->dev);
-	if (!match) {
-		dev_err(&pdev->dev, "Could not find a match in devicetree\n");
-		return -ENODEV;
-	}
 
 	dcmi = devm_kzalloc(&pdev->dev, sizeof(struct stm32_dcmi), GFP_KERNEL);
 	if (!dcmi)
@@ -1915,7 +1905,7 @@ static int dcmi_probe(struct platform_device *pdev)
 				     "Could not get reset control\n");
 
 	/* Get bus characteristics from devicetree */
-	np = of_graph_get_next_endpoint(np, NULL);
+	np = of_graph_get_endpoint_by_regs(np, 0, -1);
 	if (!np) {
 		dev_err(&pdev->dev, "Could not find the endpoint\n");
 		return -ENODEV;
@@ -2039,7 +2029,7 @@ static int dcmi_probe(struct platform_device *pdev)
 	q->ops = &dcmi_video_qops;
 	q->mem_ops = &vb2_dma_contig_memops;
 	q->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
-	q->min_buffers_needed = 2;
+	q->min_queued_buffers = 2;
 	q->allow_cache_hints = 1;
 	q->dev = &pdev->dev;
 
@@ -2157,7 +2147,7 @@ static const struct dev_pm_ops dcmi_pm_ops = {
 
 static struct platform_driver stm32_dcmi_driver = {
 	.probe		= dcmi_probe,
-	.remove_new	= dcmi_remove,
+	.remove		= dcmi_remove,
 	.driver		= {
 		.name = DRV_NAME,
 		.of_match_table = of_match_ptr(stm32_dcmi_of_match),

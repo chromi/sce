@@ -2,14 +2,22 @@
 
 use proc_macro::{Delimiter, Group, Ident, Spacing, Span, TokenTree};
 
-fn concat(tokens: &[TokenTree], group_span: Span) -> TokenTree {
+fn concat_helper(tokens: &[TokenTree]) -> Vec<(String, Span)> {
     let mut tokens = tokens.iter();
     let mut segments = Vec::new();
     let mut span = None;
     loop {
         match tokens.next() {
             None => break,
-            Some(TokenTree::Literal(lit)) => segments.push((lit.to_string(), lit.span())),
+            Some(TokenTree::Literal(lit)) => {
+                // Allow us to concat string literals by stripping quotes
+                let mut value = lit.to_string();
+                if value.starts_with('"') && value.ends_with('"') {
+                    value.remove(0);
+                    value.pop();
+                }
+                segments.push((value, lit.span()));
+            }
             Some(TokenTree::Ident(ident)) => {
                 let mut value = ident.to_string();
                 if value.starts_with("r#") {
@@ -38,12 +46,21 @@ fn concat(tokens: &[TokenTree], group_span: Span) -> TokenTree {
                 };
                 segments.push((value, sp));
             }
-            _ => panic!("unexpected token in paste segments"),
+            Some(TokenTree::Group(group)) if group.delimiter() == Delimiter::None => {
+                let tokens = group.stream().into_iter().collect::<Vec<TokenTree>>();
+                segments.append(&mut concat_helper(tokens.as_slice()));
+            }
+            token => panic!("unexpected token in paste segments: {:?}", token),
         };
     }
 
+    segments
+}
+
+fn concat(tokens: &[TokenTree], group_span: Span) -> TokenTree {
+    let segments = concat_helper(tokens);
     let pasted: String = segments.into_iter().map(|x| x.0).collect();
-    TokenTree::Ident(Ident::new(&pasted, span.unwrap_or(group_span)))
+    TokenTree::Ident(Ident::new(&pasted, group_span))
 }
 
 pub(crate) fn expand(tokens: &mut Vec<TokenTree>) {

@@ -1020,7 +1020,7 @@ static int wl1273_fm_set_rds(struct wl1273_device *radio, unsigned int new_mode)
 	}
 
 	if (!r)
-		radio->rds_on = (new_mode == WL1273_RDS_ON) ? true : false;
+		radio->rds_on = new_mode == WL1273_RDS_ON;
 
 	return r;
 }
@@ -2145,7 +2145,7 @@ pdata_err:
 
 static struct platform_driver wl1273_fm_radio_driver = {
 	.probe		= wl1273_fm_radio_probe,
-	.remove_new	= wl1273_fm_radio_remove,
+	.remove		= wl1273_fm_radio_remove,
 	.driver		= {
 		.name	= "wl1273_fm_radio",
 	},

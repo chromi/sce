@@ -5,6 +5,8 @@
 
 obj-$(CONFIG_NVMEM)		+= nvmem_core.o
 nvmem_core-y			:= core.o
+obj-$(CONFIG_NVMEM_LAYOUTS)	+= nvmem_layouts.o
+nvmem_layouts-y			:= layouts.o
 obj-y				+= layouts/
 
 # Devices
@@ -50,6 +52,8 @@ obj-$(CONFIG_NVMEM_QCOM_SEC_QFPROM)	+= nvmem_sec_qfprom.o
 nvmem_sec_qfprom-y			:= sec-qfprom.o
 obj-$(CONFIG_NVMEM_RAVE_SP_EEPROM)	+= nvmem-rave-sp-eeprom.o
 nvmem-rave-sp-eeprom-y			:= rave-sp-eeprom.o
+obj-$(CONFIG_NVMEM_RCAR_EFUSE)		+= nvmem-rcar-efuse.o
+nvmem-rcar-efuse-y			:= rcar-efuse.o
 obj-$(CONFIG_NVMEM_RMEM) 		+= nvmem-rmem.o
 nvmem-rmem-y				:= rmem.o
 obj-$(CONFIG_NVMEM_ROCKCHIP_EFUSE)	+= nvmem_rockchip_efuse.o

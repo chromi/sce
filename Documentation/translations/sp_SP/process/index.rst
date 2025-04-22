@@ -10,6 +10,7 @@
 .. toctree::
    :maxdepth: 1
 
+   development-process
    submitting-patches
    kernel-docs
    coding-style
@@ -22,3 +23,10 @@
    adding-syscalls
    researcher-guidelines
    contribution-maturity-model
+   security-bugs
+   embargoed-hardware-issues
+   handling-regressions
+   management-style
+   submit-checklist
+   howto
+   maintainer-kvm-x86

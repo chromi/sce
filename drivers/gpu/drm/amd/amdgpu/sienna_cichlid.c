@@ -36,7 +36,7 @@ static bool sienna_cichlid_is_mode2_default(struct amdgpu_reset_control *reset_c
 #if 0
 	struct amdgpu_device *adev = (struct amdgpu_device *)reset_ctl->handle;
 
-	if (adev->ip_versions[MP1_HWIP][0] == IP_VERSION(11, 0, 7) &&
+	if (amdgpu_ip_version(adev, MP1_HWIP, 0) == IP_VERSION(11, 0, 7) &&
 	    adev->pm.fw_version >= 0x3a5500 && !amdgpu_sriov_vf(adev))
 		return true;
 #endif
@@ -48,18 +48,17 @@ sienna_cichlid_get_reset_handler(struct amdgpu_reset_control *reset_ctl,
 			    struct amdgpu_reset_context *reset_context)
 {
 	struct amdgpu_reset_handler *handler;
+	int i;
 
 	if (reset_context->method != AMD_RESET_METHOD_NONE) {
-		list_for_each_entry(handler, &reset_ctl->reset_handlers,
-				     handler_list) {
+		for_each_handler(i, handler, reset_ctl)	{
 			if (handler->reset_method == reset_context->method)
 				return handler;
 		}
 	}
 
 	if (sienna_cichlid_is_mode2_default(reset_ctl)) {
-		list_for_each_entry (handler, &reset_ctl->reset_handlers,
-				     handler_list) {
+		for_each_handler(i, handler, reset_ctl)	{
 			if (handler->reset_method == AMD_RESET_METHOD_MODE2)
 				return handler;
 		}
@@ -82,18 +81,12 @@ static int sienna_cichlid_mode2_suspend_ip(struct amdgpu_device *adev)
 			      AMD_IP_BLOCK_TYPE_SDMA))
 			continue;
 
-		r = adev->ip_blocks[i].version->funcs->suspend(adev);
-
-		if (r) {
-			dev_err(adev->dev,
-				"suspend of IP block <%s> failed %d\n",
-				adev->ip_blocks[i].version->funcs->name, r);
+		r = amdgpu_ip_block_suspend(&adev->ip_blocks[i]);
+		if (r)
 			return r;
-		}
-		adev->ip_blocks[i].status.hw = false;
 	}
 
-	return r;
+	return 0;
 }
 
 static int
@@ -120,9 +113,9 @@ static void sienna_cichlid_async_reset(struct work_struct *work)
 	struct amdgpu_reset_control *reset_ctl =
 		container_of(work, struct amdgpu_reset_control, reset_work);
 	struct amdgpu_device *adev = (struct amdgpu_device *)reset_ctl->handle;
+	int i;
 
-	list_for_each_entry(handler, &reset_ctl->reset_handlers,
-			     handler_list) {
+	for_each_handler(i, handler, reset_ctl)	{
 		if (handler->reset_method == reset_ctl->active_reset) {
 			dev_dbg(adev->dev, "Resetting device\n");
 			handler->do_reset(adev);
@@ -176,15 +169,9 @@ static int sienna_cichlid_mode2_restore_ip(struct amdgpu_device *adev)
 
 	for (i = 0; i < adev->num_ip_blocks; i++) {
 		if (adev->ip_blocks[i].version->type == AMD_IP_BLOCK_TYPE_IH) {
-			r = adev->ip_blocks[i].version->funcs->resume(adev);
-			if (r) {
-				dev_err(adev->dev,
-					"resume of IP block <%s> failed %d\n",
-					adev->ip_blocks[i].version->funcs->name, r);
+			r = amdgpu_ip_block_resume(&adev->ip_blocks[i]);
+			if (r)
 				return r;
-			}
-
-			adev->ip_blocks[i].status.hw = true;
 		}
 	}
 
@@ -194,15 +181,9 @@ static int sienna_cichlid_mode2_restore_ip(struct amdgpu_device *adev)
 		      adev->ip_blocks[i].version->type ==
 			      AMD_IP_BLOCK_TYPE_SDMA))
 			continue;
-		r = adev->ip_blocks[i].version->funcs->resume(adev);
-		if (r) {
-			dev_err(adev->dev,
-				"resume of IP block <%s> failed %d\n",
-				adev->ip_blocks[i].version->funcs->name, r);
+		r = amdgpu_ip_block_resume(&adev->ip_blocks[i]);
+		if (r)
 			return r;
-		}
-
-		adev->ip_blocks[i].status.hw = true;
 	}
 
 	for (i = 0; i < adev->num_ip_blocks; i++) {
@@ -214,7 +195,7 @@ static int sienna_cichlid_mode2_restore_ip(struct amdgpu_device *adev)
 
 		if (adev->ip_blocks[i].version->funcs->late_init) {
 			r = adev->ip_blocks[i].version->funcs->late_init(
-				(void *)adev);
+				&adev->ip_blocks[i]);
 			if (r) {
 				dev_err(adev->dev,
 					"late_init of IP block <%s> failed %d after reset\n",
@@ -239,6 +220,7 @@ sienna_cichlid_mode2_restore_hwcontext(struct amdgpu_reset_control *reset_ctl,
 	int r;
 	struct amdgpu_device *tmp_adev = (struct amdgpu_device *)reset_ctl->handle;
 
+	amdgpu_set_init_level(tmp_adev, AMDGPU_INIT_LEVEL_RESET_RECOVERY);
 	dev_info(tmp_adev->dev,
 			"GPU reset succeeded, trying to resume\n");
 	r = sienna_cichlid_mode2_restore_ip(tmp_adev);
@@ -256,6 +238,7 @@ sienna_cichlid_mode2_restore_hwcontext(struct amdgpu_reset_control *reset_ctl,
 
 	amdgpu_irq_gpu_reset_resume_helper(tmp_adev);
 
+	amdgpu_set_init_level(tmp_adev, AMDGPU_INIT_LEVEL_DEFAULT);
 	r = amdgpu_ib_ring_tests(tmp_adev);
 	if (r) {
 		dev_err(tmp_adev->dev,
@@ -281,6 +264,11 @@ static struct amdgpu_reset_handler sienna_cichlid_mode2_handler = {
 	.do_reset		= sienna_cichlid_mode2_reset,
 };
 
+static struct amdgpu_reset_handler
+	*sienna_cichlid_rst_handlers[AMDGPU_RESET_MAX_HANDLERS] = {
+		&sienna_cichlid_mode2_handler,
+	};
+
 int sienna_cichlid_reset_init(struct amdgpu_device *adev)
 {
 	struct amdgpu_reset_control *reset_ctl;
@@ -294,11 +282,9 @@ int sienna_cichlid_reset_init(struct amdgpu_device *adev)
 	reset_ctl->active_reset = AMD_RESET_METHOD_NONE;
 	reset_ctl->get_reset_handler = sienna_cichlid_get_reset_handler;
 
-	INIT_LIST_HEAD(&reset_ctl->reset_handlers);
 	INIT_WORK(&reset_ctl->reset_work, reset_ctl->async_reset);
 	/* Only mode2 is handled through reset control now */
-	amdgpu_reset_add_handler(reset_ctl, &sienna_cichlid_mode2_handler);
-
+	reset_ctl->reset_handlers = &sienna_cichlid_rst_handlers;
 	adev->reset_cntl = reset_ctl;
 
 	return 0;

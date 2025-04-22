@@ -94,10 +94,12 @@ int ishtp_cl_link(struct ishtp_cl *cl);
 void ishtp_cl_unlink(struct ishtp_cl *cl);
 int ishtp_cl_disconnect(struct ishtp_cl *cl);
 int ishtp_cl_connect(struct ishtp_cl *cl);
+int ishtp_cl_establish_connection(struct ishtp_cl *cl, const guid_t *uuid,
+				  int tx_size, int rx_size, bool reset);
+void ishtp_cl_destroy_connection(struct ishtp_cl *cl, bool reset);
 int ishtp_cl_send(struct ishtp_cl *cl, uint8_t *buf, size_t length);
 int ishtp_cl_flush_queues(struct ishtp_cl *cl);
 int ishtp_cl_io_rb_recycle(struct ishtp_cl_rb *rb);
-bool ishtp_cl_tx_empty(struct ishtp_cl *cl);
 struct ishtp_cl_rb *ishtp_cl_rx_get_rb(struct ishtp_cl *cl);
 void *ishtp_get_client_data(struct ishtp_cl *cl);
 void ishtp_set_client_data(struct ishtp_cl *cl, void *data);

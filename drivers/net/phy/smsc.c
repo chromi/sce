@@ -507,10 +507,8 @@ static void smsc_get_strings(struct phy_device *phydev, u8 *data)
 {
 	int i;
 
-	for (i = 0; i < ARRAY_SIZE(smsc_hw_stats); i++) {
-		strncpy(data + i * ETH_GSTRING_LEN,
-		       smsc_hw_stats[i].string, ETH_GSTRING_LEN);
-	}
+	for (i = 0; i < ARRAY_SIZE(smsc_hw_stats); i++)
+		ethtool_puts(&data, smsc_hw_stats[i].string);
 }
 
 static u64 smsc_get_stat(struct phy_device *phydev, int i)
@@ -629,12 +627,13 @@ int smsc_phy_probe(struct phy_device *phydev)
 	phydev->priv = priv;
 
 	/* Make clk optional to keep DTB backward compatibility. */
-	refclk = devm_clk_get_optional_enabled(dev, NULL);
+	refclk = devm_clk_get_optional_enabled_with_rate(dev, NULL,
+							 50 * 1000 * 1000);
 	if (IS_ERR(refclk))
 		return dev_err_probe(dev, PTR_ERR(refclk),
 				     "Failed to request clock\n");
 
-	return clk_set_rate(refclk, 50 * 1000 * 1000);
+	return 0;
 }
 EXPORT_SYMBOL_GPL(smsc_phy_probe);
 
@@ -839,7 +838,7 @@ MODULE_DESCRIPTION("SMSC PHY driver");
 MODULE_AUTHOR("Herbert Valerio Riedel");
 MODULE_LICENSE("GPL");
 
-static struct mdio_device_id __maybe_unused smsc_tbl[] = {
+static const struct mdio_device_id __maybe_unused smsc_tbl[] = {
 	{ 0x0007c0a0, 0xfffffff0 },
 	{ 0x0007c0b0, 0xfffffff0 },
 	{ 0x0007c0c0, 0xfffffff0 },

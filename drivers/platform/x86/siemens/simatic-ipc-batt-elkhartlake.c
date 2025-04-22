@@ -25,9 +25,9 @@ static struct gpiod_lookup_table simatic_ipc_batt_gpio_table_bx_21a = {
 	},
 };
 
-static int simatic_ipc_batt_elkhartlake_remove(struct platform_device *pdev)
+static void simatic_ipc_batt_elkhartlake_remove(struct platform_device *pdev)
 {
-	return simatic_ipc_batt_remove(pdev, &simatic_ipc_batt_gpio_table_bx_21a);
+	simatic_ipc_batt_remove(pdev, &simatic_ipc_batt_gpio_table_bx_21a);
 }
 
 static int simatic_ipc_batt_elkhartlake_probe(struct platform_device *pdev)
@@ -45,6 +45,7 @@ static struct platform_driver simatic_ipc_batt_driver = {
 
 module_platform_driver(simatic_ipc_batt_driver);
 
+MODULE_DESCRIPTION("CMOS Battery monitoring for Simatic IPCs based on Elkhart Lake GPIO");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("platform:" KBUILD_MODNAME);
 MODULE_SOFTDEP("pre: simatic-ipc-batt platform:elkhartlake-pinctrl");

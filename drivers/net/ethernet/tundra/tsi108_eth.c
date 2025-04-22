@@ -1660,7 +1660,7 @@ static void tsi108_timed_checker(struct timer_list *t)
 	mod_timer(&data->timer, jiffies + CHECK_PHY_INTERVAL);
 }
 
-static int tsi108_ether_remove(struct platform_device *pdev)
+static void tsi108_ether_remove(struct platform_device *pdev)
 {
 	struct net_device *dev = platform_get_drvdata(pdev);
 	struct tsi108_prv_data *priv = netdev_priv(dev);
@@ -1670,8 +1670,6 @@ static int tsi108_ether_remove(struct platform_device *pdev)
 	iounmap(priv->regs);
 	iounmap(priv->phyregs);
 	free_netdev(dev);
-
-	return 0;
 }
 
 /* Structure for a device driver */

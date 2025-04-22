@@ -20,6 +20,7 @@
 
 #define MLXBF_BOOTCTL_SB_SECURE_MASK		0x03
 #define MLXBF_BOOTCTL_SB_TEST_MASK		0x0c
+#define MLXBF_BOOTCTL_SB_DEV_MASK		BIT(4)
 
 #define MLXBF_SB_KEY_NUM			4
 
@@ -40,11 +41,18 @@ static struct mlxbf_bootctl_name boot_names[] = {
 	{ MLXBF_BOOTCTL_NONE, "none" },
 };
 
+enum {
+	MLXBF_BOOTCTL_SB_LIFECYCLE_PRODUCTION = 0,
+	MLXBF_BOOTCTL_SB_LIFECYCLE_GA_SECURE = 1,
+	MLXBF_BOOTCTL_SB_LIFECYCLE_GA_NON_SECURE = 2,
+	MLXBF_BOOTCTL_SB_LIFECYCLE_RMA = 3
+};
+
 static const char * const mlxbf_bootctl_lifecycle_states[] = {
-	[0] = "Production",
-	[1] = "GA Secured",
-	[2] = "GA Non-Secured",
-	[3] = "RMA",
+	[MLXBF_BOOTCTL_SB_LIFECYCLE_PRODUCTION] = "Production",
+	[MLXBF_BOOTCTL_SB_LIFECYCLE_GA_SECURE] = "GA Secured",
+	[MLXBF_BOOTCTL_SB_LIFECYCLE_GA_NON_SECURE] = "GA Non-Secured",
+	[MLXBF_BOOTCTL_SB_LIFECYCLE_RMA] = "RMA",
 };
 
 /* Log header format. */
@@ -169,7 +177,7 @@ static ssize_t post_reset_wdog_show(struct device *dev,
 	if (ret < 0)
 		return ret;
 
-	return sprintf(buf, "%d\n", ret);
+	return sysfs_emit(buf, "%d\n", ret);
 }
 
 static ssize_t post_reset_wdog_store(struct device *dev,
@@ -198,7 +206,7 @@ static ssize_t mlxbf_bootctl_show(int smc_op, char *buf)
 	if (action < 0)
 		return action;
 
-	return sprintf(buf, "%s\n", mlxbf_bootctl_action_to_string(action));
+	return sysfs_emit(buf, "%s\n", mlxbf_bootctl_action_to_string(action));
 }
 
 static int mlxbf_bootctl_store(int smc_op, const char *buf, size_t count)
@@ -247,28 +255,33 @@ static ssize_t second_reset_action_store(struct device *dev,
 static ssize_t lifecycle_state_show(struct device *dev,
 				    struct device_attribute *attr, char *buf)
 {
+	int status_bits;
+	int use_dev_key;
+	int test_state;
 	int lc_state;
 
-	lc_state = mlxbf_bootctl_smc(MLXBF_BOOTCTL_GET_TBB_FUSE_STATUS,
-				     MLXBF_BOOTCTL_FUSE_STATUS_LIFECYCLE);
-	if (lc_state < 0)
-		return lc_state;
+	status_bits = mlxbf_bootctl_smc(MLXBF_BOOTCTL_GET_TBB_FUSE_STATUS,
+					MLXBF_BOOTCTL_FUSE_STATUS_LIFECYCLE);
+	if (status_bits < 0)
+		return status_bits;
 
-	lc_state &=
-		MLXBF_BOOTCTL_SB_TEST_MASK | MLXBF_BOOTCTL_SB_SECURE_MASK;
+	use_dev_key = status_bits & MLXBF_BOOTCTL_SB_DEV_MASK;
+	test_state = status_bits & MLXBF_BOOTCTL_SB_TEST_MASK;
+	lc_state = status_bits & MLXBF_BOOTCTL_SB_SECURE_MASK;
 
 	/*
 	 * If the test bits are set, we specify that the current state may be
 	 * due to using the test bits.
 	 */
-	if (lc_state & MLXBF_BOOTCTL_SB_TEST_MASK) {
-		lc_state &= MLXBF_BOOTCTL_SB_SECURE_MASK;
-
-		return sprintf(buf, "%s(test)\n",
+	if (test_state) {
+		return sysfs_emit(buf, "%s(test)\n",
 			       mlxbf_bootctl_lifecycle_states[lc_state]);
+	} else if (use_dev_key &&
+		   (lc_state == MLXBF_BOOTCTL_SB_LIFECYCLE_GA_SECURE)) {
+		return sysfs_emit(buf, "Secured (development)\n");
 	}
 
-	return sprintf(buf, "%s\n", mlxbf_bootctl_lifecycle_states[lc_state]);
+	return sysfs_emit(buf, "%s\n", mlxbf_bootctl_lifecycle_states[lc_state]);
 }
 
 static ssize_t secure_boot_fuse_state_show(struct device *dev,
@@ -319,9 +332,9 @@ static ssize_t secure_boot_fuse_state_show(struct device *dev,
 			else
 				status = valid ? "Invalid" : "Free";
 		}
-		buf_len += sprintf(buf + buf_len, "%d:%s ", key, status);
+		buf_len += sysfs_emit(buf + buf_len, "%d:%s ", key, status);
 	}
-	buf_len += sprintf(buf + buf_len, "\n");
+	buf_len += sysfs_emit(buf + buf_len, "\n");
 
 	return buf_len;
 }
@@ -450,7 +463,7 @@ static ssize_t large_icm_show(struct device *dev,
 	if (res.a0)
 		return -EPERM;
 
-	return snprintf(buf, PAGE_SIZE, "0x%lx", res.a1);
+	return sysfs_emit(buf, "0x%lx", res.a1);
 }
 
 static ssize_t large_icm_store(struct device *dev,
@@ -568,7 +581,7 @@ static ssize_t opn_show(struct device *dev,
 	}
 	mutex_unlock(&mfg_ops_lock);
 
-	return snprintf(buf, PAGE_SIZE, "%s", (char *)opn_data);
+	return sysfs_emit(buf, "%s", (char *)opn_data);
 }
 
 static ssize_t opn_store(struct device *dev,
@@ -619,7 +632,7 @@ static ssize_t sku_show(struct device *dev,
 	}
 	mutex_unlock(&mfg_ops_lock);
 
-	return snprintf(buf, PAGE_SIZE, "%s", (char *)sku_data);
+	return sysfs_emit(buf, "%s", (char *)sku_data);
 }
 
 static ssize_t sku_store(struct device *dev,
@@ -670,7 +683,7 @@ static ssize_t modl_show(struct device *dev,
 	}
 	mutex_unlock(&mfg_ops_lock);
 
-	return snprintf(buf, PAGE_SIZE, "%s", (char *)modl_data);
+	return sysfs_emit(buf, "%s", (char *)modl_data);
 }
 
 static ssize_t modl_store(struct device *dev,
@@ -721,7 +734,7 @@ static ssize_t sn_show(struct device *dev,
 	}
 	mutex_unlock(&mfg_ops_lock);
 
-	return snprintf(buf, PAGE_SIZE, "%s", (char *)sn_data);
+	return sysfs_emit(buf, "%s", (char *)sn_data);
 }
 
 static ssize_t sn_store(struct device *dev,
@@ -772,7 +785,7 @@ static ssize_t uuid_show(struct device *dev,
 	}
 	mutex_unlock(&mfg_ops_lock);
 
-	return snprintf(buf, PAGE_SIZE, "%s", (char *)uuid_data);
+	return sysfs_emit(buf, "%s", (char *)uuid_data);
 }
 
 static ssize_t uuid_store(struct device *dev,
@@ -823,7 +836,7 @@ static ssize_t rev_show(struct device *dev,
 	}
 	mutex_unlock(&mfg_ops_lock);
 
-	return snprintf(buf, PAGE_SIZE, "%s", (char *)rev_data);
+	return sysfs_emit(buf, "%s", (char *)rev_data);
 }
 
 static ssize_t rev_store(struct device *dev,
@@ -926,7 +939,7 @@ MODULE_DEVICE_TABLE(acpi, mlxbf_bootctl_acpi_ids);
 
 static ssize_t mlxbf_bootctl_bootfifo_read(struct file *filp,
 					   struct kobject *kobj,
-					   struct bin_attribute *bin_attr,
+					   const struct bin_attribute *bin_attr,
 					   char *buf, loff_t pos,
 					   size_t count)
 {
@@ -958,9 +971,9 @@ static ssize_t mlxbf_bootctl_bootfifo_read(struct file *filp,
 	return p - buf;
 }
 
-static struct bin_attribute mlxbf_bootctl_bootfifo_sysfs_attr = {
+static const struct bin_attribute mlxbf_bootctl_bootfifo_sysfs_attr = {
 	.attr = { .name = "bootfifo", .mode = 0400 },
-	.read = mlxbf_bootctl_bootfifo_read,
+	.read_new = mlxbf_bootctl_bootfifo_read,
 };
 
 static bool mlxbf_bootctl_guid_match(const guid_t *guid,
@@ -1028,12 +1041,10 @@ static int mlxbf_bootctl_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static int mlxbf_bootctl_remove(struct platform_device *pdev)
+static void mlxbf_bootctl_remove(struct platform_device *pdev)
 {
 	sysfs_remove_bin_file(&pdev->dev.kobj,
 			      &mlxbf_bootctl_bootfifo_sysfs_attr);
-
-	return 0;
 }
 
 static struct platform_driver mlxbf_bootctl_driver = {

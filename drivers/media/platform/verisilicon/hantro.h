@@ -227,6 +227,7 @@ struct hantro_dev {
  * @src_fmt:		V4L2 pixel format of active source format.
  * @vpu_dst_fmt:	Descriptor of active destination format.
  * @dst_fmt:		V4L2 pixel format of active destination format.
+ * @ref_fmt:		V4L2 pixel format of the reference frames format.
  *
  * @ctrl_handler:	Control handler used to register controls.
  * @jpeg_quality:	User-specified JPEG compression quality.
@@ -237,7 +238,6 @@ struct hantro_dev {
  * @codec_ops:		Set of operations related to codec mode.
  * @postproc:		Post-processing context.
  * @h264_dec:		H.264-decoding context.
- * @jpeg_enc:		JPEG-encoding context.
  * @mpeg2_dec:		MPEG-2-decoding context.
  * @vp8_dec:		VP8-decoding context.
  * @hevc_dec:		HEVC-decoding context.
@@ -256,6 +256,7 @@ struct hantro_ctx {
 	struct v4l2_pix_format_mplane src_fmt;
 	const struct hantro_fmt *vpu_dst_fmt;
 	struct v4l2_pix_format_mplane dst_fmt;
+	struct v4l2_pix_format_mplane ref_fmt;
 
 	struct v4l2_ctrl_handler ctrl_handler;
 	int jpeg_quality;
@@ -328,7 +329,15 @@ struct hantro_vp9_decoded_buffer_info {
 	/* Info needed when the decoded frame serves as a reference frame. */
 	unsigned short width;
 	unsigned short height;
+	size_t chroma_offset;
+	size_t mv_offset;
 	u32 bit_depth : 4;
+};
+
+struct hantro_av1_decoded_buffer_info {
+	/* Info needed when the decoded frame serves as a reference frame. */
+	size_t chroma_offset;
+	size_t mv_offset;
 };
 
 struct hantro_decoded_buffer {
@@ -337,6 +346,7 @@ struct hantro_decoded_buffer {
 
 	union {
 		struct hantro_vp9_decoded_buffer_info vp9;
+		struct hantro_av1_decoded_buffer_info av1;
 	};
 };
 
@@ -469,11 +479,14 @@ hantro_get_dst_buf(struct hantro_ctx *ctx)
 bool hantro_needs_postproc(const struct hantro_ctx *ctx,
 			   const struct hantro_fmt *fmt);
 
+dma_addr_t
+hantro_postproc_get_dec_buf_addr(struct hantro_ctx *ctx, int index);
+
 static inline dma_addr_t
 hantro_get_dec_buf_addr(struct hantro_ctx *ctx, struct vb2_buffer *vb)
 {
 	if (hantro_needs_postproc(ctx, ctx->vpu_dst_fmt))
-		return ctx->postproc.dec_q[vb->index].dma;
+		return hantro_postproc_get_dec_buf_addr(ctx, vb->index);
 	return vb2_dma_contig_plane_dma_addr(vb, 0);
 }
 
@@ -485,8 +498,8 @@ vb2_to_hantro_decoded_buf(struct vb2_buffer *buf)
 
 void hantro_postproc_disable(struct hantro_ctx *ctx);
 void hantro_postproc_enable(struct hantro_ctx *ctx);
+int hantro_postproc_init(struct hantro_ctx *ctx);
 void hantro_postproc_free(struct hantro_ctx *ctx);
-int hantro_postproc_alloc(struct hantro_ctx *ctx);
 int hanto_postproc_enum_framesizes(struct hantro_ctx *ctx,
 				   struct v4l2_frmsizeenum *fsize);
 

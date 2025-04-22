@@ -38,6 +38,8 @@
 #include "dm_helpers.h"
 #include "atomfirmware.h"
 
+#define DC_LOGGER \
+	ddc_service->ctx->logger
 #define DC_LOGGER_INIT(logger)
 
 static const uint8_t DP_VGA_DONGLE_BRANCH_DEV_NAME[] = "DpVga";
@@ -46,10 +48,6 @@ static const uint8_t DP_DVI_CONVERTER_ID_4[] = "m2DVIa";
 static const uint8_t DP_DVI_CONVERTER_ID_5[] = "3393N2";
 
 struct i2c_payloads {
-	struct vector payloads;
-};
-
-struct aux_payloads {
 	struct vector payloads;
 };
 
@@ -507,7 +505,7 @@ bool try_to_configure_aux_timeout(struct ddc_service *ddc,
 	bool result = false;
 	struct ddc *ddc_pin = ddc->ddc_pin;
 
-	if ((ddc->link->chip_caps & EXT_DISPLAY_PATH_CAPS__DP_FIXED_VS_EN) &&
+	if (((ddc->link->chip_caps & AMD_EXT_DISPLAY_PATH_CAPS__EXT_CHIP_MASK) == AMD_EXT_DISPLAY_PATH_CAPS__DP_FIXED_VS_EN) &&
 			!ddc->link->dc->debug.disable_fixed_vs_aux_timeout_wa &&
 			ddc->ctx->dce_version == DCN_VERSION_3_1) {
 		/* Fixed VS workaround for AUX timeout */

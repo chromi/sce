@@ -4,6 +4,8 @@
 
 #include <linux/iopoll.h>
 
+#include <drm/drm_managed.h>
+
 #include "dpu_hw_mdss.h"
 #include "dpu_hwio.h"
 #include "dpu_hw_catalog.h"
@@ -37,12 +39,21 @@ static void _setup_merge_3d_ops(struct dpu_hw_merge_3d *c,
 	c->ops.setup_3d_mode = dpu_hw_merge_3d_setup_3d_mode;
 };
 
-struct dpu_hw_merge_3d *dpu_hw_merge_3d_init(const struct dpu_merge_3d_cfg *cfg,
-		void __iomem *addr)
+/**
+ * dpu_hw_merge_3d_init() - Initializes the merge_3d driver for the passed
+ * merge3d catalog entry.
+ * @dev:  Corresponding device for devres management
+ * @cfg:  Pingpong catalog entry for which driver object is required
+ * @addr: Mapped register io address of MDP
+ * Return: Error code or allocated dpu_hw_merge_3d context
+ */
+struct dpu_hw_merge_3d *dpu_hw_merge_3d_init(struct drm_device *dev,
+					     const struct dpu_merge_3d_cfg *cfg,
+					     void __iomem *addr)
 {
 	struct dpu_hw_merge_3d *c;
 
-	c = kzalloc(sizeof(*c), GFP_KERNEL);
+	c = drmm_kzalloc(dev, sizeof(*c), GFP_KERNEL);
 	if (!c)
 		return ERR_PTR(-ENOMEM);
 
@@ -54,9 +65,4 @@ struct dpu_hw_merge_3d *dpu_hw_merge_3d_init(const struct dpu_merge_3d_cfg *cfg,
 	_setup_merge_3d_ops(c, c->caps->features);
 
 	return c;
-}
-
-void dpu_hw_merge_3d_destroy(struct dpu_hw_merge_3d *hw)
-{
-	kfree(hw);
 }

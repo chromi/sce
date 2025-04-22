@@ -5,6 +5,9 @@ CFLAGS += $(KHDR_INCLUDES)
 
 TEST_GEN_PROGS := resctrl_tests
 
-include ../lib.mk
+LOCAL_HDRS += $(wildcard *.h)
 
-$(OUTPUT)/resctrl_tests: $(wildcard *.[ch])
+include ../lib.mk
+CFLAGS += -I$(top_srcdir)/tools/include
+
+$(OUTPUT)/resctrl_tests: $(wildcard *.c)

@@ -19,7 +19,6 @@
 
 #include <linux/compat.h>
 #include <linux/blkdev.h>
-#include <linux/blk-mq-pci.h>
 #include <linux/completion.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
@@ -378,15 +377,17 @@ static int aac_biosparm(struct scsi_device *sdev, struct block_device *bdev,
 }
 
 /**
- *	aac_slave_configure		-	compute queue depths
+ *	aac_sdev_configure		-	compute queue depths
  *	@sdev:	SCSI device we are considering
+ *	@lim:	Request queue limits
  *
  *	Selects queue depths for each target device based on the host adapter's
  *	total capacity and the queue depth supported by the target device.
  *	A queue depth of one automatically disables tagged queueing.
  */
 
-static int aac_slave_configure(struct scsi_device *sdev)
+static int aac_sdev_configure(struct scsi_device *sdev,
+			      struct queue_limits *lim)
 {
 	struct aac_dev *aac = (struct aac_dev *)sdev->host->hostdata;
 	int chn, tid;
@@ -503,15 +504,6 @@ common_config:
 	sdev->tagged_supported = 1;
 
 	return 0;
-}
-
-static void aac_map_queues(struct Scsi_Host *shost)
-{
-	struct aac_dev *aac = (struct aac_dev *)shost->hostdata;
-
-	blk_mq_pci_map_queues(&shost->tag_set.map[HCTX_TYPE_DEFAULT],
-			      aac->pdev, 0);
-	aac->use_map_queue = true;
 }
 
 /**
@@ -1497,8 +1489,7 @@ static const struct scsi_host_template aac_driver_template = {
 	.queuecommand			= aac_queuecommand,
 	.bios_param			= aac_biosparm,
 	.shost_groups			= aac_host_groups,
-	.slave_configure		= aac_slave_configure,
-	.map_queues			= aac_map_queues,
+	.sdev_configure			= aac_sdev_configure,
 	.change_queue_depth		= aac_change_queue_depth,
 	.sdev_groups			= aac_dev_groups,
 	.eh_abort_handler		= aac_eh_abort,
@@ -1786,8 +1777,6 @@ static int aac_probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
 	shost->max_lun = AAC_MAX_LUN;
 
 	pci_set_drvdata(pdev, shost);
-	shost->nr_hw_queues = aac->max_msix;
-	shost->host_tagset = 1;
 
 	error = scsi_add_host(shost, &pdev->dev);
 	if (error)
@@ -1919,7 +1908,6 @@ static void aac_remove_one(struct pci_dev *pdev)
 	struct aac_dev *aac = (struct aac_dev *)shost->hostdata;
 
 	aac_cancel_rescan_worker(aac);
-	aac->use_map_queue = false;
 	scsi_remove_host(shost);
 
 	__aac_shutdown(aac);

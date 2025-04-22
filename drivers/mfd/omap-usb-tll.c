@@ -98,8 +98,8 @@
 
 struct usbtll_omap {
 	void __iomem	*base;
-	int		nch;		/* num. of channels */
-	struct clk	*ch_clk[];	/* must be the last member */
+	int		nch;
+	struct clk	*ch_clk[] __counted_by(nch);
 };
 
 /*-------------------------------------------------------------------------*/
@@ -230,8 +230,7 @@ static int usbtll_omap_probe(struct platform_device *pdev)
 		break;
 	}
 
-	tll = devm_kzalloc(dev, sizeof(*tll) + sizeof(tll->ch_clk[nch]),
-			   GFP_KERNEL);
+	tll = devm_kzalloc(dev, struct_size(tll, ch_clk, nch), GFP_KERNEL);
 	if (!tll) {
 		pm_runtime_put_sync(dev);
 		pm_runtime_disable(dev);
@@ -270,7 +269,7 @@ static int usbtll_omap_probe(struct platform_device *pdev)
  *
  * Reverses the effect of usbtll_omap_probe().
  */
-static int usbtll_omap_remove(struct platform_device *pdev)
+static void usbtll_omap_remove(struct platform_device *pdev)
 {
 	struct usbtll_omap *tll = platform_get_drvdata(pdev);
 	int i;
@@ -287,7 +286,6 @@ static int usbtll_omap_remove(struct platform_device *pdev)
 	}
 
 	pm_runtime_disable(&pdev->dev);
-	return 0;
 }
 
 static const struct of_device_id usbtll_omap_dt_ids[] = {

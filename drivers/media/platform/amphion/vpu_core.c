@@ -642,7 +642,7 @@ static int vpu_core_probe(struct platform_device *pdev)
 		return -ENODEV;
 
 	core->type = core->res->type;
-	core->id = of_alias_get_id(dev->of_node, "vpu_core");
+	core->id = of_alias_get_id(dev->of_node, "vpu-core");
 	if (core->id < 0) {
 		dev_err(dev, "can't get vpu core id\n");
 		return core->id;
@@ -864,7 +864,7 @@ MODULE_DEVICE_TABLE(of, vpu_core_dt_match);
 
 static struct platform_driver amphion_vpu_core_driver = {
 	.probe = vpu_core_probe,
-	.remove_new = vpu_core_remove,
+	.remove = vpu_core_remove,
 	.driver = {
 		.name = "amphion-vpu-core",
 		.of_match_table = vpu_core_dt_match,

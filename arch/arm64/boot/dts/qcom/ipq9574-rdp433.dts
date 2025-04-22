@@ -8,69 +8,51 @@
 
 /dts-v1/;
 
-#include "ipq9574.dtsi"
+#include <dt-bindings/gpio/gpio.h>
+#include "ipq9574-rdp-common.dtsi"
 
 / {
 	model = "Qualcomm Technologies, Inc. IPQ9574/AP-AL02-C7";
 	compatible = "qcom,ipq9574-ap-al02-c7", "qcom,ipq9574";
-
-	aliases {
-		serial0 = &blsp1_uart2;
-	};
-
-	chosen {
-		stdout-path = "serial0:115200n8";
-	};
-
-	regulator_fixed_3p3: s3300 {
-		compatible = "regulator-fixed";
-		regulator-min-microvolt = <3300000>;
-		regulator-max-microvolt = <3300000>;
-		regulator-boot-on;
-		regulator-always-on;
-		regulator-name = "fixed_3p3";
-	};
-
-	regulator_fixed_0p925: s0925 {
-		compatible = "regulator-fixed";
-		regulator-min-microvolt = <925000>;
-		regulator-max-microvolt = <925000>;
-		regulator-boot-on;
-		regulator-always-on;
-		regulator-name = "fixed_0p925";
-	};
 };
 
-&blsp1_uart2 {
-	pinctrl-0 = <&uart2_pins>;
-	pinctrl-names = "default";
+&pcie1_phy {
 	status = "okay";
 };
 
-&rpm_requests {
-	regulators {
-		compatible = "qcom,rpm-mp5496-regulators";
+&pcie1 {
+	pinctrl-0 = <&pcie1_default>;
+	pinctrl-names = "default";
 
-		ipq9574_s1: s1 {
-		/*
-		 * During kernel bootup, the SoC runs at 800MHz with 875mV set by the bootloaders.
-		 * During regulator registration, kernel not knowing the initial voltage,
-		 * considers it as zero and brings up the regulators with minimum supported voltage.
-		 * Update the regulator-min-microvolt with SVS voltage of 725mV so that
-		 * the regulators are brought up with 725mV which is sufficient for all the
-		 * corner parts to operate at 800MHz
-		 */
-			regulator-min-microvolt = <725000>;
-			regulator-max-microvolt = <1075000>;
-		};
+	perst-gpios = <&tlmm 26 GPIO_ACTIVE_LOW>;
+	wake-gpios = <&tlmm 27 GPIO_ACTIVE_LOW>;
+	status = "okay";
+};
 
-		mp5496_l2: l2 {
-			regulator-min-microvolt = <1800000>;
-			regulator-max-microvolt = <1800000>;
-			regulator-always-on;
-			regulator-boot-on;
-		};
-	};
+&pcie2_phy {
+	status = "okay";
+};
+
+&pcie2 {
+	pinctrl-0 = <&pcie2_default>;
+	pinctrl-names = "default";
+
+	perst-gpios = <&tlmm 29 GPIO_ACTIVE_LOW>;
+	wake-gpios = <&tlmm 30 GPIO_ACTIVE_LOW>;
+	status = "okay";
+};
+
+&pcie3_phy {
+	status = "okay";
+};
+
+&pcie3 {
+	pinctrl-0 = <&pcie3_default>;
+	pinctrl-names = "default";
+
+	perst-gpios = <&tlmm 32 GPIO_ACTIVE_LOW>;
+	wake-gpios = <&tlmm 33 GPIO_ACTIVE_LOW>;
+	status = "okay";
 };
 
 &sdhc_1 {
@@ -85,11 +67,80 @@
 	status = "okay";
 };
 
-&sleep_clk {
-	clock-frequency = <32000>;
-};
-
 &tlmm {
+
+	pcie1_default: pcie1-default-state {
+		clkreq-n-pins {
+			pins = "gpio25";
+			function = "pcie1_clk";
+			drive-strength = <6>;
+			bias-pull-up;
+		};
+
+		perst-n-pins {
+			pins = "gpio26";
+			function = "gpio";
+			drive-strength = <8>;
+			bias-pull-down;
+			output-low;
+		};
+
+		wake-n-pins {
+			pins = "gpio27";
+			function = "pcie1_wake";
+			drive-strength = <6>;
+			bias-pull-up;
+		};
+	};
+
+	pcie2_default: pcie2-default-state {
+		clkreq-n-pins {
+			pins = "gpio28";
+			function = "pcie2_clk";
+			drive-strength = <6>;
+			bias-pull-up;
+		};
+
+		perst-n-pins {
+			pins = "gpio29";
+			function = "gpio";
+			drive-strength = <8>;
+			bias-pull-down;
+			output-low;
+		};
+
+		wake-n-pins {
+			pins = "gpio30";
+			function = "pcie2_wake";
+			drive-strength = <6>;
+			bias-pull-up;
+		};
+	};
+
+	pcie3_default: pcie3-default-state {
+		clkreq-n-pins {
+			pins = "gpio31";
+			function = "pcie3_clk";
+			drive-strength = <6>;
+			bias-pull-up;
+		};
+
+		perst-n-pins {
+			pins = "gpio32";
+			function = "gpio";
+			drive-strength = <8>;
+			bias-pull-up;
+			output-low;
+		};
+
+		wake-n-pins {
+			pins = "gpio33";
+			function = "pcie3_wake";
+			drive-strength = <6>;
+			bias-pull-up;
+		};
+	};
+
 	sdc_default_state: sdc-default-state {
 		clk-pins {
 			pins = "gpio5";
@@ -121,31 +172,4 @@
 			bias-pull-down;
 		};
 	};
-};
-
-&usb_0_dwc3 {
-	dr_mode = "host";
-};
-
-&usb_0_qmpphy {
-	vdda-pll-supply = <&mp5496_l2>;
-	vdda-phy-supply = <&regulator_fixed_0p925>;
-
-	status = "okay";
-};
-
-&usb_0_qusbphy {
-	vdd-supply = <&regulator_fixed_0p925>;
-	vdda-pll-supply = <&mp5496_l2>;
-	vdda-phy-dpdm-supply = <&regulator_fixed_3p3>;
-
-	status = "okay";
-};
-
-&usb3 {
-	status = "okay";
-};
-
-&xo_board_clk {
-	clock-frequency = <24000000>;
 };

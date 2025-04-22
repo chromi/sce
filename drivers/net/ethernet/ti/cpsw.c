@@ -631,7 +631,11 @@ static void cpsw_slave_open(struct cpsw_slave *slave, struct cpsw_priv *priv)
 		}
 	}
 
+	phy->mac_managed_pm = true;
+
 	slave->phy = phy;
+
+	phy_disable_eee(slave->phy);
 
 	phy_attached_info(slave->phy);
 
@@ -682,7 +686,7 @@ static void cpsw_init_host_port(struct cpsw_priv *priv)
 	soft_reset("cpsw", &cpsw->regs->soft_reset);
 	cpsw_ale_start(cpsw->ale);
 
-	/* switch to vlan unaware mode */
+	/* switch to vlan aware mode */
 	cpsw_ale_control_set(cpsw->ale, HOST_PORT_NUM, ALE_VLAN_AWARE,
 			     CPSW_ALE_VLAN_AWARE);
 	control_reg = readl(&cpsw->regs->control);
@@ -1223,7 +1227,6 @@ static const struct ethtool_ops cpsw_ethtool_ops = {
 	.get_link_ksettings	= cpsw_get_link_ksettings,
 	.set_link_ksettings	= cpsw_set_link_ksettings,
 	.get_eee	= cpsw_get_eee,
-	.set_eee	= cpsw_set_eee,
 	.nway_reset	= cpsw_nway_reset,
 	.get_ringparam = cpsw_get_ringparam,
 	.set_ringparam = cpsw_set_ringparam,
@@ -1722,14 +1725,20 @@ clean_runtime_disable_ret:
 	return ret;
 }
 
-static int cpsw_remove(struct platform_device *pdev)
+static void cpsw_remove(struct platform_device *pdev)
 {
 	struct cpsw_common *cpsw = platform_get_drvdata(pdev);
 	int i, ret;
 
 	ret = pm_runtime_resume_and_get(&pdev->dev);
-	if (ret < 0)
-		return ret;
+	if (ret < 0) {
+		/* Note, if this error path is taken, we're leaking some
+		 * resources.
+		 */
+		dev_err(&pdev->dev, "Failed to resume device (%pe)\n",
+			ERR_PTR(ret));
+		return;
+	}
 
 	for (i = 0; i < cpsw->data.slaves; i++)
 		if (cpsw->slaves[i].ndev)
@@ -1740,7 +1749,6 @@ static int cpsw_remove(struct platform_device *pdev)
 	cpsw_remove_dt(pdev);
 	pm_runtime_put_sync(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP

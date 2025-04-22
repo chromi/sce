@@ -19,6 +19,8 @@
 
 	aliases {
 		ethernet1 = &eth1;
+		rtc0 = &gsc_rtc;
+		rtc1 = &snvs_rtc;
 		usb0 = &usbotg1;
 		usb1 = &usbotg2;
 	};
@@ -314,6 +316,8 @@
 		interrupts = <6 IRQ_TYPE_EDGE_FALLING>;
 		interrupt-controller;
 		#interrupt-cells = <1>;
+		#address-cells = <1>;
+		#size-cells = <0>;
 
 		adc {
 			compatible = "gw,gsc-adc";
@@ -562,7 +566,7 @@
 		pagesize = <16>;
 	};
 
-	rtc@68 {
+	gsc_rtc: rtc@68 {
 		compatible = "dallas,ds1672";
 		reg = <0x68>;
 	};
@@ -585,7 +589,6 @@
 		st,drdy-int-pin = <1>;
 		interrupt-parent = <&gpio1>;
 		interrupts = <12 IRQ_TYPE_LEVEL_LOW>;
-		interrupt-names = "INT1";
 	};
 };
 
@@ -634,13 +637,16 @@
 
 	pcie@0,0 {
 		reg = <0x0000 0 0 0 0>;
-		#address-cells = <1>;
-		#size-cells = <0>;
+		device_type = "pci";
+		#address-cells = <3>;
+		#size-cells = <2>;
+		ranges;
 
-		eth1: pcie@1,0 {
+		eth1: ethernet@0,0 {
 			reg = <0x0000 0 0 0 0>;
-			#address-cells = <1>;
-			#size-cells = <0>;
+			#address-cells = <3>;
+			#size-cells = <2>;
+			ranges;
 
 			local-mac-address = [00 00 00 00 00 00];
 		};

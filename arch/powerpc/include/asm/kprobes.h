@@ -21,7 +21,7 @@
 #include <linux/percpu.h>
 #include <linux/module.h>
 #include <asm/probes.h>
-#include <asm/code-patching.h>
+#include <asm/text-patching.h>
 
 #ifdef CONFIG_KPROBES
 #define  __ARCH_WANT_KPROBES_INSN_SLOT
@@ -84,8 +84,6 @@ struct arch_optimized_insn {
 	kprobe_opcode_t *insn;
 };
 
-extern int kprobe_exceptions_notify(struct notifier_block *self,
-					unsigned long val, void *data);
 extern int kprobe_fault_handler(struct pt_regs *regs, int trapnr);
 extern int kprobe_handler(struct pt_regs *regs);
 extern int kprobe_post_handler(struct pt_regs *regs);

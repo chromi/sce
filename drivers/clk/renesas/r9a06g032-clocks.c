@@ -20,14 +20,23 @@
 #include <linux/platform_device.h>
 #include <linux/pm_clock.h>
 #include <linux/pm_domain.h>
+#include <linux/reboot.h>
 #include <linux/slab.h>
 #include <linux/soc/renesas/r9a06g032-sysctrl.h>
 #include <linux/spinlock.h>
 #include <dt-bindings/clock/r9a06g032-sysctrl.h>
 
 #define R9A06G032_SYSCTRL_USB    0x00
-#define R9A06G032_SYSCTRL_USB_H2MODE  (1<<1)
+#define R9A06G032_SYSCTRL_USB_H2MODE BIT(1)
 #define R9A06G032_SYSCTRL_DMAMUX 0xA0
+
+#define R9A06G032_SYSCTRL_RSTEN 0x120
+#define R9A06G032_SYSCTRL_RSTEN_MRESET_EN BIT(0)
+#define R9A06G032_SYSCTRL_RSTCTRL 0x198
+/* These work for both reset registers */
+#define R9A06G032_SYSCTRL_SWRST BIT(6)
+#define R9A06G032_SYSCTRL_WDA7RST_1 BIT(2)
+#define R9A06G032_SYSCTRL_WDA7RST_0 BIT(1)
 
 /**
  * struct regbit - describe one bit in a register
@@ -102,19 +111,22 @@ enum gate_type {
  * @source:    the ID+1 of the parent clock element.
  *             Root clock uses ID of ~0 (PARENT_ID);
  * @gate:      clock enable/disable
- * @div_min:   smallest permitted clock divider
- * @div_max:   largest permitted clock divider
- * @reg:       clock divider register offset, in 32-bit words
- * @div_table: optional list of fixed clock divider values;
+ * @div:       substructure for clock divider
+ * @div.min:   smallest permitted clock divider
+ * @div.max:   largest permitted clock divider
+ * @div.reg:   clock divider register offset, in 32-bit words
+ * @div.table: optional list of fixed clock divider values;
  *             must be in ascending order, zero for unused
- * @div:       divisor for fixed-factor clock
- * @mul:       multiplier for fixed-factor clock
- * @group:     UART group, 0=UART0/1/2, 1=UART3/4/5/6/7
- * @sel:       select either g1/r1 or g2/r2 as clock source
- * @g1:        1st source gate (clock enable/disable)
- * @r1:        1st source reset (module reset)
- * @g2:        2nd source gate (clock enable/disable)
- * @r2:        2nd source reset (module reset)
+ * @ffc:       substructure for fixed-factor clocks
+ * @ffc.div:   divisor for fixed-factor clock
+ * @ffc.mul:   multiplier for fixed-factor clock
+ * @dual:      substructure for dual clock gates
+ * @dual.group: UART group, 0=UART0/1/2, 1=UART3/4/5/6/7
+ * @dual.sel:  select either g1/r1 or g2/r2 as clock source
+ * @dual.g1:   1st source gate (clock enable/disable)
+ * @dual.r1:   1st source reset (module reset)
+ * @dual.g2:   2nd source gate (clock enable/disable)
+ * @dual.r2:   2nd source reset (module reset)
  *
  * Describes a single element in the clock tree hierarchy.
  * As there are quite a large number of clock elements, this
@@ -131,13 +143,13 @@ struct r9a06g032_clkdesc {
 		struct r9a06g032_gate gate;
 		/* type = K_DIV  */
 		struct {
-			unsigned int div_min:10, div_max:10, reg:10;
-			u16 div_table[4];
-		};
+			unsigned int min:10, max:10, reg:10;
+			u16 table[4];
+		} div;
 		/* type = K_FFC */
 		struct {
 			u16 div, mul;
-		};
+		} ffc;
 		/* type = K_DUALGATE */
 		struct {
 			uint16_t group:1;
@@ -178,26 +190,26 @@ struct r9a06g032_clkdesc {
 	.type = K_FFC, \
 	.index = R9A06G032_##_idx, \
 	.name = _n, \
-	.div = _div, \
-	.mul = _mul \
+	.ffc.div = _div, \
+	.ffc.mul = _mul \
 }
 #define D_FFC(_idx, _n, _src, _div) { \
 	.type = K_FFC, \
 	.index = R9A06G032_##_idx, \
 	.source = 1 + R9A06G032_##_src, \
 	.name = _n, \
-	.div = _div, \
-	.mul = 1 \
+	.ffc.div = _div, \
+	.ffc.mul = 1 \
 }
 #define D_DIV(_idx, _n, _src, _reg, _min, _max, ...) { \
 	.type = K_DIV, \
 	.index = R9A06G032_##_idx, \
 	.source = 1 + R9A06G032_##_src, \
 	.name = _n, \
-	.reg = _reg, \
-	.div_min = _min, \
-	.div_max = _max, \
-	.div_table = { __VA_ARGS__ } \
+	.div.reg = _reg, \
+	.div.min = _min, \
+	.div.max = _max, \
+	.div.table = { __VA_ARGS__ } \
 }
 #define D_UGATE(_idx, _n, _src, _g, _g1, _r1, _g2, _r2) { \
 	.type = K_DUALGATE, \
@@ -1063,14 +1075,14 @@ r9a06g032_register_div(struct r9a06g032_priv *clocks,
 
 	div->clocks = clocks;
 	div->index = desc->index;
-	div->reg = desc->reg;
+	div->reg = desc->div.reg;
 	div->hw.init = &init;
-	div->min = desc->div_min;
-	div->max = desc->div_max;
+	div->min = desc->div.min;
+	div->max = desc->div.max;
 	/* populate (optional) divider table fixed values */
 	for (i = 0; i < ARRAY_SIZE(div->table) &&
-	     i < ARRAY_SIZE(desc->div_table) && desc->div_table[i]; i++) {
-		div->table[div->table_size++] = desc->div_table[i];
+	     i < ARRAY_SIZE(desc->div.table) && desc->div.table[i]; i++) {
+		div->table[div->table_size++] = desc->div.table[i];
 	}
 
 	clk = clk_register(NULL, &div->hw);
@@ -1267,13 +1279,18 @@ static void r9a06g032_clocks_del_clk_provider(void *data)
 	of_clk_del_provider(data);
 }
 
+static int r9a06g032_restart_handler(struct sys_off_data *data)
+{
+	writel(R9A06G032_SYSCTRL_SWRST, sysctrl_priv->reg + R9A06G032_SYSCTRL_RSTCTRL);
+	return NOTIFY_DONE;
+}
+
 static void __init r9a06g032_init_h2mode(struct r9a06g032_priv *clocks)
 {
-	struct device_node *usbf_np = NULL;
+	struct device_node *usbf_np;
 	u32 usb;
 
-	while ((usbf_np = of_find_compatible_node(usbf_np, NULL,
-						  "renesas,rzn1-usbf"))) {
+	for_each_compatible_node(usbf_np, NULL, "renesas,rzn1-usbf") {
 		if (of_device_is_available(usbf_np))
 			break;
 	}
@@ -1322,6 +1339,18 @@ static int __init r9a06g032_clocks_probe(struct platform_device *pdev)
 
 	r9a06g032_init_h2mode(clocks);
 
+	/* Clear potentially pending resets */
+	writel(R9A06G032_SYSCTRL_WDA7RST_0 | R9A06G032_SYSCTRL_WDA7RST_1,
+	       clocks->reg + R9A06G032_SYSCTRL_RSTCTRL);
+	/* Allow software reset */
+	writel(R9A06G032_SYSCTRL_SWRST | R9A06G032_SYSCTRL_RSTEN_MRESET_EN,
+	       clocks->reg + R9A06G032_SYSCTRL_RSTEN);
+
+	error = devm_register_sys_off_handler(dev, SYS_OFF_MODE_RESTART, SYS_OFF_PRIO_HIGH,
+					      r9a06g032_restart_handler, NULL);
+	if (error)
+		dev_warn(dev, "couldn't register restart handler (%d)\n", error);
+
 	for (i = 0; i < ARRAY_SIZE(r9a06g032_clocks); ++i) {
 		const struct r9a06g032_clkdesc *d = &r9a06g032_clocks[i];
 		const char *parent_name = d->source ?
@@ -1333,7 +1362,8 @@ static int __init r9a06g032_clocks_probe(struct platform_device *pdev)
 		case K_FFC:
 			clk = clk_register_fixed_factor(NULL, d->name,
 							parent_name, 0,
-							d->mul, d->div);
+							d->ffc.mul,
+							d->ffc.div);
 			break;
 		case K_GATE:
 			clk = r9a06g032_register_gate(clocks, parent_name, d);

@@ -424,7 +424,7 @@ static int jit_repipe_code_load(struct jit_buf_desc *jd, union jr_entry *jr)
 {
 	struct perf_sample sample;
 	union perf_event *event;
-	struct perf_tool *tool = jd->session->tool;
+	const struct perf_tool *tool = jd->session->tool;
 	uint64_t code, addr;
 	uintptr_t uaddr;
 	char *filename;
@@ -543,7 +543,7 @@ static int jit_repipe_code_move(struct jit_buf_desc *jd, union jr_entry *jr)
 {
 	struct perf_sample sample;
 	union perf_event *event;
-	struct perf_tool *tool = jd->session->tool;
+	const struct perf_tool *tool = jd->session->tool;
 	char *filename;
 	size_t size;
 	struct stat st;
@@ -675,6 +675,7 @@ jit_repipe_unwinding_info(struct jit_buf_desc *jd, union jr_entry *jr)
 	jd->eh_frame_hdr_size = jr->unwinding.eh_frame_hdr_size;
 	jd->unwinding_size = jr->unwinding.unwinding_size;
 	jd->unwinding_mapped_size = jr->unwinding.mapped_size;
+	free(jd->unwinding_data);
 	jd->unwinding_data = unwinding_data;
 
 	return 0;
@@ -709,7 +710,7 @@ jit_process_dump(struct jit_buf_desc *jd)
 }
 
 static int
-jit_inject(struct jit_buf_desc *jd, char *path)
+jit_inject(struct jit_buf_desc *jd, const char *path)
 {
 	int ret;
 
@@ -736,7 +737,7 @@ jit_inject(struct jit_buf_desc *jd, char *path)
  * as captured in the RECORD_MMAP record
  */
 static int
-jit_detect(char *mmap_name, pid_t pid, struct nsinfo *nsi)
+jit_detect(const char *mmap_name, pid_t pid, struct nsinfo *nsi, bool *in_pidns)
  {
 	char *p;
 	char *end = NULL;
@@ -772,11 +773,16 @@ jit_detect(char *mmap_name, pid_t pid, struct nsinfo *nsi)
 	if (!end)
 		return -1;
 
+	*in_pidns = pid == nsinfo__nstgid(nsi);
 	/*
 	 * pid does not match mmap pid
 	 * pid==0 in system-wide mode (synthesized)
+	 *
+	 * If the pid in the file name is equal to the nstgid, then
+	 * the agent ran inside a container and perf outside the
+	 * container, so record it for further use in jit_inject().
 	 */
-	if (pid && pid2 != nsinfo__nstgid(nsi))
+	if (pid && !(pid2 == pid || *in_pidns))
 		return -1;
 	/*
 	 * validate suffix
@@ -820,7 +826,7 @@ int
 jit_process(struct perf_session *session,
 	    struct perf_data *output,
 	    struct machine *machine,
-	    char *filename,
+	    const char *filename,
 	    pid_t pid,
 	    pid_t tid,
 	    u64 *nbytes)
@@ -829,6 +835,7 @@ jit_process(struct perf_session *session,
 	struct nsinfo *nsi;
 	struct evsel *first;
 	struct jit_buf_desc jd;
+	bool in_pidns = false;
 	int ret;
 
 	thread = machine__findnew_thread(machine, pid, tid);
@@ -843,7 +850,7 @@ jit_process(struct perf_session *session,
 	/*
 	 * first, detect marker mmap (i.e., the jitdump mmap)
 	 */
-	if (jit_detect(filename, pid, nsi)) {
+	if (jit_detect(filename, pid, nsi, &in_pidns)) {
 		nsinfo__put(nsi);
 
 		/*
@@ -864,6 +871,9 @@ jit_process(struct perf_session *session,
 	jd.output  = output;
 	jd.machine = machine;
 	jd.nsi = nsi;
+
+	if (in_pidns)
+		nsinfo__set_in_pidns(nsi);
 
 	/*
 	 * track sample_type to compute id_all layout

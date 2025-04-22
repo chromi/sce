@@ -107,6 +107,7 @@ struct smu_13_0_dpm_context {
 	struct smu_13_0_dpm_tables  dpm_tables;
 	uint32_t                    workload_policy_mask;
 	uint32_t                    dcef_min_ds_clk;
+	uint64_t                    caps;
 };
 
 enum smu_13_0_power_state {
@@ -210,14 +211,7 @@ int smu_v13_0_set_azalia_d3_pme(struct smu_context *smu);
 int smu_v13_0_get_max_sustainable_clocks_by_dc(struct smu_context *smu,
 					       struct pp_smu_nv_clock_table *max_clocks);
 
-int smu_v13_0_baco_set_armd3_sequence(struct smu_context *smu,
-				      enum smu_baco_seq baco_seq);
-
-bool smu_v13_0_baco_is_support(struct smu_context *smu);
-
-enum smu_baco_state smu_v13_0_baco_get_state(struct smu_context *smu);
-
-int smu_v13_0_baco_set_state(struct smu_context *smu, enum smu_baco_state state);
+int smu_v13_0_get_bamaco_support(struct smu_context *smu);
 
 int smu_v13_0_baco_enter(struct smu_context *smu);
 int smu_v13_0_baco_exit(struct smu_context *smu);
@@ -226,7 +220,7 @@ int smu_v13_0_get_dpm_ultimate_freq(struct smu_context *smu, enum smu_clk_type c
 				    uint32_t *min, uint32_t *max);
 
 int smu_v13_0_set_soft_freq_limited_range(struct smu_context *smu, enum smu_clk_type clk_type,
-					  uint32_t min, uint32_t max);
+					  uint32_t min, uint32_t max, bool automatic);
 
 int smu_v13_0_set_hard_freq_limited_range(struct smu_context *smu,
 					  enum smu_clk_type clk_type,
@@ -262,7 +256,8 @@ int smu_v13_0_wait_for_event(struct smu_context *smu, enum smu_event_type event,
 			     uint64_t event_arg);
 
 int smu_v13_0_set_vcn_enable(struct smu_context *smu,
-			     bool enable);
+			      bool enable,
+			      int inst);
 
 int smu_v13_0_set_jpeg_enable(struct smu_context *smu,
 			      bool enable);
@@ -296,8 +291,20 @@ int smu_v13_0_get_pptable_from_firmware(struct smu_context *smu,
 					uint32_t pptable_id);
 
 int smu_v13_0_update_pcie_parameters(struct smu_context *smu,
-				     uint32_t pcie_gen_cap,
-				     uint32_t pcie_width_cap);
+				     uint8_t pcie_gen_cap,
+				     uint8_t pcie_width_cap);
 
+int smu_v13_0_disable_pmfw_state(struct smu_context *smu);
+
+int smu_v13_0_enable_uclk_shadow(struct smu_context *smu, bool enable);
+
+int smu_v13_0_set_wbrf_exclusion_ranges(struct smu_context *smu,
+						 struct freq_band_range *exclusion_ranges);
+
+int smu_v13_0_get_boot_freq_by_index(struct smu_context *smu,
+				     enum smu_clk_type clk_type,
+				     uint32_t *value);
+
+void smu_v13_0_interrupt_work(struct smu_context *smu);
 #endif
 #endif

@@ -199,7 +199,7 @@ static const struct net_device_ops netdev_ops = {
 	.ndo_start_xmit = spl2sw_ethernet_start_xmit,
 	.ndo_set_rx_mode = spl2sw_ethernet_set_rx_mode,
 	.ndo_set_mac_address = spl2sw_ethernet_set_mac_address,
-	.ndo_do_ioctl = phy_do_ioctl,
+	.ndo_eth_ioctl = phy_do_ioctl,
 	.ndo_tx_timeout = spl2sw_ethernet_tx_timeout,
 };
 
@@ -511,7 +511,7 @@ out_clk_disable:
 	return ret;
 }
 
-static int spl2sw_remove(struct platform_device *pdev)
+static void spl2sw_remove(struct platform_device *pdev)
 {
 	struct spl2sw_common *comm;
 	int i;
@@ -538,8 +538,6 @@ static int spl2sw_remove(struct platform_device *pdev)
 	spl2sw_mdio_remove(comm);
 
 	clk_disable_unprepare(comm->clk);
-
-	return 0;
 }
 
 static const struct of_device_id spl2sw_of_match[] = {

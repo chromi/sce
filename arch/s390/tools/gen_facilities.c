@@ -46,6 +46,7 @@ static struct facility_def facility_defs[] = {
 #endif
 #ifdef CONFIG_HAVE_MARCH_Z13_FEATURES
 			53, /* load-and-zero-rightmost-byte, etc. */
+			129, /* vector */
 #endif
 #ifdef CONFIG_HAVE_MARCH_Z14_FEATURES
 			58, /* miscellaneous-instruction-extension 2 */
@@ -108,10 +109,12 @@ static struct facility_def facility_defs[] = {
 			15, /* AP Facilities Test */
 			156, /* etoken facility */
 			165, /* nnpa facility */
+			170, /* ineffective-nonconstrained-transaction facility */
 			193, /* bear enhancement facility */
 			194, /* rdp enhancement facility */
 			196, /* processor activity instrumentation facility */
 			197, /* processor activity instrumentation extension 1 */
+			201, /* concurrent-functions facility */
 			-1  /* END */
 		}
 	},

@@ -12,22 +12,6 @@
 #include <crypto/hash.h>
 
 struct ahash_request;
-struct scatterlist;
-
-struct crypto_hash_walk {
-	char *data;
-
-	unsigned int offset;
-	unsigned int alignmask;
-
-	struct page *pg;
-	unsigned int entrylen;
-
-	unsigned int total;
-	struct scatterlist *sg;
-
-	unsigned int flags;
-};
 
 struct ahash_instance {
 	void (*free)(struct ahash_instance *inst);
@@ -59,15 +43,6 @@ struct crypto_shash_spawn {
 	struct crypto_spawn base;
 };
 
-int crypto_hash_walk_done(struct crypto_hash_walk *walk, int err);
-int crypto_hash_walk_first(struct ahash_request *req,
-			   struct crypto_hash_walk *walk);
-
-static inline int crypto_hash_walk_last(struct crypto_hash_walk *walk)
-{
-	return !(walk->entrylen | walk->total);
-}
-
 int crypto_register_ahash(struct ahash_alg *alg);
 void crypto_unregister_ahash(struct ahash_alg *alg);
 int crypto_register_ahashes(struct ahash_alg *algs, int count);
@@ -88,8 +63,6 @@ static inline bool crypto_shash_alg_needs_key(struct shash_alg *alg)
 	return crypto_shash_alg_has_setkey(alg) &&
 		!(alg->base.cra_flags & CRYPTO_ALG_OPTIONAL_KEY);
 }
-
-bool crypto_hash_alg_has_setkey(struct hash_alg_common *halg);
 
 int crypto_grab_ahash(struct crypto_ahash_spawn *spawn,
 		      struct crypto_instance *inst,
@@ -267,11 +240,6 @@ static inline struct crypto_shash *crypto_spawn_shash(
 	struct crypto_shash_spawn *spawn)
 {
 	return crypto_spawn_tfm2(&spawn->base);
-}
-
-static inline void *crypto_shash_ctx_aligned(struct crypto_shash *tfm)
-{
-	return crypto_tfm_ctx_aligned(&tfm->base);
 }
 
 static inline struct crypto_shash *__crypto_shash_cast(struct crypto_tfm *tfm)

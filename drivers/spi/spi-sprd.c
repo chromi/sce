@@ -578,7 +578,7 @@ static void sprd_spi_dma_release(struct sprd_spi *ss)
 static int sprd_spi_dma_txrx_bufs(struct spi_device *sdev,
 				  struct spi_transfer *t)
 {
-	struct sprd_spi *ss = spi_master_get_devdata(sdev->master);
+	struct sprd_spi *ss = spi_controller_get_devdata(sdev->controller);
 	u32 trans_len = ss->trans_len;
 	int ret, write_size = 0;
 
@@ -728,7 +728,7 @@ static int sprd_spi_setup_transfer(struct spi_device *sdev,
 	if (ret)
 		return ret;
 
-	/* Set tansfer speed and valid bits */
+	/* Set transfer speed and valid bits */
 	sprd_spi_set_speed(ss, t->speed_hz);
 	sprd_spi_set_transfer_bits(ss, bits_per_word);
 
@@ -923,7 +923,7 @@ static int sprd_spi_probe(struct platform_device *pdev)
 	int ret;
 
 	pdev->id = of_alias_get_id(pdev->dev.of_node, "spi");
-	sctlr = spi_alloc_master(&pdev->dev, sizeof(*ss));
+	sctlr = spi_alloc_host(&pdev->dev, sizeof(*ss));
 	if (!sctlr)
 		return -ENOMEM;
 
@@ -1072,7 +1072,7 @@ static struct platform_driver sprd_spi_driver = {
 		.pm = &sprd_spi_pm_ops,
 	},
 	.probe = sprd_spi_probe,
-	.remove_new = sprd_spi_remove,
+	.remove = sprd_spi_remove,
 };
 
 module_platform_driver(sprd_spi_driver);

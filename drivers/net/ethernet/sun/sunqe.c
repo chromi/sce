@@ -933,7 +933,7 @@ static int qec_sbus_probe(struct platform_device *op)
 	return qec_ether_init(op);
 }
 
-static int qec_sbus_remove(struct platform_device *op)
+static void qec_sbus_remove(struct platform_device *op)
 {
 	struct sunqe *qp = platform_get_drvdata(op);
 	struct net_device *net_dev = qp->dev;
@@ -948,8 +948,6 @@ static int qec_sbus_remove(struct platform_device *op)
 			  qp->buffers, qp->buffers_dvma);
 
 	free_netdev(net_dev);
-
-	return 0;
 }
 
 static const struct of_device_id qec_sbus_match[] = {

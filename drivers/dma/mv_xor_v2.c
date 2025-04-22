@@ -175,7 +175,7 @@ struct mv_xor_v2_device {
  * struct mv_xor_v2_sw_desc - implements a xor SW descriptor
  * @idx: descriptor index
  * @async_tx: support for the async_tx api
- * @hw_desc: assosiated HW descriptor
+ * @hw_desc: associated HW descriptor
  * @free_list: node of the free SW descriprots list
 */
 struct mv_xor_v2_sw_desc {
@@ -635,7 +635,7 @@ static int mv_xor_v2_descq_init(struct mv_xor_v2_device *xor_dev)
 	writel(MV_XOR_V2_DESC_NUM,
 	       xor_dev->dma_base + MV_XOR_V2_DMA_DESQ_SIZE_OFF);
 
-	/* write the DESQ address to the DMA enngine*/
+	/* write the DESQ address to the DMA engine*/
 	writel(lower_32_bits(xor_dev->hw_desq),
 	       xor_dev->dma_base + MV_XOR_V2_DMA_DESQ_BALR_OFF);
 	writel(upper_32_bits(xor_dev->hw_desq),
@@ -747,8 +747,8 @@ static int mv_xor_v2_probe(struct platform_device *pdev)
 	if (IS_ERR(xor_dev->clk))
 		return PTR_ERR(xor_dev->clk);
 
-	ret = platform_msi_domain_alloc_irqs(&pdev->dev, 1,
-					     mv_xor_v2_set_msi_msg);
+	ret = platform_device_msi_init_and_alloc_irqs(&pdev->dev, 1,
+						      mv_xor_v2_set_msi_msg);
 	if (ret)
 		return ret;
 
@@ -851,11 +851,11 @@ free_hw_desq:
 			  xor_dev->desc_size * MV_XOR_V2_DESC_NUM,
 			  xor_dev->hw_desq_virt, xor_dev->hw_desq);
 free_msi_irqs:
-	platform_msi_domain_free_irqs(&pdev->dev);
+	platform_device_msi_free_irqs_all(&pdev->dev);
 	return ret;
 }
 
-static int mv_xor_v2_remove(struct platform_device *pdev)
+static void mv_xor_v2_remove(struct platform_device *pdev)
 {
 	struct mv_xor_v2_device *xor_dev = platform_get_drvdata(pdev);
 
@@ -867,11 +867,9 @@ static int mv_xor_v2_remove(struct platform_device *pdev)
 
 	devm_free_irq(&pdev->dev, xor_dev->irq, xor_dev);
 
-	platform_msi_domain_free_irqs(&pdev->dev);
+	platform_device_msi_free_irqs_all(&pdev->dev);
 
 	tasklet_kill(&xor_dev->irq_tasklet);
-
-	return 0;
 }
 
 #ifdef CONFIG_OF

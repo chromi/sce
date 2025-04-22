@@ -1234,7 +1234,7 @@ static int bigmac_sbus_probe(struct platform_device *op)
 	return bigmac_ether_init(op, qec_op);
 }
 
-static int bigmac_sbus_remove(struct platform_device *op)
+static void bigmac_sbus_remove(struct platform_device *op)
 {
 	struct bigmac *bp = platform_get_drvdata(op);
 	struct device *parent = op->dev.parent;
@@ -1255,8 +1255,6 @@ static int bigmac_sbus_remove(struct platform_device *op)
 			  bp->bblock_dvma);
 
 	free_netdev(net_dev);
-
-	return 0;
 }
 
 static const struct of_device_id bigmac_sbus_match[] = {

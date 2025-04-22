@@ -3,8 +3,10 @@
  * Copyright 2019 NXP.
  */
 
+#include <drm/clients/drm_client_setup.h>
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
+#include <drm/drm_bridge.h>
 #include <drm/drm_bridge_connector.h>
 #include <drm/drm_drv.h>
 #include <drm/drm_fbdev_dma.h>
@@ -28,10 +30,10 @@ static const struct drm_mode_config_funcs dcss_drm_mode_config_funcs = {
 static const struct drm_driver dcss_kms_driver = {
 	.driver_features	= DRIVER_MODESET | DRIVER_GEM | DRIVER_ATOMIC,
 	DRM_GEM_DMA_DRIVER_OPS,
+	DRM_FBDEV_DMA_DRIVER_OPS,
 	.fops			= &dcss_cma_fops,
 	.name			= "imx-dcss",
 	.desc			= "i.MX8MQ Display Subsystem",
-	.date			= "20190917",
 	.major			= 1,
 	.minor			= 0,
 	.patchlevel		= 0,
@@ -145,7 +147,7 @@ struct dcss_kms_dev *dcss_kms_attach(struct dcss_dev *dcss)
 	if (ret)
 		goto cleanup_crtc;
 
-	drm_fbdev_dma_setup(drm, 32);
+	drm_client_setup(drm, NULL);
 
 	return kms;
 
@@ -171,4 +173,11 @@ void dcss_kms_detach(struct dcss_kms_dev *kms)
 	drm_mode_config_cleanup(drm);
 	dcss_crtc_deinit(&kms->crtc, drm);
 	drm->dev_private = NULL;
+}
+
+void dcss_kms_shutdown(struct dcss_kms_dev *kms)
+{
+	struct drm_device *drm = &kms->base;
+
+	drm_atomic_helper_shutdown(drm);
 }

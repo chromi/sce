@@ -1156,7 +1156,7 @@ err_get_sync:
 	return ret;
 }
 
-static int cppi41_dma_remove(struct platform_device *pdev)
+static void cppi41_dma_remove(struct platform_device *pdev)
 {
 	struct cppi41_dd *cdd = platform_get_drvdata(pdev);
 	int error;
@@ -1173,7 +1173,6 @@ static int cppi41_dma_remove(struct platform_device *pdev)
 	pm_runtime_dont_use_autosuspend(&pdev->dev);
 	pm_runtime_put_sync(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
-	return 0;
 }
 
 static int __maybe_unused cppi41_suspend(struct device *dev)
@@ -1253,5 +1252,6 @@ static struct platform_driver cpp41_dma_driver = {
 };
 
 module_platform_driver(cpp41_dma_driver);
+MODULE_DESCRIPTION("Texas Instruments CPPI 4.1 DMA support");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Sebastian Andrzej Siewior <bigeasy@linutronix.de>");

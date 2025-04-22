@@ -213,13 +213,16 @@ config HID_CHICONY
 config HID_CORSAIR
 	tristate "Corsair devices"
 	depends on USB_HID && LEDS_CLASS
+	select POWER_SUPPLY
 	help
 	Support for Corsair devices that are not fully compliant with the
 	HID standard.
+	Support for Corsair Void headsets.
 
 	Supported devices:
 	- Vengeance K90
 	- Scimitar PRO RGB
+	- Corsair Void headsets
 
 config HID_COUGAR
 	tristate "Cougar devices"
@@ -404,6 +407,12 @@ config HID_VIVALDI_COMMON
 	  option so that drivers can use common code to parse the HID
 	  descriptors for vivaldi function row keymap.
 
+config HID_GOODIX_SPI
+	tristate "Goodix GT7986U SPI HID touchscreen"
+	depends on SPI_MASTER
+	help
+	  Support for Goodix GT7986U SPI HID touchscreen device.
+
 config HID_GOOGLE_HAMMER
 	tristate "Google Hammer Keyboard"
 	select HID_VIVALDI_COMMON
@@ -458,6 +467,15 @@ config HID_KYE
 	- EasyPen i405X tablet
 	- MousePen i608X tablet
 	- EasyPen M610X tablet
+
+config HID_KYSONA
+	tristate "Kysona devices"
+	depends on USB_HID
+	help
+	Support for Kysona mice.
+
+	Say Y here if you have a Kysona M600 mouse
+	and want to be able to read its battery capacity.
 
 config HID_UCLOGIC
 	tristate "UC-Logic"
@@ -552,6 +570,8 @@ config HID_LED
 
 config HID_LENOVO
 	tristate "Lenovo / Thinkpad devices"
+	depends on ACPI
+	select ACPI_PLATFORM_PROFILE
 	select NEW_LEDS
 	select LEDS_CLASS
 	help
@@ -761,14 +781,15 @@ config HID_MULTITOUCH
 	  module will be called hid-multitouch.
 
 config HID_NINTENDO
-	tristate "Nintendo Joy-Con and Pro Controller support"
+	tristate "Nintendo Joy-Con, NSO, and Pro Controller support"
 	depends on NEW_LEDS
 	depends on LEDS_CLASS
 	select POWER_SUPPLY
 	help
-	Adds support for the Nintendo Switch Joy-Cons and Pro Controller.
+	Adds support for the Nintendo Switch Joy-Cons, NSO, Pro Controller.
 	All controllers support bluetooth, and the Pro Controller also supports
-	its USB mode.
+	its USB mode. This also includes support for the Nintendo Switch Online
+	Controllers which include the NES, Genesis, SNES, and N64 controllers.
 
 	To compile this driver as a module, choose M here: the
 	module will be called hid-nintendo.
@@ -779,9 +800,9 @@ config NINTENDO_FF
 	select INPUT_FF_MEMLESS
 	help
 	Say Y here if you have a Nintendo Switch controller and want to enable
-	force feedback support for it. This works for both joy-cons and the pro
-	controller. For the pro controller, both rumble motors can be controlled
-	individually.
+	force feedback support for it. This works for both joy-cons, the pro
+	controller, and the NSO N64 controller. For the pro controller, both
+	rumble motors can be controlled individually.
 
 config HID_NTI
 	tristate "NTI keyboard adapters"
@@ -880,11 +901,7 @@ config HID_PICOLCD_FB
 	default !EXPERT
 	depends on HID_PICOLCD
 	depends on HID_PICOLCD=FB || FB=y
-	select FB_DEFERRED_IO
-	select FB_SYS_FILLRECT
-	select FB_SYS_COPYAREA
-	select FB_SYS_IMAGEBLIT
-	select FB_SYS_FOPS
+	select FB_SYSMEM_HELPERS_DEFERRED
 	help
 	  Provide access to PicoLCD's 256x64 monochrome display via a
 	  framebuffer device.
@@ -1046,7 +1063,7 @@ config HID_SONY
 	  * Guitar Hero PS3 and PC guitar dongles
 
 config SONY_FF
-	bool "Sony PS2/3/4 accessories force feedback support" 
+	bool "Sony PS2/3/4 accessories force feedback support"
 	depends on HID_SONY
 	select INPUT_FF_MEMLESS
 	help
@@ -1093,6 +1110,7 @@ config HID_RMI
 	select RMI4_F11
 	select RMI4_F12
 	select RMI4_F30
+	select RMI4_F3A
 	help
 	Support for Synaptics RMI4 touchpads.
 	Say Y here if you have a Synaptics RMI4 touchpads over i2c-hid or usbhid
@@ -1151,7 +1169,8 @@ config HID_TOPRE
 	tristate "Topre REALFORCE keyboards"
 	depends on HID
 	help
-	  Say Y for N-key rollover support on Topre REALFORCE R2 108/87 key keyboards.
+	  Say Y for N-key rollover support on Topre REALFORCE R2 108/87 key and
+          Topre REALFORCE R3S 87 key keyboards.
 
 config HID_THINGM
 	tristate "ThingM blink(1) USB RGB LED"
@@ -1239,6 +1258,22 @@ config HID_WIIMOTE
 	To compile this driver as a module, choose M here: the
 	module will be called hid-wiimote.
 
+config HID_WINWING
+	tristate "WinWing Orion2 throttle support"
+	depends on USB_HID
+	depends on NEW_LEDS
+	depends on LEDS_CLASS
+	help
+	  Support for WinWing Orion2 throttle base with the following grips:
+
+	    * TGRIP-16EX
+	    * TGRIP-18
+
+	  This driver enables all buttons and switches on the throttle base.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called hid-winwing.
+
 config HID_XINMO
 	tristate "Xin-Mo non-fully compliant devices"
 	help
@@ -1300,6 +1335,15 @@ config HID_ALPS
 	Say Y here if you have a Alps touchpads over i2c-hid or usbhid
 	and want support for its special functionalities.
 
+config HID_MCP2200
+	tristate "Microchip MCP2200 HID USB-to-GPIO bridge"
+	depends on USB_HID && GPIOLIB
+	help
+	  Provides GPIO functionality over USB-HID through MCP2200 device.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called hid-mcp2200.ko.
+
 config HID_MCP2221
 	tristate "Microchip MCP2221 HID USB-to-I2C/SMbus host support"
 	depends on USB_HID && I2C
@@ -1333,10 +1377,6 @@ endmenu
 
 source "drivers/hid/bpf/Kconfig"
 
-endif # HID
-
-source "drivers/hid/usbhid/Kconfig"
-
 source "drivers/hid/i2c-hid/Kconfig"
 
 source "drivers/hid/intel-ish-hid/Kconfig"
@@ -1344,5 +1384,13 @@ source "drivers/hid/intel-ish-hid/Kconfig"
 source "drivers/hid/amd-sfh-hid/Kconfig"
 
 source "drivers/hid/surface-hid/Kconfig"
+
+source "drivers/hid/intel-thc-hid/Kconfig"
+
+endif # HID
+
+# USB support may be used with HID disabled
+
+source "drivers/hid/usbhid/Kconfig"
 
 endif # HID_SUPPORT

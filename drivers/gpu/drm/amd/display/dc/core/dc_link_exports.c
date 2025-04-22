@@ -37,6 +37,9 @@
 #include "dce/dce_i2c.h"
 struct dc_link *dc_get_link_at_index(struct dc *dc, uint32_t link_index)
 {
+	if (link_index >= MAX_LINKS)
+		return NULL;
+
 	return dc->links[link_index];
 }
 
@@ -120,6 +123,14 @@ uint32_t dc_link_bandwidth_kbps(
 	const struct dc_link_settings *link_settings)
 {
 	return link->dc->link_srv->dp_link_bandwidth_kbps(link, link_settings);
+}
+
+uint32_t dc_link_required_hblank_size_bytes(
+	const struct dc_link *link,
+	struct dp_audio_bandwidth_params *audio_params)
+{
+	return link->dc->link_srv->dp_required_hblank_size_bytes(link,
+			audio_params);
 }
 
 void dc_get_cur_link_res_map(const struct dc *dc, uint32_t *map)
@@ -427,11 +438,10 @@ bool dc_link_get_backlight_level_nits(struct dc_link *link,
 }
 
 bool dc_link_set_backlight_level(const struct dc_link *link,
-		uint32_t backlight_pwm_u16_16,
-		uint32_t frame_ramp)
+		struct set_backlight_level_params *backlight_level_params)
 {
 	return link->dc->link_srv->edp_set_backlight_level(link,
-			backlight_pwm_u16_16, frame_ramp);
+			backlight_level_params);
 }
 
 bool dc_link_set_backlight_level_nits(struct dc_link *link,
@@ -467,6 +477,13 @@ bool dc_link_setup_psr(struct dc_link *link,
 	return link->dc->link_srv->edp_setup_psr(link, stream, psr_config, psr_context);
 }
 
+bool dc_link_set_replay_allow_active(struct dc_link *link, const bool *allow_active,
+		bool wait, bool force_static, const unsigned int *power_opts)
+{
+	return link->dc->link_srv->edp_set_replay_allow_active(link, allow_active, wait,
+			force_static, power_opts);
+}
+
 bool dc_link_get_replay_state(const struct dc_link *link, uint64_t *state)
 {
 	return link->dc->link_srv->edp_get_replay_state(link, state);
@@ -497,7 +514,7 @@ void dc_link_enable_hpd_filter(struct dc_link *link, bool enable)
 	link->dc->link_srv->enable_hpd_filter(link, enable);
 }
 
-bool dc_link_validate(struct dc *dc, const struct dc_stream_state *streams, const unsigned int count)
+bool dc_link_dp_dpia_validate(struct dc *dc, const struct dc_stream_state *streams, const unsigned int count)
 {
 	return dc->link_srv->validate_dpia_bandwidth(streams, count);
 }

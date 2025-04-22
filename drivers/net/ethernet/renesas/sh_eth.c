@@ -50,7 +50,7 @@
  * the macros available to do this only define GCC 8.
  */
 __diag_push();
-__diag_ignore(GCC, 8, "-Woverride-init",
+__diag_ignore_all("-Woverride-init",
 	      "logic to initialize all and then override some is OK");
 static const u16 sh_eth_offset_gigabit[SH_ETH_MAX_REGISTER_OFFSET] = {
 	SH_ETH_OFFSET_DEFAULTS,
@@ -2624,7 +2624,7 @@ static int sh_eth_change_mtu(struct net_device *ndev, int new_mtu)
 	if (netif_running(ndev))
 		return -EBUSY;
 
-	ndev->mtu = new_mtu;
+	WRITE_ONCE(ndev->mtu, new_mtu);
 	netdev_update_features(ndev);
 
 	return 0;
@@ -3431,7 +3431,7 @@ out_release:
 	return ret;
 }
 
-static int sh_eth_drv_remove(struct platform_device *pdev)
+static void sh_eth_drv_remove(struct platform_device *pdev)
 {
 	struct net_device *ndev = platform_get_drvdata(pdev);
 	struct sh_eth_private *mdp = netdev_priv(ndev);
@@ -3441,8 +3441,6 @@ static int sh_eth_drv_remove(struct platform_device *pdev)
 	sh_mdio_release(mdp);
 	pm_runtime_disable(&pdev->dev);
 	free_netdev(ndev);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM
@@ -3496,10 +3494,12 @@ static int sh_eth_suspend(struct device *dev)
 
 	netif_device_detach(ndev);
 
+	rtnl_lock();
 	if (mdp->wol_enabled)
 		ret = sh_eth_wol_setup(ndev);
 	else
 		ret = sh_eth_close(ndev);
+	rtnl_unlock();
 
 	return ret;
 }
@@ -3513,10 +3513,12 @@ static int sh_eth_resume(struct device *dev)
 	if (!netif_running(ndev))
 		return 0;
 
+	rtnl_lock();
 	if (mdp->wol_enabled)
 		ret = sh_eth_wol_restore(ndev);
 	else
 		ret = sh_eth_open(ndev);
+	rtnl_unlock();
 
 	if (ret < 0)
 		return ret;

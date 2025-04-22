@@ -63,7 +63,6 @@
 	status = "okay";
 	phy-mode = "rgmii";
 	phy-addr = <0xffffffff>;
-	snps,max-mtu = <0x0>;
 };
 
 &gmac1 {
@@ -80,8 +79,6 @@
 
 &mmc {
 	status = "okay";
-	altr,dw-mshc-ciu-div = <0x3>;
-	altr,dw-mshc-sdr-timing = <0x0 0x3>;
 	cap-sd-highspeed;
 	cap-mmc-highspeed;
 	broken-cd;

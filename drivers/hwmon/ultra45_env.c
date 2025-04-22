@@ -18,7 +18,7 @@
 
 #define DRV_MODULE_VERSION	"0.1"
 
-MODULE_AUTHOR("David S. Miller (davem@davemloft.net)");
+MODULE_AUTHOR("David S. Miller <davem@davemloft.net>");
 MODULE_DESCRIPTION("Ultra45 environmental monitor driver");
 MODULE_LICENSE("GPL");
 MODULE_VERSION(DRV_MODULE_VERSION);
@@ -291,7 +291,7 @@ out_iounmap:
 	goto out;
 }
 
-static int env_remove(struct platform_device *op)
+static void env_remove(struct platform_device *op)
 {
 	struct env *p = platform_get_drvdata(op);
 
@@ -300,8 +300,6 @@ static int env_remove(struct platform_device *op)
 		hwmon_device_unregister(p->hwmon_dev);
 		of_iounmap(&op->resource[0], p->regs, REG_SIZE);
 	}
-
-	return 0;
 }
 
 static const struct of_device_id env_match[] = {

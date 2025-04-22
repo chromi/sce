@@ -650,7 +650,7 @@ error:
  * and easier to preserve the name.
  */
 
-static struct ctl_table ocfs2_nm_table[] = {
+static const struct ctl_table ocfs2_nm_table[] = {
 	{
 		.procname	= "hb_ctl_path",
 		.data		= ocfs2_hb_ctl_path,
@@ -658,7 +658,6 @@ static struct ctl_table ocfs2_nm_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_dostring,
 	},
-	{ }
 };
 
 static struct ctl_table_header *ocfs2_table_header;

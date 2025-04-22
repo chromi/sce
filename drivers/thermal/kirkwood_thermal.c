@@ -90,14 +90,12 @@ static int kirkwood_thermal_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int kirkwood_thermal_exit(struct platform_device *pdev)
+static void kirkwood_thermal_exit(struct platform_device *pdev)
 {
 	struct thermal_zone_device *kirkwood_thermal =
 		platform_get_drvdata(pdev);
 
 	thermal_zone_device_unregister(kirkwood_thermal);
-
-	return 0;
 }
 
 MODULE_DEVICE_TABLE(of, kirkwood_thermal_id_table);

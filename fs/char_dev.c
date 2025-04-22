@@ -25,7 +25,7 @@
 
 #include "internal.h"
 
-static struct kobj_map *cdev_map;
+static struct kobj_map *cdev_map __ro_after_init;
 
 static DEFINE_MUTEX(chrdevs_lock);
 
@@ -350,7 +350,7 @@ static struct kobject *cdev_get(struct cdev *p)
 	struct module *owner = p->owner;
 	struct kobject *kobj;
 
-	if (owner && !try_module_get(owner))
+	if (!try_module_get(owner))
 		return NULL;
 	kobj = kobject_get_unless_zero(&p->kobj);
 	if (!kobj)
@@ -562,8 +562,8 @@ int cdev_device_add(struct cdev *cdev, struct device *dev)
 
 /**
  * cdev_device_del() - inverse of cdev_device_add
- * @dev: the device structure
  * @cdev: the cdev structure
+ * @dev: the device structure
  *
  * cdev_device_del() is a helper function to call cdev_del and device_del.
  * It should be used whenever cdev_device_add is used.

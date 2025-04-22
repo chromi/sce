@@ -584,7 +584,7 @@ static void sx150x_irq_print_chip(struct irq_data *d, struct seq_file *p)
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
 	struct sx150x_pinctrl *pctl = gpiochip_get_data(gc);
 
-	seq_printf(p, pctl->client->name);
+	seq_puts(p, pctl->client->name);
 }
 
 static const struct irq_chip sx150x_irq_chip = {
@@ -1105,7 +1105,7 @@ static const struct regmap_config sx150x_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 32,
 
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 
 	.reg_read = sx150x_regmap_reg_read,
 	.reg_write = sx150x_regmap_reg_write,
@@ -1116,7 +1116,6 @@ static const struct regmap_config sx150x_regmap_config = {
 
 static int sx150x_probe(struct i2c_client *client)
 {
-	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	static const u32 i2c_funcs = I2C_FUNC_SMBUS_BYTE_DATA |
 				     I2C_FUNC_SMBUS_WRITE_WORD_DATA;
 	struct device *dev = &client->dev;
@@ -1135,11 +1134,7 @@ static int sx150x_probe(struct i2c_client *client)
 	pctl->dev = dev;
 	pctl->client = client;
 
-	if (dev->of_node)
-		pctl->data = of_device_get_match_data(dev);
-	else
-		pctl->data = (struct sx150x_device_data *)id->driver_data;
-
+	pctl->data = i2c_get_match_data(client);
 	if (!pctl->data)
 		return -EINVAL;
 

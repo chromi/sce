@@ -801,7 +801,6 @@ static void meson_mmc_start_cmd(struct mmc_host *mmc, struct mmc_command *cmd)
 
 	cmd_cfg |= FIELD_PREP(CMD_CFG_CMD_INDEX_MASK, cmd->opcode);
 	cmd_cfg |= CMD_CFG_OWNER;  /* owned by CPU */
-	cmd_cfg |= CMD_CFG_ERROR; /* stop in case of error */
 
 	meson_mmc_set_response_bits(cmd, &cmd_cfg);
 
@@ -880,7 +879,7 @@ static void meson_mmc_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	/*
 	 * The memory at the end of the controller used as bounce buffer for
 	 * the dram_access_quirk only accepts 32bit read/write access,
-	 * check the aligment and length of the data before starting the request.
+	 * check the alignment and length of the data before starting the request.
 	 */
 	if (host->dram_access_quirk && mrq->data) {
 		mrq->cmd->error = meson_mmc_validate_dram_access(mmc, mrq->data);
@@ -1335,7 +1334,7 @@ MODULE_DEVICE_TABLE(of, meson_mmc_of_match);
 
 static struct platform_driver meson_mmc_driver = {
 	.probe		= meson_mmc_probe,
-	.remove_new	= meson_mmc_remove,
+	.remove		= meson_mmc_remove,
 	.driver		= {
 		.name = DRIVER_NAME,
 		.probe_type = PROBE_PREFER_ASYNCHRONOUS,

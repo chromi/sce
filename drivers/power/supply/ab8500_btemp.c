@@ -283,7 +283,7 @@ static void ab8500_btemp_periodic_work(struct work_struct *work)
 			dev_warn(di->dev, "failed to identify the battery\n");
 	}
 
-	/* Failover if a reading is erroneous, use last meausurement */
+	/* Failover if a reading is erroneous, use last measurement */
 	ret = thermal_zone_get_temp(di->tz, &bat_temp);
 	if (ret) {
 		dev_err(di->dev, "error reading temperature\n");
@@ -540,10 +540,9 @@ static int ab8500_btemp_get_property(struct power_supply *psy,
 	return 0;
 }
 
-static int ab8500_btemp_get_ext_psy_data(struct device *dev, void *data)
+static int ab8500_btemp_get_ext_psy_data(struct power_supply *ext, void *data)
 {
 	struct power_supply *psy;
-	struct power_supply *ext = dev_get_drvdata(dev);
 	const char **supplicants = (const char **)ext->supplied_to;
 	struct ab8500_btemp *di;
 	union power_supply_propval ret;
@@ -617,8 +616,7 @@ static int ab8500_btemp_get_ext_psy_data(struct device *dev, void *data)
  */
 static void ab8500_btemp_external_power_changed(struct power_supply *psy)
 {
-	class_for_each_device(power_supply_class, NULL, psy,
-			      ab8500_btemp_get_ext_psy_data);
+	power_supply_for_each_psy(psy, ab8500_btemp_get_ext_psy_data);
 }
 
 /* ab8500 btemp driver interrupts and their respective isr */
@@ -804,11 +802,9 @@ static int ab8500_btemp_probe(struct platform_device *pdev)
 	return component_add(dev, &ab8500_btemp_component_ops);
 }
 
-static int ab8500_btemp_remove(struct platform_device *pdev)
+static void ab8500_btemp_remove(struct platform_device *pdev)
 {
 	component_del(&pdev->dev, &ab8500_btemp_component_ops);
-
-	return 0;
 }
 
 static SIMPLE_DEV_PM_OPS(ab8500_btemp_pm_ops, ab8500_btemp_suspend, ab8500_btemp_resume);

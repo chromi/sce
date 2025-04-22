@@ -19,7 +19,6 @@
 #include <linux/init.h>
 #include <linux/mm.h>
 #include <linux/proc_fs.h>
-#include <linux/screen_info.h>
 #include <linux/kernel.h>
 #include <linux/percpu.h>
 #include <linux/reboot.h>
@@ -49,17 +48,6 @@
 #include <asm/timex.h>
 #include <asm/traps.h>
 
-#if defined(CONFIG_VGA_CONSOLE) || defined(CONFIG_DUMMY_CONSOLE)
-struct screen_info screen_info = {
-	.orig_x = 0,
-	.orig_y = 24,
-	.orig_video_cols = 80,
-	.orig_video_lines = 24,
-	.orig_video_isVGA = 1,
-	.orig_video_points = 16,
-};
-#endif
-
 #ifdef CONFIG_BLK_DEV_INITRD
 extern unsigned long initrd_start;
 extern unsigned long initrd_end;
@@ -67,7 +55,7 @@ extern int initrd_below_start_ok;
 #endif
 
 #ifdef CONFIG_USE_OF
-void *dtb_start = __dtb_start;
+static void *dtb_start __initdata = __dtb_start;
 #endif
 
 extern unsigned long loops_per_jiffy;
@@ -228,7 +216,7 @@ static int __init xtensa_dt_io_area(unsigned long node, const char *uname,
 
 void __init early_init_devtree(void *params)
 {
-	early_init_dt_scan(params);
+	early_init_dt_scan(params, __pa(params));
 	of_scan_flat_dt(xtensa_dt_io_area, NULL);
 
 	if (!command_line[0])

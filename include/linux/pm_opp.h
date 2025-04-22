@@ -16,6 +16,7 @@
 #include <linux/notifier.h>
 
 struct clk;
+struct cpufreq_frequency_table;
 struct regulator;
 struct dev_pm_opp;
 struct device;
@@ -45,18 +46,6 @@ struct dev_pm_opp_supply {
 	unsigned long u_watt;
 };
 
-/**
- * struct dev_pm_opp_icc_bw - Interconnect bandwidth values
- * @avg:	Average bandwidth corresponding to this OPP (in icc units)
- * @peak:	Peak bandwidth corresponding to this OPP (in icc units)
- *
- * This structure stores the bandwidth values for a single interconnect path.
- */
-struct dev_pm_opp_icc_bw {
-	u32 avg;
-	u32 peak;
-};
-
 typedef int (*config_regulators_t)(struct device *dev,
 			struct dev_pm_opp *old_opp, struct dev_pm_opp *new_opp,
 			struct regulator **regulators, unsigned int count);
@@ -73,9 +62,8 @@ typedef int (*config_clks_t)(struct device *dev, struct opp_table *opp_table,
  * @supported_hw: Array of hierarchy of versions to match.
  * @supported_hw_count: Number of elements in the array.
  * @regulator_names: Array of pointers to the names of the regulator, NULL terminated.
- * @genpd_names: Null terminated array of pointers containing names of genpd to
- *		 attach.
- * @virt_devs: Pointer to return the array of virtual devices.
+ * @required_dev: The required OPP device.
+ * @required_dev_index: The index of the required OPP for the @required_dev.
  *
  * This structure contains platform specific OPP configurations for the device.
  */
@@ -88,14 +76,34 @@ struct dev_pm_opp_config {
 	const unsigned int *supported_hw;
 	unsigned int supported_hw_count;
 	const char * const *regulator_names;
-	const char * const *genpd_names;
-	struct device ***virt_devs;
+	struct device *required_dev;
+	unsigned int required_dev_index;
+};
+
+#define OPP_LEVEL_UNSET			U32_MAX
+
+/**
+ * struct dev_pm_opp_data - The data to use to initialize an OPP.
+ * @turbo: Flag to indicate whether the OPP is to be marked turbo or not.
+ * @level: The performance level for the OPP. Set level to OPP_LEVEL_UNSET if
+ * level field isn't used.
+ * @freq: The clock rate in Hz for the OPP.
+ * @u_volt: The voltage in uV for the OPP.
+ */
+struct dev_pm_opp_data {
+	bool turbo;
+	unsigned int level;
+	unsigned long freq;
+	unsigned long u_volt;
 };
 
 #if defined(CONFIG_PM_OPP)
 
 struct opp_table *dev_pm_opp_get_opp_table(struct device *dev);
+void dev_pm_opp_get_opp_table_ref(struct opp_table *opp_table);
 void dev_pm_opp_put_opp_table(struct opp_table *opp_table);
+
+unsigned long dev_pm_opp_get_bw(struct dev_pm_opp *opp, bool peak, int index);
 
 unsigned long dev_pm_opp_get_voltage(struct dev_pm_opp *opp);
 
@@ -144,16 +152,20 @@ struct dev_pm_opp *dev_pm_opp_find_level_exact(struct device *dev,
 struct dev_pm_opp *dev_pm_opp_find_level_ceil(struct device *dev,
 					      unsigned int *level);
 
+struct dev_pm_opp *dev_pm_opp_find_level_floor(struct device *dev,
+					       unsigned int *level);
+
 struct dev_pm_opp *dev_pm_opp_find_bw_ceil(struct device *dev,
 					   unsigned int *bw, int index);
 
 struct dev_pm_opp *dev_pm_opp_find_bw_floor(struct device *dev,
 					   unsigned int *bw, int index);
 
+void dev_pm_opp_get(struct dev_pm_opp *opp);
 void dev_pm_opp_put(struct dev_pm_opp *opp);
 
-int dev_pm_opp_add(struct device *dev, unsigned long freq,
-		   unsigned long u_volt);
+int dev_pm_opp_add_dynamic(struct device *dev, struct dev_pm_opp_data *opp);
+
 void dev_pm_opp_remove(struct device *dev, unsigned long freq);
 void dev_pm_opp_remove_all_dynamic(struct device *dev);
 
@@ -195,7 +207,14 @@ static inline struct opp_table *dev_pm_opp_get_opp_table_indexed(struct device *
 	return ERR_PTR(-EOPNOTSUPP);
 }
 
+static inline void dev_pm_opp_get_opp_table_ref(struct opp_table *opp_table) {}
+
 static inline void dev_pm_opp_put_opp_table(struct opp_table *opp_table) {}
+
+static inline unsigned long dev_pm_opp_get_bw(struct dev_pm_opp *opp, bool peak, int index)
+{
+	return 0;
+}
 
 static inline unsigned long dev_pm_opp_get_voltage(struct dev_pm_opp *opp)
 {
@@ -308,6 +327,12 @@ static inline struct dev_pm_opp *dev_pm_opp_find_level_ceil(struct device *dev,
 	return ERR_PTR(-EOPNOTSUPP);
 }
 
+static inline struct dev_pm_opp *dev_pm_opp_find_level_floor(struct device *dev,
+							     unsigned int *level)
+{
+	return ERR_PTR(-EOPNOTSUPP);
+}
+
 static inline struct dev_pm_opp *dev_pm_opp_find_bw_ceil(struct device *dev,
 					unsigned int *bw, int index)
 {
@@ -320,10 +345,12 @@ static inline struct dev_pm_opp *dev_pm_opp_find_bw_floor(struct device *dev,
 	return ERR_PTR(-EOPNOTSUPP);
 }
 
+static inline void dev_pm_opp_get(struct dev_pm_opp *opp) {}
+
 static inline void dev_pm_opp_put(struct dev_pm_opp *opp) {}
 
-static inline int dev_pm_opp_add(struct device *dev, unsigned long freq,
-					unsigned long u_volt)
+static inline int
+dev_pm_opp_add_dynamic(struct device *dev, struct dev_pm_opp_data *opp)
 {
 	return -EOPNOTSUPP;
 }
@@ -429,6 +456,21 @@ static inline int dev_pm_opp_sync_regulators(struct device *dev)
 
 #endif		/* CONFIG_PM_OPP */
 
+#if defined(CONFIG_CPU_FREQ) && defined(CONFIG_PM_OPP)
+int dev_pm_opp_init_cpufreq_table(struct device *dev, struct cpufreq_frequency_table **table);
+void dev_pm_opp_free_cpufreq_table(struct device *dev, struct cpufreq_frequency_table **table);
+#else
+static inline int dev_pm_opp_init_cpufreq_table(struct device *dev, struct cpufreq_frequency_table **table)
+{
+	return -EINVAL;
+}
+
+static inline void dev_pm_opp_free_cpufreq_table(struct device *dev, struct cpufreq_frequency_table **table)
+{
+}
+#endif
+
+
 #if defined(CONFIG_PM_OPP) && defined(CONFIG_OF)
 int dev_pm_opp_of_add_table(struct device *dev);
 int dev_pm_opp_of_add_table_indexed(struct device *dev, int index);
@@ -441,8 +483,11 @@ int dev_pm_opp_of_get_sharing_cpus(struct device *cpu_dev, struct cpumask *cpuma
 struct device_node *dev_pm_opp_of_get_opp_desc_node(struct device *dev);
 struct device_node *dev_pm_opp_get_of_node(struct dev_pm_opp *opp);
 int of_get_required_opp_performance_state(struct device_node *np, int index);
+bool dev_pm_opp_of_has_required_opp(struct device *dev);
 int dev_pm_opp_of_find_icc_paths(struct device *dev, struct opp_table *opp_table);
 int dev_pm_opp_of_register_em(struct device *dev, struct cpumask *cpus);
+int dev_pm_opp_calc_power(struct device *dev, unsigned long *uW,
+			  unsigned long *kHz);
 static inline void dev_pm_opp_of_unregister_em(struct device *dev)
 {
 	em_dev_unregister_perf_domain(dev);
@@ -506,9 +551,20 @@ static inline void dev_pm_opp_of_unregister_em(struct device *dev)
 {
 }
 
+static inline int dev_pm_opp_calc_power(struct device *dev, unsigned long *uW,
+					unsigned long *kHz)
+{
+	return -EOPNOTSUPP;
+}
+
 static inline int of_get_required_opp_performance_state(struct device_node *np, int index)
 {
 	return -EOPNOTSUPP;
+}
+
+static inline bool dev_pm_opp_of_has_required_opp(struct device *dev)
+{
+	return false;
 }
 
 static inline int dev_pm_opp_of_find_icc_paths(struct device *dev, struct opp_table *opp_table)
@@ -518,6 +574,17 @@ static inline int dev_pm_opp_of_find_icc_paths(struct device *dev, struct opp_ta
 #endif
 
 /* OPP Configuration helpers */
+
+static inline int dev_pm_opp_add(struct device *dev, unsigned long freq,
+				 unsigned long u_volt)
+{
+	struct dev_pm_opp_data data = {
+		.freq = freq,
+		.u_volt = u_volt,
+	};
+
+	return dev_pm_opp_add_dynamic(dev, &data);
+}
 
 /* Regulators helpers */
 static inline int dev_pm_opp_set_regulators(struct device *dev,
@@ -615,36 +682,6 @@ static inline int dev_pm_opp_set_config_regulators(struct device *dev,
 static inline void dev_pm_opp_put_config_regulators(int token)
 {
 	dev_pm_opp_clear_config(token);
-}
-
-/* genpd helpers */
-static inline int dev_pm_opp_attach_genpd(struct device *dev,
-					  const char * const *names,
-					  struct device ***virt_devs)
-{
-	struct dev_pm_opp_config config = {
-		.genpd_names = names,
-		.virt_devs = virt_devs,
-	};
-
-	return dev_pm_opp_set_config(dev, &config);
-}
-
-static inline void dev_pm_opp_detach_genpd(int token)
-{
-	dev_pm_opp_clear_config(token);
-}
-
-static inline int devm_pm_opp_attach_genpd(struct device *dev,
-					   const char * const *names,
-					   struct device ***virt_devs)
-{
-	struct dev_pm_opp_config config = {
-		.genpd_names = names,
-		.virt_devs = virt_devs,
-	};
-
-	return devm_pm_opp_set_config(dev, &config);
 }
 
 /* prop-name helpers */

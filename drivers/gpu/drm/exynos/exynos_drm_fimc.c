@@ -1125,7 +1125,7 @@ static void fimc_abort(struct exynos_drm_ipp *ipp,
 	}
 }
 
-static struct exynos_drm_ipp_funcs ipp_funcs = {
+static const struct exynos_drm_ipp_funcs ipp_funcs = {
 	.commit = fimc_commit,
 	.abort = fimc_abort,
 };
@@ -1367,7 +1367,7 @@ err_pm_dis:
 	return ret;
 }
 
-static int fimc_remove(struct platform_device *pdev)
+static void fimc_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct fimc_context *ctx = get_fimc_context(dev);
@@ -1377,8 +1377,6 @@ static int fimc_remove(struct platform_device *pdev)
 	pm_runtime_disable(dev);
 
 	fimc_put_clocks(ctx);
-
-	return 0;
 }
 
 static int fimc_runtime_suspend(struct device *dev)
@@ -1414,7 +1412,6 @@ struct platform_driver fimc_driver = {
 	.driver		= {
 		.of_match_table = fimc_of_match,
 		.name	= "exynos-drm-fimc",
-		.owner	= THIS_MODULE,
 		.pm	= pm_ptr(&fimc_pm_ops),
 	},
 };

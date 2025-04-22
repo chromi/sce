@@ -96,7 +96,9 @@ static void mmhub_v1_0_init_system_aperture_regs(struct amdgpu_device *adev)
 	WREG32_SOC15(MMHUB, 0, mmMC_VM_SYSTEM_APERTURE_LOW_ADDR,
 		     min(adev->gmc.fb_start, adev->gmc.agp_start) >> 18);
 
-	if (adev->apu_flags & AMD_APU_IS_RAVEN2)
+	if (adev->apu_flags & (AMD_APU_IS_RAVEN2 |
+			       AMD_APU_IS_RENOIR |
+			       AMD_APU_IS_GREEN_SARDINE))
 		/*
 		 * Raven2 has a HW issue that it is unable to use the vram which
 		 * is out of MC_VM_SYSTEM_APERTURE_HIGH_ADDR. So here is the
@@ -227,6 +229,52 @@ static void mmhub_v1_0_disable_identity_aperture(struct amdgpu_device *adev)
 		     0);
 }
 
+static void mmhub_v1_0_init_saw(struct amdgpu_device *adev)
+{
+	uint64_t pt_base = amdgpu_gmc_pd_addr(adev->gart.bo);
+	uint32_t tmp;
+
+	/* VM_9_X_REGISTER_VM_L2_SAW_CONTEXT0_PAGE_TABLE_BASE_ADDR_LO32 */
+	WREG32_SOC15(MMHUB, 0, mmVM_L2_SAW_CONTEXT0_PAGE_TABLE_BASE_ADDR_LO32,
+			    lower_32_bits(pt_base >> 12));
+
+	/* VM_9_X_REGISTER_VM_L2_SAW_CONTEXT0_PAGE_TABLE_BASE_ADDR_HI32 */
+	WREG32_SOC15(MMHUB, 0, mmVM_L2_SAW_CONTEXT0_PAGE_TABLE_BASE_ADDR_HI32,
+			    upper_32_bits(pt_base >> 12));
+
+	/* VM_9_X_REGISTER_VM_L2_SAW_CONTEXT0_PAGE_TABLE_START_ADDR_LO32 */
+	WREG32_SOC15(MMHUB, 0, mmVM_L2_SAW_CONTEXT0_PAGE_TABLE_START_ADDR_LO32,
+			    (u32)(adev->gmc.gart_start >> 12));
+
+	/* VM_9_X_REGISTER_VM_L2_SAW_CONTEXT0_PAGE_TABLE_START_ADDR_HI32 */
+	WREG32_SOC15(MMHUB, 0, mmVM_L2_SAW_CONTEXT0_PAGE_TABLE_START_ADDR_HI32,
+			    (u32)(adev->gmc.gart_start >> 44));
+
+	/* VM_9_X_REGISTER_VM_L2_SAW_CONTEXT0_PAGE_TABLE_END_ADDR_LO32 */
+	WREG32_SOC15(MMHUB, 0, mmVM_L2_SAW_CONTEXT0_PAGE_TABLE_END_ADDR_LO32,
+			    (u32)(adev->gmc.gart_end >> 12));
+
+	/* VM_9_X_REGISTER_VM_L2_SAW_CONTEXT0_PAGE_TABLE_END_ADDR_HI32 */
+	WREG32_SOC15(MMHUB, 0, mmVM_L2_SAW_CONTEXT0_PAGE_TABLE_END_ADDR_HI32,
+			    (u32)(adev->gmc.gart_end >> 44));
+
+	/* Program SAW CONTEXT0 CNTL */
+	tmp = RREG32_SOC15(MMHUB, 0, mmVM_L2_SAW_CONTEXT0_CNTL);
+	tmp |= 1 << CONTEXT0_CNTL_ENABLE_OFFSET;
+	tmp &= ~(3 << CONTEXT0_CNTL_PAGE_TABLE_DEPTH_OFFSET);
+	WREG32_SOC15(MMHUB, 0, mmVM_L2_SAW_CONTEXT0_CNTL, tmp);
+
+	/* Disable all Contexts except Context0 */
+	tmp = 0xfffe;
+	WREG32_SOC15(MMHUB, 0, mmVM_L2_SAW_CONTEXTS_DISABLE, tmp);
+
+	/* Program SAW CNTL4 */
+	tmp = RREG32_SOC15(MMHUB, 0, mmVM_L2_SAW_CNTL4);
+	tmp |= 1 << VMC_TAP_PDE_REQUEST_SNOOP_OFFSET;
+	tmp |= 1 << VMC_TAP_PTE_REQUEST_SNOOP_OFFSET;
+	WREG32_SOC15(MMHUB, 0, mmVM_L2_SAW_CNTL4, tmp);
+}
+
 static void mmhub_v1_0_setup_vmid_config(struct amdgpu_device *adev)
 {
 	struct amdgpu_vmhub *hub = &adev->vmhub[AMDGPU_MMHUB0(0)];
@@ -242,7 +290,7 @@ static void mmhub_v1_0_setup_vmid_config(struct amdgpu_device *adev)
 		block_size -= 9;
 
 	for (i = 0; i <= 14; i++) {
-		tmp = RREG32_SOC15_OFFSET(MMHUB, 0, mmVM_CONTEXT1_CNTL, i);
+		tmp = RREG32_SOC15_OFFSET(MMHUB, 0, mmVM_CONTEXT1_CNTL, i * hub->ctx_distance);
 		tmp = REG_SET_FIELD(tmp, VM_CONTEXT1_CNTL, ENABLE_CONTEXT, 1);
 		tmp = REG_SET_FIELD(tmp, VM_CONTEXT1_CNTL, PAGE_TABLE_DEPTH,
 				    num_level);
@@ -281,6 +329,9 @@ static void mmhub_v1_0_setup_vmid_config(struct amdgpu_device *adev)
 				    i * hub->ctx_addr_distance,
 				    upper_32_bits(adev->vm_manager.max_pfn - 1));
 	}
+
+	if (amdgpu_ip_version(adev, ISP_HWIP, 0))
+		mmhub_v1_0_init_saw(adev);
 }
 
 static void mmhub_v1_0_program_invalidation(struct amdgpu_device *adev)
@@ -305,7 +356,7 @@ static void mmhub_v1_0_update_power_gating(struct amdgpu_device *adev,
 	if (adev->pg_flags & AMD_PG_SUPPORT_MMHUB)
 		amdgpu_dpm_set_powergating_by_smu(adev,
 						  AMD_IP_BLOCK_TYPE_GMC,
-						  enable);
+						  enable, 0);
 }
 
 static int mmhub_v1_0_gart_enable(struct amdgpu_device *adev)

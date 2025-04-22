@@ -6,12 +6,17 @@
 #include <linux/init.h>
 #include <linux/mm.h>
 #include <linux/module.h>
+#include <linux/perf_event.h>
 #include <linux/irq.h>
 #include <linux/stringify.h>
 
 #include <asm/processor.h>
 #include <asm/ptrace.h>
 #include <asm/csr.h>
+#include <asm/entry-common.h>
+#include <asm/hwprobe.h>
+#include <asm/cpufeature.h>
+#include <asm/vector.h>
 
 #define INSN_MATCH_LB			0x3
 #define INSN_MASK_LB			0x707f
@@ -132,8 +137,6 @@
 #define REG_PTR(insn, pos, regs)	\
 	(ulong *)((ulong)(regs) + REG_OFFSET(insn, pos))
 
-#define GET_RM(insn)			(((insn) >> 12) & 7)
-
 #define GET_RS1(insn, regs)		(*REG_PTR(insn, SH_RS1, regs))
 #define GET_RS2(insn, regs)		(*REG_PTR(insn, SH_RS2, regs))
 #define GET_RS1S(insn, regs)		(*REG_PTR(RVC_RS1S(insn), 0, regs))
@@ -151,82 +154,165 @@
 #define PRECISION_S 0
 #define PRECISION_D 1
 
-#define DECLARE_UNPRIVILEGED_LOAD_FUNCTION(type, insn)			\
-static inline type load_##type(const type *addr)			\
-{									\
-	type val;							\
-	asm (#insn " %0, %1"						\
-	: "=&r" (val) : "m" (*addr));					\
-	return val;							\
+#ifdef CONFIG_FPU
+
+#define FP_GET_RD(insn)		(insn >> 7 & 0x1F)
+
+extern void put_f32_reg(unsigned long fp_reg, unsigned long value);
+
+static int set_f32_rd(unsigned long insn, struct pt_regs *regs,
+		      unsigned long val)
+{
+	unsigned long fp_reg = FP_GET_RD(insn);
+
+	put_f32_reg(fp_reg, val);
+	regs->status |= SR_FS_DIRTY;
+
+	return 0;
 }
 
-#define DECLARE_UNPRIVILEGED_STORE_FUNCTION(type, insn)			\
-static inline void store_##type(type *addr, type val)			\
-{									\
-	asm volatile (#insn " %0, %1\n"					\
-	: : "r" (val), "m" (*addr));					\
-}
+extern void put_f64_reg(unsigned long fp_reg, unsigned long value);
 
-DECLARE_UNPRIVILEGED_LOAD_FUNCTION(u8, lbu)
-DECLARE_UNPRIVILEGED_LOAD_FUNCTION(u16, lhu)
-DECLARE_UNPRIVILEGED_LOAD_FUNCTION(s8, lb)
-DECLARE_UNPRIVILEGED_LOAD_FUNCTION(s16, lh)
-DECLARE_UNPRIVILEGED_LOAD_FUNCTION(s32, lw)
-DECLARE_UNPRIVILEGED_STORE_FUNCTION(u8, sb)
-DECLARE_UNPRIVILEGED_STORE_FUNCTION(u16, sh)
-DECLARE_UNPRIVILEGED_STORE_FUNCTION(u32, sw)
-#if defined(CONFIG_64BIT)
-DECLARE_UNPRIVILEGED_LOAD_FUNCTION(u32, lwu)
-DECLARE_UNPRIVILEGED_LOAD_FUNCTION(u64, ld)
-DECLARE_UNPRIVILEGED_STORE_FUNCTION(u64, sd)
-DECLARE_UNPRIVILEGED_LOAD_FUNCTION(ulong, ld)
+static int set_f64_rd(unsigned long insn, struct pt_regs *regs, u64 val)
+{
+	unsigned long fp_reg = FP_GET_RD(insn);
+	unsigned long value;
+
+#if __riscv_xlen == 32
+	value = (unsigned long) &val;
 #else
-DECLARE_UNPRIVILEGED_LOAD_FUNCTION(u32, lw)
-DECLARE_UNPRIVILEGED_LOAD_FUNCTION(ulong, lw)
+	value = val;
+#endif
+	put_f64_reg(fp_reg, value);
+	regs->status |= SR_FS_DIRTY;
 
-static inline u64 load_u64(const u64 *addr)
-{
-	return load_u32((u32 *)addr)
-		+ ((u64)load_u32((u32 *)addr + 1) << 32);
+	return 0;
 }
 
-static inline void store_u64(u64 *addr, u64 val)
-{
-	store_u32((u32 *)addr, val);
-	store_u32((u32 *)addr + 1, val >> 32);
-}
-#endif
+#if __riscv_xlen == 32
+extern void get_f64_reg(unsigned long fp_reg, u64 *value);
 
-static inline ulong get_insn(ulong mepc)
+static u64 get_f64_rs(unsigned long insn, u8 fp_reg_offset,
+		      struct pt_regs *regs)
 {
-	register ulong __mepc asm ("a2") = mepc;
-	ulong val, rvc_mask = 3, tmp;
+	unsigned long fp_reg = (insn >> fp_reg_offset) & 0x1F;
+	u64 val;
 
-	asm ("and %[tmp], %[addr], 2\n"
-		"bnez %[tmp], 1f\n"
-#if defined(CONFIG_64BIT)
-		__stringify(LWU) " %[insn], (%[addr])\n"
-#else
-		__stringify(LW) " %[insn], (%[addr])\n"
-#endif
-		"and %[tmp], %[insn], %[rvc_mask]\n"
-		"beq %[tmp], %[rvc_mask], 2f\n"
-		"sll %[insn], %[insn], %[xlen_minus_16]\n"
-		"srl %[insn], %[insn], %[xlen_minus_16]\n"
-		"j 2f\n"
-		"1:\n"
-		"lhu %[insn], (%[addr])\n"
-		"and %[tmp], %[insn], %[rvc_mask]\n"
-		"bne %[tmp], %[rvc_mask], 2f\n"
-		"lhu %[tmp], 2(%[addr])\n"
-		"sll %[tmp], %[tmp], 16\n"
-		"add %[insn], %[insn], %[tmp]\n"
-		"2:"
-	: [insn] "=&r" (val), [tmp] "=&r" (tmp)
-	: [addr] "r" (__mepc), [rvc_mask] "r" (rvc_mask),
-	  [xlen_minus_16] "i" (XLEN_MINUS_16));
+	get_f64_reg(fp_reg, &val);
+	regs->status |= SR_FS_DIRTY;
 
 	return val;
+}
+#else
+
+extern unsigned long get_f64_reg(unsigned long fp_reg);
+
+static unsigned long get_f64_rs(unsigned long insn, u8 fp_reg_offset,
+				struct pt_regs *regs)
+{
+	unsigned long fp_reg = (insn >> fp_reg_offset) & 0x1F;
+	unsigned long val;
+
+	val = get_f64_reg(fp_reg);
+	regs->status |= SR_FS_DIRTY;
+
+	return val;
+}
+
+#endif
+
+extern unsigned long get_f32_reg(unsigned long fp_reg);
+
+static unsigned long get_f32_rs(unsigned long insn, u8 fp_reg_offset,
+				struct pt_regs *regs)
+{
+	unsigned long fp_reg = (insn >> fp_reg_offset) & 0x1F;
+	unsigned long val;
+
+	val = get_f32_reg(fp_reg);
+	regs->status |= SR_FS_DIRTY;
+
+	return val;
+}
+
+#else /* CONFIG_FPU */
+static void set_f32_rd(unsigned long insn, struct pt_regs *regs,
+		       unsigned long val) {}
+
+static void set_f64_rd(unsigned long insn, struct pt_regs *regs, u64 val) {}
+
+static unsigned long get_f64_rs(unsigned long insn, u8 fp_reg_offset,
+				struct pt_regs *regs)
+{
+	return 0;
+}
+
+static unsigned long get_f32_rs(unsigned long insn, u8 fp_reg_offset,
+				struct pt_regs *regs)
+{
+	return 0;
+}
+
+#endif
+
+#define GET_F64_RS2(insn, regs) (get_f64_rs(insn, 20, regs))
+#define GET_F64_RS2C(insn, regs) (get_f64_rs(insn, 2, regs))
+#define GET_F64_RS2S(insn, regs) (get_f64_rs(RVC_RS2S(insn), 0, regs))
+
+#define GET_F32_RS2(insn, regs) (get_f32_rs(insn, 20, regs))
+#define GET_F32_RS2C(insn, regs) (get_f32_rs(insn, 2, regs))
+#define GET_F32_RS2S(insn, regs) (get_f32_rs(RVC_RS2S(insn), 0, regs))
+
+#define __read_insn(regs, insn, insn_addr, type)	\
+({							\
+	int __ret;					\
+							\
+	if (user_mode(regs)) {				\
+		__ret = __get_user(insn, (type __user *) insn_addr); \
+	} else {					\
+		insn = *(type *)insn_addr;		\
+		__ret = 0;				\
+	}						\
+							\
+	__ret;						\
+})
+
+static inline int get_insn(struct pt_regs *regs, ulong epc, ulong *r_insn)
+{
+	ulong insn = 0;
+
+	if (epc & 0x2) {
+		ulong tmp = 0;
+
+		if (__read_insn(regs, insn, epc, u16))
+			return -EFAULT;
+		/* __get_user() uses regular "lw" which sign extend the loaded
+		 * value make sure to clear higher order bits in case we "or" it
+		 * below with the upper 16 bits half.
+		 */
+		insn &= GENMASK(15, 0);
+		if ((insn & __INSN_LENGTH_MASK) != __INSN_LENGTH_32) {
+			*r_insn = insn;
+			return 0;
+		}
+		epc += sizeof(u16);
+		if (__read_insn(regs, tmp, epc, u16))
+			return -EFAULT;
+		*r_insn = (tmp << 16) | insn;
+
+		return 0;
+	} else {
+		if (__read_insn(regs, insn, epc, u32))
+			return -EFAULT;
+		if ((insn & __INSN_LENGTH_MASK) == __INSN_LENGTH_32) {
+			*r_insn = insn;
+			return 0;
+		}
+		insn &= GENMASK(15, 0);
+		*r_insn = insn;
+
+		return 0;
+	}
 }
 
 union reg_data {
@@ -235,13 +321,58 @@ union reg_data {
 	u64 data_u64;
 };
 
-int handle_misaligned_load(struct pt_regs *regs)
+/* sysctl hooks */
+int unaligned_enabled __read_mostly = 1;	/* Enabled by default */
+
+#ifdef CONFIG_RISCV_VECTOR_MISALIGNED
+static int handle_vector_misaligned_load(struct pt_regs *regs)
+{
+	unsigned long epc = regs->epc;
+	unsigned long insn;
+
+	if (get_insn(regs, epc, &insn))
+		return -1;
+
+	/* Only return 0 when in check_vector_unaligned_access_emulated */
+	if (*this_cpu_ptr(&vector_misaligned_access) == RISCV_HWPROBE_MISALIGNED_VECTOR_UNKNOWN) {
+		*this_cpu_ptr(&vector_misaligned_access) = RISCV_HWPROBE_MISALIGNED_VECTOR_UNSUPPORTED;
+		regs->epc = epc + INSN_LEN(insn);
+		return 0;
+	}
+
+	/* If vector instruction we don't emulate it yet */
+	regs->epc = epc;
+	return -1;
+}
+#else
+static int handle_vector_misaligned_load(struct pt_regs *regs)
+{
+	return -1;
+}
+#endif
+
+static int handle_scalar_misaligned_load(struct pt_regs *regs)
 {
 	union reg_data val;
 	unsigned long epc = regs->epc;
-	unsigned long insn = get_insn(epc);
-	unsigned long addr = csr_read(mtval);
-	int i, fp = 0, shift = 0, len = 0;
+	unsigned long insn;
+	unsigned long addr = regs->badaddr;
+	int fp = 0, shift = 0, len = 0;
+
+	perf_sw_event(PERF_COUNT_SW_ALIGNMENT_FAULTS, 1, regs, addr);
+
+#ifdef CONFIG_RISCV_PROBE_UNALIGNED_ACCESS
+	*this_cpu_ptr(&misaligned_access_speed) = RISCV_HWPROBE_MISALIGNED_SCALAR_EMULATED;
+#endif
+
+	if (!unaligned_enabled)
+		return -1;
+
+	if (user_mode(regs) && (current->thread.align_ctl & PR_UNALIGN_SIGBUS))
+		return -1;
+
+	if (get_insn(regs, epc, &insn))
+		return -1;
 
 	regs->epc = 0;
 
@@ -305,26 +436,47 @@ int handle_misaligned_load(struct pt_regs *regs)
 		return -1;
 	}
 
-	val.data_u64 = 0;
-	for (i = 0; i < len; i++)
-		val.data_bytes[i] = load_u8((void *)(addr + i));
+	if (!IS_ENABLED(CONFIG_FPU) && fp)
+		return -EOPNOTSUPP;
 
-	if (fp)
-		return -1;
-	SET_RD(insn, regs, val.data_ulong << shift >> shift);
+	val.data_u64 = 0;
+	if (user_mode(regs)) {
+		if (copy_from_user(&val, (u8 __user *)addr, len))
+			return -1;
+	} else {
+		memcpy(&val, (u8 *)addr, len);
+	}
+
+	if (!fp)
+		SET_RD(insn, regs, val.data_ulong << shift >> shift);
+	else if (len == 8)
+		set_f64_rd(insn, regs, val.data_u64);
+	else
+		set_f32_rd(insn, regs, val.data_ulong);
 
 	regs->epc = epc + INSN_LEN(insn);
 
 	return 0;
 }
 
-int handle_misaligned_store(struct pt_regs *regs)
+static int handle_scalar_misaligned_store(struct pt_regs *regs)
 {
 	union reg_data val;
 	unsigned long epc = regs->epc;
-	unsigned long insn = get_insn(epc);
-	unsigned long addr = csr_read(mtval);
-	int i, len = 0;
+	unsigned long insn;
+	unsigned long addr = regs->badaddr;
+	int len = 0, fp = 0;
+
+	perf_sw_event(PERF_COUNT_SW_ALIGNMENT_FAULTS, 1, regs, addr);
+
+	if (!unaligned_enabled)
+		return -1;
+
+	if (user_mode(regs) && (current->thread.align_ctl & PR_UNALIGN_SIGBUS))
+		return -1;
+
+	if (get_insn(regs, epc, &insn))
+		return -1;
 
 	regs->epc = 0;
 
@@ -336,33 +488,204 @@ int handle_misaligned_store(struct pt_regs *regs)
 	} else if ((insn & INSN_MASK_SD) == INSN_MATCH_SD) {
 		len = 8;
 #endif
+	} else if ((insn & INSN_MASK_FSD) == INSN_MATCH_FSD) {
+		fp = 1;
+		len = 8;
+		val.data_u64 = GET_F64_RS2(insn, regs);
+	} else if ((insn & INSN_MASK_FSW) == INSN_MATCH_FSW) {
+		fp = 1;
+		len = 4;
+		val.data_ulong = GET_F32_RS2(insn, regs);
 	} else if ((insn & INSN_MASK_SH) == INSN_MATCH_SH) {
 		len = 2;
 #if defined(CONFIG_64BIT)
 	} else if ((insn & INSN_MASK_C_SD) == INSN_MATCH_C_SD) {
 		len = 8;
 		val.data_ulong = GET_RS2S(insn, regs);
-	} else if ((insn & INSN_MASK_C_SDSP) == INSN_MATCH_C_SDSP &&
-		   ((insn >> SH_RD) & 0x1f)) {
+	} else if ((insn & INSN_MASK_C_SDSP) == INSN_MATCH_C_SDSP) {
 		len = 8;
 		val.data_ulong = GET_RS2C(insn, regs);
 #endif
 	} else if ((insn & INSN_MASK_C_SW) == INSN_MATCH_C_SW) {
 		len = 4;
 		val.data_ulong = GET_RS2S(insn, regs);
-	} else if ((insn & INSN_MASK_C_SWSP) == INSN_MATCH_C_SWSP &&
-		   ((insn >> SH_RD) & 0x1f)) {
+	} else if ((insn & INSN_MASK_C_SWSP) == INSN_MATCH_C_SWSP) {
 		len = 4;
 		val.data_ulong = GET_RS2C(insn, regs);
+	} else if ((insn & INSN_MASK_C_FSD) == INSN_MATCH_C_FSD) {
+		fp = 1;
+		len = 8;
+		val.data_u64 = GET_F64_RS2S(insn, regs);
+	} else if ((insn & INSN_MASK_C_FSDSP) == INSN_MATCH_C_FSDSP) {
+		fp = 1;
+		len = 8;
+		val.data_u64 = GET_F64_RS2C(insn, regs);
+#if !defined(CONFIG_64BIT)
+	} else if ((insn & INSN_MASK_C_FSW) == INSN_MATCH_C_FSW) {
+		fp = 1;
+		len = 4;
+		val.data_ulong = GET_F32_RS2S(insn, regs);
+	} else if ((insn & INSN_MASK_C_FSWSP) == INSN_MATCH_C_FSWSP) {
+		fp = 1;
+		len = 4;
+		val.data_ulong = GET_F32_RS2C(insn, regs);
+#endif
 	} else {
 		regs->epc = epc;
 		return -1;
 	}
 
-	for (i = 0; i < len; i++)
-		store_u8((void *)(addr + i), val.data_bytes[i]);
+	if (!IS_ENABLED(CONFIG_FPU) && fp)
+		return -EOPNOTSUPP;
+
+	if (user_mode(regs)) {
+		if (copy_to_user((u8 __user *)addr, &val, len))
+			return -1;
+	} else {
+		memcpy((u8 *)addr, &val, len);
+	}
 
 	regs->epc = epc + INSN_LEN(insn);
 
 	return 0;
 }
+
+int handle_misaligned_load(struct pt_regs *regs)
+{
+	unsigned long epc = regs->epc;
+	unsigned long insn;
+
+	if (IS_ENABLED(CONFIG_RISCV_VECTOR_MISALIGNED)) {
+		if (get_insn(regs, epc, &insn))
+			return -1;
+
+		if (insn_is_vector(insn))
+			return handle_vector_misaligned_load(regs);
+	}
+
+	if (IS_ENABLED(CONFIG_RISCV_SCALAR_MISALIGNED))
+		return handle_scalar_misaligned_load(regs);
+
+	return -1;
+}
+
+int handle_misaligned_store(struct pt_regs *regs)
+{
+	if (IS_ENABLED(CONFIG_RISCV_SCALAR_MISALIGNED))
+		return handle_scalar_misaligned_store(regs);
+
+	return -1;
+}
+
+#ifdef CONFIG_RISCV_VECTOR_MISALIGNED
+void check_vector_unaligned_access_emulated(struct work_struct *work __always_unused)
+{
+	long *mas_ptr = this_cpu_ptr(&vector_misaligned_access);
+	unsigned long tmp_var;
+
+	*mas_ptr = RISCV_HWPROBE_MISALIGNED_VECTOR_UNKNOWN;
+
+	kernel_vector_begin();
+	/*
+	 * In pre-13.0.0 versions of GCC, vector registers cannot appear in
+	 * the clobber list. This inline asm clobbers v0, but since we do not
+	 * currently build the kernel with V enabled, the v0 clobber arg is not
+	 * needed (as the compiler will not emit vector code itself). If the kernel
+	 * is changed to build with V enabled, the clobber arg will need to be
+	 * added here.
+	 */
+	__asm__ __volatile__ (
+		".balign 4\n\t"
+		".option push\n\t"
+		".option arch, +zve32x\n\t"
+		"       vsetivli zero, 1, e16, m1, ta, ma\n\t"	// Vectors of 16b
+		"       vle16.v v0, (%[ptr])\n\t"		// Load bytes
+		".option pop\n\t"
+		: : [ptr] "r" ((u8 *)&tmp_var + 1));
+	kernel_vector_end();
+}
+
+bool check_vector_unaligned_access_emulated_all_cpus(void)
+{
+	int cpu;
+
+	if (!has_vector()) {
+		for_each_online_cpu(cpu)
+			per_cpu(vector_misaligned_access, cpu) = RISCV_HWPROBE_MISALIGNED_VECTOR_UNSUPPORTED;
+		return false;
+	}
+
+	schedule_on_each_cpu(check_vector_unaligned_access_emulated);
+
+	for_each_online_cpu(cpu)
+		if (per_cpu(vector_misaligned_access, cpu)
+		    == RISCV_HWPROBE_MISALIGNED_VECTOR_UNKNOWN)
+			return false;
+
+	return true;
+}
+#else
+bool check_vector_unaligned_access_emulated_all_cpus(void)
+{
+	return false;
+}
+#endif
+
+#ifdef CONFIG_RISCV_SCALAR_MISALIGNED
+
+static bool unaligned_ctl __read_mostly;
+
+void check_unaligned_access_emulated(struct work_struct *work __always_unused)
+{
+	int cpu = smp_processor_id();
+	long *mas_ptr = per_cpu_ptr(&misaligned_access_speed, cpu);
+	unsigned long tmp_var, tmp_val;
+
+	*mas_ptr = RISCV_HWPROBE_MISALIGNED_SCALAR_UNKNOWN;
+
+	__asm__ __volatile__ (
+		"       "REG_L" %[tmp], 1(%[ptr])\n"
+		: [tmp] "=r" (tmp_val) : [ptr] "r" (&tmp_var) : "memory");
+
+	/*
+	 * If unaligned_ctl is already set, this means that we detected that all
+	 * CPUS uses emulated misaligned access at boot time. If that changed
+	 * when hotplugging the new cpu, this is something we don't handle.
+	 */
+	if (unlikely(unaligned_ctl && (*mas_ptr != RISCV_HWPROBE_MISALIGNED_SCALAR_EMULATED))) {
+		pr_crit("CPU misaligned accesses non homogeneous (expected all emulated)\n");
+		while (true)
+			cpu_relax();
+	}
+}
+
+bool check_unaligned_access_emulated_all_cpus(void)
+{
+	int cpu;
+
+	/*
+	 * We can only support PR_UNALIGN controls if all CPUs have misaligned
+	 * accesses emulated since tasks requesting such control can run on any
+	 * CPU.
+	 */
+	schedule_on_each_cpu(check_unaligned_access_emulated);
+
+	for_each_online_cpu(cpu)
+		if (per_cpu(misaligned_access_speed, cpu)
+		    != RISCV_HWPROBE_MISALIGNED_SCALAR_EMULATED)
+			return false;
+
+	unaligned_ctl = true;
+	return true;
+}
+
+bool unaligned_ctl_available(void)
+{
+	return unaligned_ctl;
+}
+#else
+bool check_unaligned_access_emulated_all_cpus(void)
+{
+	return false;
+}
+#endif

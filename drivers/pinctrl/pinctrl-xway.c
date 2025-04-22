@@ -11,12 +11,12 @@
 #include <linux/gpio/driver.h>
 #include <linux/slab.h>
 #include <linux/module.h>
-#include <linux/of_platform.h>
-#include <linux/of_address.h>
+#include <linux/of.h>
 #include <linux/ioport.h>
 #include <linux/io.h>
 #include <linux/device.h>
 #include <linux/platform_device.h>
+#include <linux/property.h>
 
 #include "pinctrl-lantiq.h"
 
@@ -1451,7 +1451,6 @@ MODULE_DEVICE_TABLE(of, xway_match);
 
 static int pinmux_xway_probe(struct platform_device *pdev)
 {
-	const struct of_device_id *match;
 	const struct pinctrl_xway_soc *xway_soc;
 	int ret, i;
 
@@ -1460,10 +1459,8 @@ static int pinmux_xway_probe(struct platform_device *pdev)
 	if (IS_ERR(xway_info.membase[0]))
 		return PTR_ERR(xway_info.membase[0]);
 
-	match = of_match_device(xway_match, &pdev->dev);
-	if (match)
-		xway_soc = (const struct pinctrl_xway_soc *) match->data;
-	else
+	xway_soc = device_get_match_data(&pdev->dev);
+	if (!xway_soc)
 		xway_soc = &danube_pinctrl;
 
 	/* find out how many pads we have */
@@ -1527,7 +1524,7 @@ static int pinmux_xway_probe(struct platform_device *pdev)
 	 * files which don't set the "gpio-ranges" property or systems that
 	 * utilize ACPI the driver has to call gpiochip_add_pin_range().
 	 */
-	if (!of_property_read_bool(pdev->dev.of_node, "gpio-ranges")) {
+	if (!of_property_present(pdev->dev.of_node, "gpio-ranges")) {
 		/* finish with registering the gpio range in pinctrl */
 		xway_gpio_range.npins = xway_chip.ngpio;
 		xway_gpio_range.base = xway_chip.base;

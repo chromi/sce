@@ -967,18 +967,15 @@ int stratix10_svc_send(struct stratix10_svc_chan *chan, void *msg)
 	/* first client will create kernel thread */
 	if (!chan->ctrl->task) {
 		chan->ctrl->task =
-			kthread_create_on_node(svc_normal_to_secure_thread,
-					      (void *)chan->ctrl,
-					      cpu_to_node(cpu),
-					      "svc_smc_hvc_thread");
+			kthread_run_on_cpu(svc_normal_to_secure_thread,
+					   (void *)chan->ctrl,
+					   cpu, "svc_smc_hvc_thread");
 			if (IS_ERR(chan->ctrl->task)) {
 				dev_err(chan->ctrl->dev,
 					"failed to create svc_smc_hvc_thread\n");
 				kfree(p_data);
 				return -EINVAL;
 			}
-		kthread_bind(chan->ctrl->task, cpu);
-		wake_up_process(chan->ctrl->task);
 	}
 
 	pr_debug("%s: sent P-va=%p, P-com=%x, P-size=%u\n", __func__,
@@ -1251,7 +1248,7 @@ err_destroy_pool:
 	return ret;
 }
 
-static int stratix10_svc_drv_remove(struct platform_device *pdev)
+static void stratix10_svc_drv_remove(struct platform_device *pdev)
 {
 	struct stratix10_svc *svc = dev_get_drvdata(&pdev->dev);
 	struct stratix10_svc_controller *ctrl = platform_get_drvdata(pdev);
@@ -1267,8 +1264,6 @@ static int stratix10_svc_drv_remove(struct platform_device *pdev)
 	if (ctrl->genpool)
 		gen_pool_destroy(ctrl->genpool);
 	list_del(&ctrl->node);
-
-	return 0;
 }
 
 static struct platform_driver stratix10_svc_driver = {

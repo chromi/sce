@@ -324,8 +324,6 @@ void blk_mq_sched_dispatch_requests(struct blk_mq_hw_ctx *hctx)
 	if (unlikely(blk_mq_hctx_stopped(hctx) || blk_queue_quiesced(q)))
 		return;
 
-	hctx->run++;
-
 	/*
 	 * A return of -EAGAIN is an indication that hctx->dispatch is not
 	 * empty and we must run again in order to avoid starving flushes.
@@ -353,8 +351,7 @@ bool blk_mq_sched_bio_merge(struct request_queue *q, struct bio *bio,
 	ctx = blk_mq_get_ctx(q);
 	hctx = blk_mq_map_queue(q, bio->bi_opf, ctx);
 	type = hctx->type;
-	if (!(hctx->flags & BLK_MQ_F_SHOULD_MERGE) ||
-	    list_empty_careful(&ctx->rq_lists[type]))
+	if (list_empty_careful(&ctx->rq_lists[type]))
 		goto out_put;
 
 	/* default per sw-queue merge */

@@ -8,6 +8,7 @@
  * Copyright (c) 2023 Tomi Valkeinen <tomi.valkeinen@ideasonboard.com>
  */
 
+#include <linux/bitfield.h>
 #include <linux/clk-provider.h>
 #include <linux/clk.h>
 #include <linux/delay.h>
@@ -142,6 +143,19 @@ static int ub913_write(const struct ub913_data *priv, u8 reg, u8 val)
 	if (ret < 0)
 		dev_err(&priv->client->dev,
 			"Cannot write register 0x%02x: %d!\n", reg, ret);
+
+	return ret;
+}
+
+static int ub913_update_bits(const struct ub913_data *priv, u8 reg, u8 mask,
+			     u8 val)
+{
+	int ret;
+
+	ret = regmap_update_bits(priv->regmap, reg, mask, val);
+	if (ret < 0)
+		dev_err(&priv->client->dev,
+			"Cannot update register 0x%02x %d!\n", reg, ret);
 
 	return ret;
 }
@@ -362,8 +376,6 @@ static int ub913_get_frame_desc(struct v4l2_subdev *sd, unsigned int pad,
 	if (ret)
 		return ret;
 
-	memset(fd, 0, sizeof(*fd));
-
 	fd->type = V4L2_MBUS_FRAME_DESC_TYPE_PARALLEL;
 
 	state = v4l2_subdev_lock_and_get_active_state(sd);
@@ -426,8 +438,7 @@ static int ub913_set_fmt(struct v4l2_subdev *sd,
 	}
 
 	/* Set sink format */
-	fmt = v4l2_subdev_state_get_stream_format(state, format->pad,
-						  format->stream);
+	fmt = v4l2_subdev_state_get_format(state, format->pad, format->stream);
 	if (!fmt)
 		return -EINVAL;
 
@@ -446,8 +457,8 @@ static int ub913_set_fmt(struct v4l2_subdev *sd,
 	return 0;
 }
 
-static int ub913_init_cfg(struct v4l2_subdev *sd,
-			  struct v4l2_subdev_state *state)
+static int ub913_init_state(struct v4l2_subdev *sd,
+			    struct v4l2_subdev_state *state)
 {
 	struct v4l2_subdev_route routes[] = {
 		{
@@ -506,12 +517,15 @@ static const struct v4l2_subdev_pad_ops ub913_pad_ops = {
 	.get_frame_desc = ub913_get_frame_desc,
 	.get_fmt = v4l2_subdev_get_fmt,
 	.set_fmt = ub913_set_fmt,
-	.init_cfg = ub913_init_cfg,
 };
 
 static const struct v4l2_subdev_ops ub913_subdev_ops = {
 	.core = &ub913_subdev_core_ops,
 	.pad = &ub913_pad_ops,
+};
+
+static const struct v4l2_subdev_internal_ops ub913_internal_ops = {
+	.init_state = ub913_init_state,
 };
 
 static const struct media_entity_operations ub913_entity_ops = {
@@ -733,10 +747,13 @@ static int ub913_hw_init(struct ub913_data *priv)
 	if (ret)
 		return dev_err_probe(dev, ret, "i2c master init failed\n");
 
-	ub913_read(priv, UB913_REG_GENERAL_CFG, &v);
-	v &= ~UB913_REG_GENERAL_CFG_PCLK_RISING;
-	v |= priv->pclk_polarity_rising ? UB913_REG_GENERAL_CFG_PCLK_RISING : 0;
-	ub913_write(priv, UB913_REG_GENERAL_CFG, v);
+	ret = ub913_update_bits(priv, UB913_REG_GENERAL_CFG,
+				UB913_REG_GENERAL_CFG_PCLK_RISING,
+				FIELD_PREP(UB913_REG_GENERAL_CFG_PCLK_RISING,
+					   priv->pclk_polarity_rising));
+
+	if (ret)
+		return ret;
 
 	return 0;
 }
@@ -747,6 +764,7 @@ static int ub913_subdev_init(struct ub913_data *priv)
 	int ret;
 
 	v4l2_i2c_subdev_init(&priv->sd, priv->client, &ub913_subdev_ops);
+	priv->sd.internal_ops = &ub913_internal_ops;
 	priv->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE | V4L2_SUBDEV_FL_STREAMS;
 	priv->sd.entity.function = MEDIA_ENT_F_VID_IF_BRIDGE;
 	priv->sd.entity.ops = &ub913_entity_ops;
@@ -792,7 +810,6 @@ static void ub913_subdev_uninit(struct ub913_data *priv)
 	v4l2_async_unregister_subdev(&priv->sd);
 	ub913_v4l2_nf_unregister(priv);
 	v4l2_subdev_cleanup(&priv->sd);
-	fwnode_handle_put(priv->sd.fwnode);
 	media_entity_cleanup(&priv->sd.entity);
 }
 
@@ -876,7 +893,10 @@ static void ub913_remove(struct i2c_client *client)
 	ub913_gpiochip_remove(priv);
 }
 
-static const struct i2c_device_id ub913_id[] = { { "ds90ub913a-q1", 0 }, {} };
+static const struct i2c_device_id ub913_id[] = {
+	{ "ds90ub913a-q1" },
+	{}
+};
 MODULE_DEVICE_TABLE(i2c, ub913_id);
 
 static const struct of_device_id ub913_dt_ids[] = {
@@ -900,4 +920,4 @@ MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Texas Instruments DS90UB913 FPD-Link III Serializer Driver");
 MODULE_AUTHOR("Luca Ceresoli <luca@lucaceresoli.net>");
 MODULE_AUTHOR("Tomi Valkeinen <tomi.valkeinen@ideasonboard.com>");
-MODULE_IMPORT_NS(I2C_ATR);
+MODULE_IMPORT_NS("I2C_ATR");

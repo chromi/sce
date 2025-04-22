@@ -275,7 +275,7 @@
 				ecspi1: spi@50010000 {
 					#address-cells = <1>;
 					#size-cells = <0>;
-					compatible = "fsl,imx53-ecspi", "fsl,imx51-ecspi";
+					compatible = "fsl,imx53-ecspi";
 					reg = <0x50010000 0x4000>;
 					interrupts = <36>;
 					clocks = <&clks IMX5_CLK_ECSPI1_IPG_GATE>,
@@ -458,7 +458,7 @@
 				clocks = <&clks IMX5_CLK_SRTC_GATE>;
 			};
 
-			iomuxc: iomuxc@53fa8000 {
+			iomuxc: pinctrl@53fa8000 {
 				compatible = "fsl,imx53-iomuxc";
 				reg = <0x53fa8000 0x4000>;
 			};
@@ -701,7 +701,7 @@
 			ecspi2: spi@63fac000 {
 				#address-cells = <1>;
 				#size-cells = <0>;
-				compatible = "fsl,imx53-ecspi", "fsl,imx51-ecspi";
+				compatible = "fsl,imx53-ecspi";
 				reg = <0x63fac000 0x4000>;
 				interrupts = <37>;
 				clocks = <&clks IMX5_CLK_ECSPI2_IPG_GATE>,

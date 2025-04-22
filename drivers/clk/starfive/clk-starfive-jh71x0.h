@@ -61,10 +61,10 @@ struct jh71x0_clk_data {
 	.parents = { [0] = _parent },						\
 }
 
-#define JH71X0__MUX(_idx, _name, _nparents, ...)				\
+#define JH71X0__MUX(_idx, _name, _flags, _nparents, ...)			\
 [_idx] = {									\
 	.name = _name,								\
-	.flags = 0,								\
+	.flags = _flags,							\
 	.max = ((_nparents) - 1) << JH71X0_CLK_MUX_SHIFT,			\
 	.parents = { __VA_ARGS__ },						\
 }
@@ -114,10 +114,14 @@ struct jh71x0_clk_priv {
 	spinlock_t rmw_lock;
 	struct device *dev;
 	void __iomem *base;
+	struct clk *original_clk;
+	struct notifier_block pll_clk_nb;
 	struct clk_hw *pll[3];
-	struct jh71x0_clk reg[];
+	unsigned int num_reg;
+	struct jh71x0_clk reg[] __counted_by(num_reg);
 };
 
 const struct clk_ops *starfive_jh71x0_clk_ops(u32 max);
+struct clk_hw *jh71x0_clk_get(struct of_phandle_args *clkspec, void *data);
 
 #endif

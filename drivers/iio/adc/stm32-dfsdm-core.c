@@ -299,7 +299,7 @@ static const struct of_device_id stm32_dfsdm_of_match[] = {
 		.compatible = "st,stm32mp1-dfsdm",
 		.data = &stm32mp1_dfsdm_data,
 	},
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(of, stm32_dfsdm_of_match);
 
@@ -436,7 +436,7 @@ pm_put:
 	return ret;
 }
 
-static int stm32_dfsdm_core_remove(struct platform_device *pdev)
+static void stm32_dfsdm_core_remove(struct platform_device *pdev)
 {
 	struct stm32_dfsdm *dfsdm = platform_get_drvdata(pdev);
 
@@ -446,8 +446,6 @@ static int stm32_dfsdm_core_remove(struct platform_device *pdev)
 	pm_runtime_set_suspended(&pdev->dev);
 	pm_runtime_put_noidle(&pdev->dev);
 	stm32_dfsdm_clk_disable_unprepare(dfsdm);
-
-	return 0;
 }
 
 static int stm32_dfsdm_core_suspend(struct device *dev)

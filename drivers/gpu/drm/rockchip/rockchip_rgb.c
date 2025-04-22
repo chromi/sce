@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) Fuzhou Rockchip Electronics Co.Ltd
+ * Copyright (C) Rockchip Electronics Co., Ltd.
  * Author:
  *      Sandy Huang <hjc@rock-chips.com>
  */
@@ -19,7 +19,6 @@
 #include <drm/drm_simple_kms_helper.h>
 
 #include "rockchip_drm_drv.h"
-#include "rockchip_drm_vop.h"
 #include "rockchip_rgb.h"
 
 struct rockchip_rgb {

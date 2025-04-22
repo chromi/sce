@@ -8,16 +8,16 @@
 #ifndef mcfgpio_h
 #define mcfgpio_h
 
-#ifdef CONFIG_GPIOLIB
-#include <linux/gpio.h>
-#else
-
 int __mcfgpio_get_value(unsigned gpio);
 void __mcfgpio_set_value(unsigned gpio, int value);
 int __mcfgpio_direction_input(unsigned gpio);
 int __mcfgpio_direction_output(unsigned gpio, int value);
 int __mcfgpio_request(unsigned gpio);
 void __mcfgpio_free(unsigned gpio);
+
+#ifdef CONFIG_GPIOLIB
+#include <linux/gpio.h>
+#else
 
 /* our alternate 'gpiolib' functions */
 static inline int __gpio_get_value(unsigned gpio)
@@ -136,7 +136,7 @@ static inline void gpio_free(unsigned gpio)
  * read-modify-write as well as those controlled by the EPORT and GPIO modules.
  */
 #define MCFGPIO_SCR_START		40
-#elif defined(CONFIGM5441x)
+#elif defined(CONFIG_M5441x)
 /* The m5441x EPORT doesn't have its own GPIO port, uses PORT C */
 #define MCFGPIO_SCR_START		0
 #else

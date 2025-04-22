@@ -78,7 +78,6 @@ static const int k3_adc_to_temp[] = {
 
 struct k3_bandgap {
 	void __iomem *base;
-	const struct k3_bandgap_data *conf;
 };
 
 /* common data structures */
@@ -235,12 +234,10 @@ err_alloc:
 	return ret;
 }
 
-static int k3_bandgap_remove(struct platform_device *pdev)
+static void k3_bandgap_remove(struct platform_device *pdev)
 {
 	pm_runtime_put_sync(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
-
-	return 0;
 }
 
 static const struct of_device_id of_k3_bandgap_match[] = {

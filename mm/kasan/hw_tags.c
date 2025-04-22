@@ -8,6 +8,7 @@
 
 #define pr_fmt(fmt) "kasan: " fmt
 
+#include <kunit/visibility.h>
 #include <linux/init.h>
 #include <linux/kasan.h>
 #include <linux/kernel.h>
@@ -15,7 +16,9 @@
 #include <linux/mm.h>
 #include <linux/static_key.h>
 #include <linux/string.h>
+#include <linux/string_choices.h>
 #include <linux/types.h>
+#include <linux/vmalloc.h>
 
 #include "kasan.h"
 
@@ -57,7 +60,12 @@ enum kasan_mode kasan_mode __ro_after_init;
 EXPORT_SYMBOL_GPL(kasan_mode);
 
 /* Whether to enable vmalloc tagging. */
+#ifdef CONFIG_KASAN_VMALLOC
 DEFINE_STATIC_KEY_TRUE(kasan_flag_vmalloc);
+#else
+DEFINE_STATIC_KEY_FALSE(kasan_flag_vmalloc);
+#endif
+EXPORT_SYMBOL_GPL(kasan_flag_vmalloc);
 
 #define PAGE_ALLOC_SAMPLE_DEFAULT	1
 #define PAGE_ALLOC_SAMPLE_ORDER_DEFAULT	3
@@ -118,6 +126,9 @@ static int __init early_kasan_flag_vmalloc(char *arg)
 {
 	if (!arg)
 		return -EINVAL;
+
+	if (!IS_ENABLED(CONFIG_KASAN_VMALLOC))
+		return 0;
 
 	if (!strcmp(arg, "off"))
 		kasan_arg_vmalloc = KASAN_ARG_VMALLOC_OFF;
@@ -253,8 +264,8 @@ void __init kasan_init_hw_tags(void)
 
 	pr_info("KernelAddressSanitizer initialized (hw-tags, mode=%s, vmalloc=%s, stacktrace=%s)\n",
 		kasan_mode_info(),
-		kasan_vmalloc_enabled() ? "on" : "off",
-		kasan_stack_collection_enabled() ? "on" : "off");
+		str_on_off(kasan_vmalloc_enabled()),
+		str_on_off(kasan_stack_collection_enabled()));
 }
 
 #ifdef CONFIG_KASAN_VMALLOC
@@ -385,12 +396,12 @@ void kasan_enable_hw_tags(void)
 
 #if IS_ENABLED(CONFIG_KASAN_KUNIT_TEST)
 
-EXPORT_SYMBOL_GPL(kasan_enable_hw_tags);
+EXPORT_SYMBOL_IF_KUNIT(kasan_enable_hw_tags);
 
-void kasan_force_async_fault(void)
+VISIBLE_IF_KUNIT void kasan_force_async_fault(void)
 {
 	hw_force_async_tag_fault();
 }
-EXPORT_SYMBOL_GPL(kasan_force_async_fault);
+EXPORT_SYMBOL_IF_KUNIT(kasan_force_async_fault);
 
 #endif

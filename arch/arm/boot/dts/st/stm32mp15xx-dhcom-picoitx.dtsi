@@ -7,16 +7,6 @@
 #include <dt-bindings/pwm/pwm.h>
 
 / {
-	aliases {
-		serial0 = &uart4;
-		serial1 = &usart3;
-		serial2 = &uart8;
-	};
-
-	chosen {
-		stdout-path = "serial0:115200n8";
-	};
-
 	led {
 		compatible = "gpio-leds";
 
@@ -119,12 +109,10 @@
 };
 
 &usbh_ehci {
-	phys = <&usbphyc_port0>;
 	status = "okay";
 };
 
 &usbh_ohci {
-	phys = <&usbphyc_port0>;
 	status = "okay";
 };
 

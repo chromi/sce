@@ -11,11 +11,13 @@
 #include <linux/clk.h>
 #include <linux/dma-mapping.h>
 #include <linux/io.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
+#include <linux/property.h>
 #include <linux/pm_runtime.h>
 
+#include <drm/clients/drm_client_setup.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_bridge.h>
 #include <drm/drm_connector.h>
@@ -248,7 +250,11 @@ static int mxsfb_load(struct drm_device *drm,
 	pm_runtime_enable(drm->dev);
 
 	/* Modeset init */
-	drm_mode_config_init(drm);
+	ret = drmm_mode_config_init(drm);
+	if (ret) {
+		dev_err(drm->dev, "Failed to initialize mode config\n");
+		goto err_vblank;
+	}
 
 	ret = mxsfb_kms_init(mxsfb);
 	if (ret < 0) {
@@ -311,7 +317,6 @@ err_vblank:
 static void mxsfb_unload(struct drm_device *drm)
 {
 	drm_kms_helper_poll_fini(drm);
-	drm_mode_config_cleanup(drm);
 
 	pm_runtime_get_sync(drm->dev);
 	mxsfb_irq_uninstall(drm);
@@ -327,10 +332,10 @@ DEFINE_DRM_GEM_DMA_FOPS(fops);
 static const struct drm_driver mxsfb_driver = {
 	.driver_features	= DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC,
 	DRM_GEM_DMA_DRIVER_OPS,
+	DRM_FBDEV_DMA_DRIVER_OPS,
 	.fops	= &fops,
 	.name	= "mxsfb-drm",
 	.desc	= "MXSFB Controller DRM",
-	.date	= "20160824",
 	.major	= 1,
 	.minor	= 0,
 };
@@ -346,18 +351,13 @@ MODULE_DEVICE_TABLE(of, mxsfb_dt_ids);
 static int mxsfb_probe(struct platform_device *pdev)
 {
 	struct drm_device *drm;
-	const struct of_device_id *of_id =
-			of_match_device(mxsfb_dt_ids, &pdev->dev);
 	int ret;
-
-	if (!pdev->dev.of_node)
-		return -ENODEV;
 
 	drm = drm_dev_alloc(&mxsfb_driver, &pdev->dev);
 	if (IS_ERR(drm))
 		return PTR_ERR(drm);
 
-	ret = mxsfb_load(drm, of_id->data);
+	ret = mxsfb_load(drm, device_get_match_data(&pdev->dev));
 	if (ret)
 		goto err_free;
 
@@ -365,7 +365,7 @@ static int mxsfb_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_unload;
 
-	drm_fbdev_dma_setup(drm, 32);
+	drm_client_setup(drm, NULL);
 
 	return 0;
 
@@ -416,7 +416,7 @@ static const struct dev_pm_ops mxsfb_pm_ops = {
 
 static struct platform_driver mxsfb_platform_driver = {
 	.probe		= mxsfb_probe,
-	.remove_new	= mxsfb_remove,
+	.remove		= mxsfb_remove,
 	.shutdown	= mxsfb_shutdown,
 	.driver	= {
 		.name		= "mxsfb",

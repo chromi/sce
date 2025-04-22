@@ -55,18 +55,6 @@ static int ehl_gpio_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int ehl_gpio_suspend(struct device *dev)
-{
-	return tng_gpio_suspend(dev);
-}
-
-static int ehl_gpio_resume(struct device *dev)
-{
-	return tng_gpio_resume(dev);
-}
-
-static DEFINE_SIMPLE_DEV_PM_OPS(ehl_gpio_pm_ops, ehl_gpio_suspend, ehl_gpio_resume);
-
 static const struct platform_device_id ehl_gpio_ids[] = {
 	{ "gpio-elkhartlake" },
 	{ }
@@ -76,7 +64,7 @@ MODULE_DEVICE_TABLE(platform, ehl_gpio_ids);
 static struct platform_driver ehl_gpio_driver = {
 	.driver	= {
 		.name	= "gpio-elkhartlake",
-		.pm	= pm_sleep_ptr(&ehl_gpio_pm_ops),
+		.pm	= pm_sleep_ptr(&tng_gpio_pm_ops),
 	},
 	.probe		= ehl_gpio_probe,
 	.id_table	= ehl_gpio_ids,
@@ -87,4 +75,4 @@ MODULE_AUTHOR("Pandith N <pandith.n@intel.com>");
 MODULE_AUTHOR("Raag Jadav <raag.jadav@intel.com>");
 MODULE_DESCRIPTION("Intel Elkhart Lake PSE GPIO driver");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS(GPIO_TANGIER);
+MODULE_IMPORT_NS("GPIO_TANGIER");

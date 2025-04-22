@@ -231,7 +231,7 @@ error_iio_device_register:
 	return ret;
 }
 
-static int vf610_dac_remove(struct platform_device *pdev)
+static void vf610_dac_remove(struct platform_device *pdev)
 {
 	struct iio_dev *indio_dev = platform_get_drvdata(pdev);
 	struct vf610_dac *info = iio_priv(indio_dev);
@@ -239,8 +239,6 @@ static int vf610_dac_remove(struct platform_device *pdev)
 	iio_device_unregister(indio_dev);
 	vf610_dac_exit(info);
 	clk_disable_unprepare(info->clk);
-
-	return 0;
 }
 
 static int vf610_dac_suspend(struct device *dev)

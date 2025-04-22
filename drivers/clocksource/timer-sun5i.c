@@ -256,10 +256,8 @@ static int sun5i_timer_probe(struct platform_device *pdev)
 	}
 
 	irq = platform_get_irq(pdev, 0);
-	if (irq < 0) {
-		dev_err(dev, "Can't get IRQ\n");
+	if (irq < 0)
 		return irq;
-	}
 
 	clk = devm_clk_get_enabled(dev, NULL);
 	if (IS_ERR(clk)) {
@@ -320,7 +318,7 @@ MODULE_DEVICE_TABLE(of, sun5i_timer_of_match);
 
 static struct platform_driver sun5i_timer_driver = {
 	.probe		= sun5i_timer_probe,
-	.remove_new	= sun5i_timer_remove,
+	.remove		= sun5i_timer_remove,
 	.driver	= {
 		.name	= "sun5i-timer",
 		.of_match_table = sun5i_timer_of_match,

@@ -35,13 +35,6 @@ static void uniphier_clk_disable(void *_priv)
 	clk_bulk_disable_unprepare(priv->data->nclks, priv->clk);
 }
 
-static void uniphier_rst_assert(void *_priv)
-{
-	struct uniphier_glue_reset_priv *priv = _priv;
-
-	reset_control_bulk_assert(priv->data->nrsts, priv->rst);
-}
-
 static int uniphier_glue_reset_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -58,21 +51,13 @@ static int uniphier_glue_reset_probe(struct platform_device *pdev)
 		    priv->data->nrsts > MAX_RSTS))
 		return -EINVAL;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	priv->rdata.membase = devm_ioremap_resource(dev, res);
+	priv->rdata.membase = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(priv->rdata.membase))
 		return PTR_ERR(priv->rdata.membase);
 
 	for (i = 0; i < priv->data->nclks; i++)
 		priv->clk[i].id = priv->data->clock_names[i];
 	ret = devm_clk_bulk_get(dev, priv->data->nclks, priv->clk);
-	if (ret)
-		return ret;
-
-	for (i = 0; i < priv->data->nrsts; i++)
-		priv->rst[i].id = priv->data->reset_names[i];
-	ret = devm_reset_control_bulk_get_shared(dev, priv->data->nrsts,
-						 priv->rst);
 	if (ret)
 		return ret;
 
@@ -84,11 +69,11 @@ static int uniphier_glue_reset_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	ret = reset_control_bulk_deassert(priv->data->nrsts, priv->rst);
-	if (ret)
-		return ret;
-
-	ret = devm_add_action_or_reset(dev, uniphier_rst_assert, priv);
+	for (i = 0; i < priv->data->nrsts; i++)
+		priv->rst[i].id = priv->data->reset_names[i];
+	ret = devm_reset_control_bulk_get_shared_deasserted(dev,
+							    priv->data->nrsts,
+							    priv->rst);
 	if (ret)
 		return ret;
 

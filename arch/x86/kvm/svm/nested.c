@@ -63,8 +63,12 @@ static u64 nested_svm_get_tdp_pdptr(struct kvm_vcpu *vcpu, int index)
 	u64 pdpte;
 	int ret;
 
+	/*
+	 * Note, nCR3 is "assumed" to be 32-byte aligned, i.e. the CPU ignores
+	 * nCR3[4:0] when loading PDPTEs from memory.
+	 */
 	ret = kvm_vcpu_read_guest_page(vcpu, gpa_to_gfn(cr3), &pdpte,
-				       offset_in_page(cr3) + index * 8, 8);
+				       (cr3 & GENMASK(11, 5)) + index * 8, 8);
 	if (ret)
 		return 0;
 	return pdpte;
@@ -107,7 +111,7 @@ static void nested_svm_uninit_mmu_context(struct kvm_vcpu *vcpu)
 
 static bool nested_vmcb_needs_vls_intercept(struct vcpu_svm *svm)
 {
-	if (!guest_can_use(&svm->vcpu, X86_FEATURE_V_VMSAVE_VMLOAD))
+	if (!guest_cpu_cap_has(&svm->vcpu, X86_FEATURE_V_VMSAVE_VMLOAD))
 		return true;
 
 	if (!nested_npt_enabled(svm))
@@ -187,7 +191,6 @@ void recalc_intercepts(struct vcpu_svm *svm)
  */
 static bool nested_svm_vmrun_msrpm(struct vcpu_svm *svm)
 {
-	struct hv_vmcb_enlightenments *hve = &svm->nested.ctl.hv_enlightenments;
 	int i;
 
 	/*
@@ -198,11 +201,16 @@ static bool nested_svm_vmrun_msrpm(struct vcpu_svm *svm)
 	 * - Nested hypervisor (L1) is using Hyper-V emulation interface and
 	 * tells KVM (L0) there were no changes in MSR bitmap for L2.
 	 */
-	if (!svm->nested.force_msr_bitmap_recalc &&
-	    kvm_hv_hypercall_enabled(&svm->vcpu) &&
-	    hve->hv_enlightenments_control.msr_bitmap &&
-	    (svm->nested.ctl.clean & BIT(HV_VMCB_NESTED_ENLIGHTENMENTS)))
-		goto set_msrpm_base_pa;
+#ifdef CONFIG_KVM_HYPERV
+	if (!svm->nested.force_msr_bitmap_recalc) {
+		struct hv_vmcb_enlightenments *hve = &svm->nested.ctl.hv_enlightenments;
+
+		if (kvm_hv_hypercall_enabled(&svm->vcpu) &&
+		    hve->hv_enlightenments_control.msr_bitmap &&
+		    (svm->nested.ctl.clean & BIT(HV_VMCB_NESTED_ENLIGHTENMENTS)))
+			goto set_msrpm_base_pa;
+	}
+#endif
 
 	if (!(vmcb12_is_intercept(&svm->nested.ctl, INTERCEPT_MSR_PROT)))
 		return true;
@@ -230,7 +238,9 @@ static bool nested_svm_vmrun_msrpm(struct vcpu_svm *svm)
 
 	svm->nested.force_msr_bitmap_recalc = false;
 
+#ifdef CONFIG_KVM_HYPERV
 set_msrpm_base_pa:
+#endif
 	svm->vmcb->control.msrpm_base_pa = __sme_set(__pa(svm->nested.msrpm));
 
 	return true;
@@ -245,18 +255,6 @@ static bool nested_svm_check_bitmap_pa(struct kvm_vcpu *vcpu, u64 pa, u32 size)
 
 	return kvm_vcpu_is_legal_gpa(vcpu, addr) &&
 	    kvm_vcpu_is_legal_gpa(vcpu, addr + size - 1);
-}
-
-static bool nested_svm_check_tlb_ctl(struct kvm_vcpu *vcpu, u8 tlb_ctl)
-{
-	/* Nested FLUSHBYASID is not supported yet.  */
-	switch(tlb_ctl) {
-		case TLB_CONTROL_DO_NOTHING:
-		case TLB_CONTROL_FLUSH_ALL_ASID:
-			return true;
-		default:
-			return false;
-	}
 }
 
 static bool __nested_vmcb_check_controls(struct kvm_vcpu *vcpu,
@@ -276,9 +274,6 @@ static bool __nested_vmcb_check_controls(struct kvm_vcpu *vcpu,
 		return false;
 	if (CC(!nested_svm_check_bitmap_pa(vcpu, control->iopm_base_pa,
 					   IOPM_SIZE)))
-		return false;
-
-	if (CC(!nested_svm_check_tlb_ctl(vcpu, control->tlb_ctl)))
 		return false;
 
 	if (CC((control->int_ctl & V_NMI_ENABLE_MASK) &&
@@ -311,7 +306,7 @@ static bool __nested_vmcb_check_save(struct kvm_vcpu *vcpu,
 	if ((save->efer & EFER_LME) && (save->cr0 & X86_CR0_PG)) {
 		if (CC(!(save->cr4 & X86_CR4_PAE)) ||
 		    CC(!(save->cr0 & X86_CR0_PE)) ||
-		    CC(kvm_vcpu_is_illegal_gpa(vcpu, save->cr3)))
+		    CC(!kvm_vcpu_is_legal_cr3(vcpu, save->cr3)))
 			return false;
 	}
 
@@ -378,12 +373,14 @@ void __nested_copy_vmcb_control_to_cache(struct kvm_vcpu *vcpu,
 	to->msrpm_base_pa &= ~0x0fffULL;
 	to->iopm_base_pa  &= ~0x0fffULL;
 
+#ifdef CONFIG_KVM_HYPERV
 	/* Hyper-V extensions (Enlightened VMCB) */
 	if (kvm_hv_hypercall_enabled(vcpu)) {
 		to->clean = from->clean;
 		memcpy(&to->hv_enlightenments, &from->hv_enlightenments,
 		       sizeof(to->hv_enlightenments));
 	}
+#endif
 }
 
 void nested_copy_vmcb_control_to_cache(struct vcpu_svm *svm,
@@ -487,14 +484,8 @@ static void nested_save_pending_event_to_vmcb12(struct vcpu_svm *svm,
 
 static void nested_svm_transition_tlb_flush(struct kvm_vcpu *vcpu)
 {
-	/*
-	 * KVM_REQ_HV_TLB_FLUSH flushes entries from either L1's VP_ID or
-	 * L2's VP_ID upon request from the guest. Make sure we check for
-	 * pending entries in the right FIFO upon L1/L2 transition as these
-	 * requests are put by other vCPUs asynchronously.
-	 */
-	if (to_hv_vcpu(vcpu) && npt_enabled)
-		kvm_make_request(KVM_REQ_HV_TLB_FLUSH, vcpu);
+	/* Handle pending Hyper-V TLB flush requests */
+	kvm_hv_nested_transtion_tlb_flush(vcpu, npt_enabled);
 
 	/*
 	 * TODO: optimize unconditional TLB flush/MMU sync.  A partial list of
@@ -520,7 +511,7 @@ static void nested_svm_transition_tlb_flush(struct kvm_vcpu *vcpu)
 static int nested_svm_load_cr3(struct kvm_vcpu *vcpu, unsigned long cr3,
 			       bool nested_npt, bool reload_pdptrs)
 {
-	if (CC(kvm_vcpu_is_illegal_gpa(vcpu, cr3)))
+	if (CC(!kvm_vcpu_is_legal_cr3(vcpu, cr3)))
 		return -EINVAL;
 
 	if (reload_pdptrs && !nested_npt && is_pae_paging(vcpu) &&
@@ -603,7 +594,7 @@ static void nested_vmcb02_prepare_save(struct vcpu_svm *svm, struct vmcb *vmcb12
 		vmcb_mark_dirty(vmcb02, VMCB_DR);
 	}
 
-	if (unlikely(guest_can_use(vcpu, X86_FEATURE_LBRV) &&
+	if (unlikely(guest_cpu_cap_has(vcpu, X86_FEATURE_LBRV) &&
 		     (svm->nested.ctl.virt_ext & LBR_CTL_ENABLE_MASK))) {
 		/*
 		 * Reserved bits of DEBUGCTL are ignored.  Be consistent with
@@ -655,12 +646,17 @@ static void nested_vmcb02_prepare_control(struct vcpu_svm *svm,
 	u32 pause_count12;
 	u32 pause_thresh12;
 
+	nested_svm_transition_tlb_flush(vcpu);
+
+	/* Enter Guest-Mode */
+	enter_guest_mode(vcpu);
+
 	/*
 	 * Filled at exit: exit_code, exit_code_hi, exit_info_1, exit_info_2,
 	 * exit_int_info, exit_int_info_err, next_rip, insn_len, insn_bytes.
 	 */
 
-	if (guest_can_use(vcpu, X86_FEATURE_VGIF) &&
+	if (guest_cpu_cap_has(vcpu, X86_FEATURE_VGIF) &&
 	    (svm->nested.ctl.int_ctl & V_GIF_ENABLE_MASK))
 		int_ctl_vmcb12_bits |= (V_GIF_MASK | V_GIF_ENABLE_MASK);
 	else
@@ -698,7 +694,7 @@ static void nested_vmcb02_prepare_control(struct vcpu_svm *svm,
 
 	vmcb02->control.tsc_offset = vcpu->arch.tsc_offset;
 
-	if (guest_can_use(vcpu, X86_FEATURE_TSCRATEMSR) &&
+	if (guest_cpu_cap_has(vcpu, X86_FEATURE_TSCRATEMSR) &&
 	    svm->tsc_ratio_msr != kvm_caps.default_tsc_scaling_ratio)
 		nested_svm_update_tsc_ratio_msr(vcpu);
 
@@ -719,7 +715,7 @@ static void nested_vmcb02_prepare_control(struct vcpu_svm *svm,
 	 * what a nrips=0 CPU would do (L1 is responsible for advancing RIP
 	 * prior to injecting the event).
 	 */
-	if (guest_can_use(vcpu, X86_FEATURE_NRIPS))
+	if (guest_cpu_cap_has(vcpu, X86_FEATURE_NRIPS))
 		vmcb02->control.next_rip    = svm->nested.ctl.next_rip;
 	else if (boot_cpu_has(X86_FEATURE_NRIPS))
 		vmcb02->control.next_rip    = vmcb12_rip;
@@ -729,7 +725,7 @@ static void nested_vmcb02_prepare_control(struct vcpu_svm *svm,
 		svm->soft_int_injected = true;
 		svm->soft_int_csbase = vmcb12_csbase;
 		svm->soft_int_old_rip = vmcb12_rip;
-		if (guest_can_use(vcpu, X86_FEATURE_NRIPS))
+		if (guest_cpu_cap_has(vcpu, X86_FEATURE_NRIPS))
 			svm->soft_int_next_rip = svm->nested.ctl.next_rip;
 		else
 			svm->soft_int_next_rip = vmcb12_rip;
@@ -737,18 +733,18 @@ static void nested_vmcb02_prepare_control(struct vcpu_svm *svm,
 
 	vmcb02->control.virt_ext            = vmcb01->control.virt_ext &
 					      LBR_CTL_ENABLE_MASK;
-	if (guest_can_use(vcpu, X86_FEATURE_LBRV))
+	if (guest_cpu_cap_has(vcpu, X86_FEATURE_LBRV))
 		vmcb02->control.virt_ext  |=
 			(svm->nested.ctl.virt_ext & LBR_CTL_ENABLE_MASK);
 
 	if (!nested_vmcb_needs_vls_intercept(svm))
 		vmcb02->control.virt_ext |= VIRTUAL_VMLOAD_VMSAVE_ENABLE_MASK;
 
-	if (guest_can_use(vcpu, X86_FEATURE_PAUSEFILTER))
+	if (guest_cpu_cap_has(vcpu, X86_FEATURE_PAUSEFILTER))
 		pause_count12 = svm->nested.ctl.pause_filter_count;
 	else
 		pause_count12 = 0;
-	if (guest_can_use(vcpu, X86_FEATURE_PFTHRESHOLD))
+	if (guest_cpu_cap_has(vcpu, X86_FEATURE_PFTHRESHOLD))
 		pause_thresh12 = svm->nested.ctl.pause_filter_thresh;
 	else
 		pause_thresh12 = 0;
@@ -770,11 +766,6 @@ static void nested_vmcb02_prepare_control(struct vcpu_svm *svm,
 				vmcb02->control.pause_filter_thresh = 0;
 		}
 	}
-
-	nested_svm_transition_tlb_flush(vcpu);
-
-	/* Enter Guest-Mode */
-	enter_guest_mode(vcpu);
 
 	/*
 	 * Merge guest and host intercepts - must be called with vcpu in
@@ -935,7 +926,7 @@ out_exit_err:
 	nested_svm_vmexit(svm);
 
 out:
-	kvm_vcpu_unmap(vcpu, &map, true);
+	kvm_vcpu_unmap(vcpu, &map);
 
 	return ret;
 }
@@ -1035,7 +1026,7 @@ int nested_svm_vmexit(struct vcpu_svm *svm)
 	if (vmcb12->control.exit_code != SVM_EXIT_ERR)
 		nested_save_pending_event_to_vmcb12(svm, vmcb12);
 
-	if (guest_can_use(vcpu, X86_FEATURE_NRIPS))
+	if (guest_cpu_cap_has(vcpu, X86_FEATURE_NRIPS))
 		vmcb12->control.next_rip  = vmcb02->control.next_rip;
 
 	vmcb12->control.int_ctl           = svm->nested.ctl.int_ctl;
@@ -1074,7 +1065,7 @@ int nested_svm_vmexit(struct vcpu_svm *svm)
 	if (!nested_exit_on_intr(svm))
 		kvm_make_request(KVM_REQ_EVENT, &svm->vcpu);
 
-	if (unlikely(guest_can_use(vcpu, X86_FEATURE_LBRV) &&
+	if (unlikely(guest_cpu_cap_has(vcpu, X86_FEATURE_LBRV) &&
 		     (svm->nested.ctl.virt_ext & LBR_CTL_ENABLE_MASK))) {
 		svm_copy_lbrs(vmcb12, vmcb02);
 		svm_update_lbrv(vcpu);
@@ -1139,7 +1130,7 @@ int nested_svm_vmexit(struct vcpu_svm *svm)
 				       vmcb12->control.exit_int_info_err,
 				       KVM_ISA_SVM);
 
-	kvm_vcpu_unmap(vcpu, &map, true);
+	kvm_vcpu_unmap(vcpu, &map);
 
 	nested_svm_transition_tlb_flush(vcpu);
 
@@ -1194,7 +1185,7 @@ int svm_allocate_nested(struct vcpu_svm *svm)
 	if (svm->nested.initialized)
 		return 0;
 
-	vmcb02_page = alloc_page(GFP_KERNEL_ACCOUNT | __GFP_ZERO);
+	vmcb02_page = snp_safe_alloc_page();
 	if (!vmcb02_page)
 		return -ENOMEM;
 	svm->nested.vmcb02.ptr = page_address(vmcb02_page);
@@ -1706,8 +1697,8 @@ static int svm_set_nested_state(struct kvm_vcpu *vcpu,
 		return -EINVAL;
 
 	ret  = -ENOMEM;
-	ctl  = kzalloc(sizeof(*ctl),  GFP_KERNEL_ACCOUNT);
-	save = kzalloc(sizeof(*save), GFP_KERNEL_ACCOUNT);
+	ctl  = kzalloc(sizeof(*ctl),  GFP_KERNEL);
+	save = kzalloc(sizeof(*save), GFP_KERNEL);
 	if (!ctl || !save)
 		goto out_free;
 

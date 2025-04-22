@@ -240,11 +240,12 @@ static int fuse_send_removemapping(struct inode *inode,
 
 	args.opcode = FUSE_REMOVEMAPPING;
 	args.nodeid = fi->nodeid;
-	args.in_numargs = 2;
-	args.in_args[0].size = sizeof(*inargp);
-	args.in_args[0].value = inargp;
-	args.in_args[1].size = inargp->count * sizeof(*remove_one);
-	args.in_args[1].value = remove_one;
+	args.in_numargs = 3;
+	fuse_set_zero_arg0(&args);
+	args.in_args[1].size = sizeof(*inargp);
+	args.in_args[1].value = inargp;
+	args.in_args[2].size = inargp->count * sizeof(*remove_one);
+	args.in_args[2].value = remove_one;
 	return fuse_simple_request(fm, &args);
 }
 
@@ -774,16 +775,6 @@ out:
 	return ret;
 }
 
-static int fuse_dax_writepages(struct address_space *mapping,
-			       struct writeback_control *wbc)
-{
-
-	struct inode *inode = mapping->host;
-	struct fuse_conn *fc = get_fuse_conn(inode);
-
-	return dax_writeback_mapping_range(mapping, fc->dax->dev, wbc);
-}
-
 static vm_fault_t __fuse_dax_fault(struct vm_fault *vmf, unsigned int order,
 		bool write)
 {
@@ -1222,6 +1213,7 @@ void fuse_dax_conn_free(struct fuse_conn *fc)
 	if (fc->dax) {
 		fuse_free_dax_mem_ranges(&fc->dax->free_ranges);
 		kfree(fc->dax);
+		fc->dax = NULL;
 	}
 }
 
@@ -1322,7 +1314,6 @@ bool fuse_dax_inode_alloc(struct super_block *sb, struct fuse_inode *fi)
 }
 
 static const struct address_space_operations fuse_dax_file_aops  = {
-	.writepages	= fuse_dax_writepages,
 	.direct_IO	= noop_direct_IO,
 	.dirty_folio	= noop_dirty_folio,
 };

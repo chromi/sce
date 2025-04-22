@@ -78,7 +78,7 @@
 struct thermal_soc_data {
 	u32 num_sensors;
 	u32 version;
-	int (*get_temp)(void *, int *);
+	int (*get_temp)(void *data, int *temp);
 };
 
 struct tmu_sensor {
@@ -363,7 +363,7 @@ disable_clk:
 	return ret;
 }
 
-static int imx8mm_tmu_remove(struct platform_device *pdev)
+static void imx8mm_tmu_remove(struct platform_device *pdev)
 {
 	struct imx8mm_tmu *tmu = platform_get_drvdata(pdev);
 
@@ -372,8 +372,6 @@ static int imx8mm_tmu_remove(struct platform_device *pdev)
 
 	clk_disable_unprepare(tmu->clk);
 	platform_set_drvdata(pdev, NULL);
-
-	return 0;
 }
 
 static struct thermal_soc_data imx8mm_tmu_data = {

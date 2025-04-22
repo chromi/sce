@@ -26,14 +26,6 @@ static int erdma_netdev_event(struct notifier_block *nb, unsigned long event,
 		goto done;
 
 	switch (event) {
-	case NETDEV_UP:
-		dev->state = IB_PORT_ACTIVE;
-		erdma_port_event(dev, IB_EVENT_PORT_ACTIVE);
-		break;
-	case NETDEV_DOWN:
-		dev->state = IB_PORT_DOWN;
-		erdma_port_event(dev, IB_EVENT_PORT_ERR);
-		break;
 	case NETDEV_CHANGEMTU:
 		if (dev->mtu != netdev->mtu) {
 			erdma_set_mtu(dev, netdev->mtu);
@@ -172,14 +164,43 @@ static int erdma_device_init(struct erdma_dev *dev, struct pci_dev *pdev)
 {
 	int ret;
 
+	dev->proto = erdma_reg_read32(dev, ERDMA_REGS_DEV_PROTO_REG);
+
+	dev->resp_pool = dma_pool_create("erdma_resp_pool", &pdev->dev,
+					 ERDMA_HW_RESP_SIZE, ERDMA_HW_RESP_SIZE,
+					 0);
+	if (!dev->resp_pool)
+		return -ENOMEM;
+
+	dev->db_pool = dma_pool_create("erdma_db_pool", &pdev->dev,
+				       ERDMA_DB_SIZE, ERDMA_DB_SIZE, 0);
+	if (!dev->db_pool) {
+		ret = -ENOMEM;
+		goto destroy_resp_pool;
+	}
+
 	ret = dma_set_mask_and_coherent(&pdev->dev,
 					DMA_BIT_MASK(ERDMA_PCI_WIDTH));
 	if (ret)
-		return ret;
+		goto destroy_db_pool;
 
 	dma_set_max_seg_size(&pdev->dev, UINT_MAX);
 
 	return 0;
+
+destroy_db_pool:
+	dma_pool_destroy(dev->db_pool);
+
+destroy_resp_pool:
+	dma_pool_destroy(dev->resp_pool);
+
+	return ret;
+}
+
+static void erdma_device_uninit(struct erdma_dev *dev)
+{
+	dma_pool_destroy(dev->db_pool);
+	dma_pool_destroy(dev->resp_pool);
 }
 
 static void erdma_hw_reset(struct erdma_dev *dev)
@@ -273,7 +294,7 @@ static int erdma_probe_dev(struct pci_dev *pdev)
 
 	err = erdma_request_vectors(dev);
 	if (err)
-		goto err_iounmap_func_bar;
+		goto err_uninit_device;
 
 	err = erdma_comm_irq_init(dev);
 	if (err)
@@ -306,13 +327,16 @@ err_uninit_cmdq:
 	erdma_cmdq_destroy(dev);
 
 err_uninit_aeq:
-	erdma_aeq_destroy(dev);
+	erdma_eq_destroy(dev, &dev->aeq);
 
 err_uninit_comm_irq:
 	erdma_comm_irq_uninit(dev);
 
 err_free_vectors:
 	pci_free_irq_vectors(dev->pdev);
+
+err_uninit_device:
+	erdma_device_uninit(dev);
 
 err_iounmap_func_bar:
 	devm_iounmap(&pdev->dev, dev->func_bar);
@@ -336,9 +360,10 @@ static void erdma_remove_dev(struct pci_dev *pdev)
 	erdma_ceqs_uninit(dev);
 	erdma_hw_reset(dev);
 	erdma_cmdq_destroy(dev);
-	erdma_aeq_destroy(dev);
+	erdma_eq_destroy(dev, &dev->aeq);
 	erdma_comm_irq_uninit(dev);
 	pci_free_irq_vectors(dev->pdev);
+	erdma_device_uninit(dev);
 
 	devm_iounmap(&pdev->dev, dev->func_bar);
 	pci_release_selected_regions(pdev, ERDMA_BAR_MASK);
@@ -359,7 +384,7 @@ static int erdma_dev_attrs_init(struct erdma_dev *dev)
 				CMDQ_OPCODE_QUERY_DEVICE);
 
 	err = erdma_post_cmd_wait(&dev->cmdq, &req_hdr, sizeof(req_hdr), &cap0,
-				  &cap1);
+				  &cap1, true);
 	if (err)
 		return err;
 
@@ -367,6 +392,8 @@ static int erdma_dev_attrs_init(struct erdma_dev *dev)
 	dev->attrs.max_mr_size = 1ULL << ERDMA_GET_CAP(MAX_MR_SIZE, cap0);
 	dev->attrs.max_mw = 1 << ERDMA_GET_CAP(MAX_MW, cap1);
 	dev->attrs.max_recv_wr = 1 << ERDMA_GET_CAP(MAX_RECV_WR, cap0);
+	dev->attrs.max_gid = 1 << ERDMA_GET_CAP(MAX_GID, cap0);
+	dev->attrs.max_ah = 1 << ERDMA_GET_CAP(MAX_AH, cap0);
 	dev->attrs.local_dma_key = ERDMA_GET_CAP(DMA_LOCAL_KEY, cap1);
 	dev->attrs.cc = ERDMA_GET_CAP(DEFAULT_CC, cap1);
 	dev->attrs.max_qp = ERDMA_NQP_PER_QBLOCK * ERDMA_GET_CAP(QBLOCK, cap1);
@@ -384,12 +411,13 @@ static int erdma_dev_attrs_init(struct erdma_dev *dev)
 
 	dev->res_cb[ERDMA_RES_TYPE_PD].max_cap = ERDMA_MAX_PD;
 	dev->res_cb[ERDMA_RES_TYPE_STAG_IDX].max_cap = dev->attrs.max_mr;
+	dev->res_cb[ERDMA_RES_TYPE_AH].max_cap = dev->attrs.max_ah;
 
 	erdma_cmdq_build_reqhdr(&req_hdr, CMDQ_SUBMOD_COMMON,
 				CMDQ_OPCODE_QUERY_FW_INFO);
 
 	err = erdma_post_cmd_wait(&dev->cmdq, &req_hdr, sizeof(req_hdr), &cap0,
-				  &cap1);
+				  &cap1, true);
 	if (!err)
 		dev->attrs.fw_version =
 			FIELD_GET(ERDMA_CMD_INFO0_FW_VER_MASK, cap0);
@@ -410,7 +438,8 @@ static int erdma_device_config(struct erdma_dev *dev)
 	req.cfg = FIELD_PREP(ERDMA_CMD_CONFIG_DEVICE_PGSHIFT_MASK, PAGE_SHIFT) |
 		  FIELD_PREP(ERDMA_CMD_CONFIG_DEVICE_PS_EN_MASK, 1);
 
-	return erdma_post_cmd_wait(&dev->cmdq, &req, sizeof(req), NULL, NULL);
+	return erdma_post_cmd_wait(&dev->cmdq, &req, sizeof(req), NULL, NULL,
+				   true);
 }
 
 static int erdma_res_cb_init(struct erdma_dev *dev)
@@ -443,11 +472,35 @@ static void erdma_res_cb_free(struct erdma_dev *dev)
 		bitmap_free(dev->res_cb[i].bitmap);
 }
 
+static const struct ib_device_ops erdma_device_ops_rocev2 = {
+	.get_link_layer = erdma_get_link_layer,
+	.add_gid = erdma_add_gid,
+	.del_gid = erdma_del_gid,
+	.query_pkey = erdma_query_pkey,
+	.create_ah = erdma_create_ah,
+	.destroy_ah = erdma_destroy_ah,
+	.query_ah = erdma_query_ah,
+
+	INIT_RDMA_OBJ_SIZE(ib_ah, erdma_ah, ibah),
+};
+
+static const struct ib_device_ops erdma_device_ops_iwarp = {
+	.iw_accept = erdma_accept,
+	.iw_add_ref = erdma_qp_get_ref,
+	.iw_connect = erdma_connect,
+	.iw_create_listen = erdma_create_listen,
+	.iw_destroy_listen = erdma_destroy_listen,
+	.iw_get_qp = erdma_get_ibqp,
+	.iw_reject = erdma_reject,
+	.iw_rem_ref = erdma_qp_put_ref,
+};
+
 static const struct ib_device_ops erdma_device_ops = {
 	.owner = THIS_MODULE,
 	.driver_id = RDMA_DRIVER_ERDMA,
 	.uverbs_abi_ver = ERDMA_ABI_VERSION,
 
+	.alloc_hw_port_stats = erdma_alloc_hw_port_stats,
 	.alloc_mr = erdma_ib_alloc_mr,
 	.alloc_pd = erdma_alloc_pd,
 	.alloc_ucontext = erdma_alloc_ucontext,
@@ -458,20 +511,13 @@ static const struct ib_device_ops erdma_device_ops = {
 	.dereg_mr = erdma_dereg_mr,
 	.destroy_cq = erdma_destroy_cq,
 	.destroy_qp = erdma_destroy_qp,
+	.disassociate_ucontext = erdma_disassociate_ucontext,
 	.get_dma_mr = erdma_get_dma_mr,
+	.get_hw_stats = erdma_get_hw_stats,
 	.get_port_immutable = erdma_get_port_immutable,
-	.iw_accept = erdma_accept,
-	.iw_add_ref = erdma_qp_get_ref,
-	.iw_connect = erdma_connect,
-	.iw_create_listen = erdma_create_listen,
-	.iw_destroy_listen = erdma_destroy_listen,
-	.iw_get_qp = erdma_get_ibqp,
-	.iw_reject = erdma_reject,
-	.iw_rem_ref = erdma_qp_put_ref,
 	.map_mr_sg = erdma_map_mr_sg,
 	.mmap = erdma_mmap,
 	.mmap_free = erdma_mmap_free,
-	.modify_qp = erdma_modify_qp,
 	.post_recv = erdma_post_recv,
 	.post_send = erdma_post_send,
 	.poll_cq = erdma_poll_cq,
@@ -481,6 +527,7 @@ static const struct ib_device_ops erdma_device_ops = {
 	.query_qp = erdma_query_qp,
 	.req_notify_cq = erdma_req_notify_cq,
 	.reg_user_mr = erdma_reg_user_mr,
+	.modify_qp = erdma_modify_qp,
 
 	INIT_RDMA_OBJ_SIZE(ib_cq, erdma_cq, ibcq),
 	INIT_RDMA_OBJ_SIZE(ib_pd, erdma_pd, ibpd),
@@ -503,7 +550,14 @@ static int erdma_ib_device_add(struct pci_dev *pdev)
 	if (ret)
 		return ret;
 
-	ibdev->node_type = RDMA_NODE_RNIC;
+	if (erdma_device_iwarp(dev)) {
+		ibdev->node_type = RDMA_NODE_RNIC;
+		ib_set_device_ops(ibdev, &erdma_device_ops_iwarp);
+	} else {
+		ibdev->node_type = RDMA_NODE_IB_CA;
+		ib_set_device_ops(ibdev, &erdma_device_ops_rocev2);
+	}
+
 	memcpy(ibdev->node_desc, ERDMA_NODE_DESC, sizeof(ERDMA_NODE_DESC));
 
 	/*

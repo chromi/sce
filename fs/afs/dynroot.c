@@ -76,7 +76,7 @@ struct inode *afs_iget_pseudo_dir(struct super_block *sb, bool root)
 	/* there shouldn't be an existing inode */
 	BUG_ON(!(inode->i_state & I_NEW));
 
-	netfs_inode_init(&vnode->netfs, NULL);
+	netfs_inode_init(&vnode->netfs, NULL, false);
 	inode->i_size		= 0;
 	inode->i_mode		= S_IFDIR | S_IRUGO | S_IXUGO;
 	if (root) {
@@ -88,7 +88,7 @@ struct inode *afs_iget_pseudo_dir(struct super_block *sb, bool root)
 	set_nlink(inode, 2);
 	inode->i_uid		= GLOBAL_ROOT_UID;
 	inode->i_gid		= GLOBAL_ROOT_GID;
-	inode->i_atime = inode->i_mtime = inode_set_ctime_current(inode);
+	simple_inode_init_ts(inode);
 	inode->i_blocks		= 0;
 	inode->i_generation	= 0;
 
@@ -114,6 +114,7 @@ static int afs_probe_cell_name(struct dentry *dentry)
 	struct afs_net *net = afs_d2net(dentry);
 	const char *name = dentry->d_name.name;
 	size_t len = dentry->d_name.len;
+	char *result = NULL;
 	int ret;
 
 	/* Names prefixed with a dot are R/W mounts. */
@@ -131,9 +132,22 @@ static int afs_probe_cell_name(struct dentry *dentry)
 	}
 
 	ret = dns_query(net->net, "afsdb", name, len, "srv=1",
-			NULL, NULL, false);
-	if (ret == -ENODATA)
-		ret = -EDESTADDRREQ;
+			&result, NULL, false);
+	if (ret == -ENODATA || ret == -ENOKEY || ret == 0)
+		ret = -ENOENT;
+	if (ret > 0 && ret >= sizeof(struct dns_server_list_v1_header)) {
+		struct dns_server_list_v1_header *v1 = (void *)result;
+
+		if (v1->hdr.zero == 0 &&
+		    v1->hdr.content == DNS_PAYLOAD_IS_SERVER_LIST &&
+		    v1->hdr.version == 1 &&
+		    (v1->status != DNS_LOOKUP_GOOD &&
+		     v1->status != DNS_LOOKUP_GOOD_WITH_BAD))
+			return -ENOENT;
+
+	}
+
+	kfree(result);
 	return ret;
 }
 
@@ -172,50 +186,6 @@ out:
 }
 
 /*
- * Look up @cell in a dynroot directory.  This is a substitution for the
- * local cell name for the net namespace.
- */
-static struct dentry *afs_lookup_atcell(struct dentry *dentry)
-{
-	struct afs_cell *cell;
-	struct afs_net *net = afs_d2net(dentry);
-	struct dentry *ret;
-	char *name;
-	int len;
-
-	if (!net->ws_cell)
-		return ERR_PTR(-ENOENT);
-
-	ret = ERR_PTR(-ENOMEM);
-	name = kmalloc(AFS_MAXCELLNAME + 1, GFP_KERNEL);
-	if (!name)
-		goto out_p;
-
-	down_read(&net->cells_lock);
-	cell = net->ws_cell;
-	if (cell) {
-		len = cell->name_len;
-		memcpy(name, cell->name, len + 1);
-	}
-	up_read(&net->cells_lock);
-
-	ret = ERR_PTR(-ENOENT);
-	if (!cell)
-		goto out_n;
-
-	ret = lookup_one_len(name, dentry->d_parent, len);
-
-	/* We don't want to d_add() the @cell dentry here as we don't want to
-	 * the cached dentry to hide changes to the local cell name.
-	 */
-
-out_n:
-	kfree(name);
-out_p:
-	return ret;
-}
-
-/*
  * Look up an entry in a dynroot directory.
  */
 static struct dentry *afs_dynroot_lookup(struct inode *dir, struct dentry *dentry,
@@ -233,10 +203,6 @@ static struct dentry *afs_dynroot_lookup(struct inode *dir, struct dentry *dentr
 		return ERR_PTR(-ENAMETOOLONG);
 	}
 
-	if (dentry->d_name.len == 5 &&
-	    memcmp(dentry->d_name.name, "@cell", 5) == 0)
-		return afs_lookup_atcell(dentry);
-
 	return d_splice_alias(afs_try_auto_mntpt(dentry, dir), dentry);
 }
 
@@ -244,28 +210,8 @@ const struct inode_operations afs_dynroot_inode_operations = {
 	.lookup		= afs_dynroot_lookup,
 };
 
-/*
- * Dirs in the dynamic root don't need revalidation.
- */
-static int afs_dynroot_d_revalidate(struct dentry *dentry, unsigned int flags)
-{
-	return 1;
-}
-
-/*
- * Allow the VFS to enquire as to whether a dentry should be unhashed (mustn't
- * sleep)
- * - called from dput() when d_count is going to 0.
- * - return 1 to request dentry be unhashed, 0 otherwise
- */
-static int afs_dynroot_d_delete(const struct dentry *dentry)
-{
-	return d_really_is_positive(dentry);
-}
-
 const struct dentry_operations afs_dynroot_dentry_operations = {
-	.d_revalidate	= afs_dynroot_d_revalidate,
-	.d_delete	= afs_dynroot_d_delete,
+	.d_delete	= always_delete_dentry,
 	.d_release	= afs_d_release,
 	.d_automount	= afs_d_automount,
 };
@@ -277,7 +223,8 @@ const struct dentry_operations afs_dynroot_dentry_operations = {
 int afs_dynroot_mkdir(struct afs_net *net, struct afs_cell *cell)
 {
 	struct super_block *sb = net->dynroot_sb;
-	struct dentry *root, *subdir;
+	struct dentry *root, *subdir, *dsubdir;
+	char *dotname = cell->name - 1;
 	int ret;
 
 	if (!sb || atomic_read(&sb->s_active) == 0)
@@ -292,34 +239,31 @@ int afs_dynroot_mkdir(struct afs_net *net, struct afs_cell *cell)
 		goto unlock;
 	}
 
-	/* Note that we're retaining an extra ref on the dentry */
+	dsubdir = lookup_one_len(dotname, root, cell->name_len + 1);
+	if (IS_ERR(dsubdir)) {
+		ret = PTR_ERR(dsubdir);
+		dput(subdir);
+		goto unlock;
+	}
+
+	/* Note that we're retaining extra refs on the dentries. */
 	subdir->d_fsdata = (void *)1UL;
+	dsubdir->d_fsdata = (void *)1UL;
 	ret = 0;
 unlock:
 	inode_unlock(root->d_inode);
 	return ret;
 }
 
-/*
- * Remove a manually added cell mount directory.
- * - The caller must hold net->proc_cells_lock
- */
-void afs_dynroot_rmdir(struct afs_net *net, struct afs_cell *cell)
+static void afs_dynroot_rm_one_dir(struct dentry *root, const char *name, size_t name_len)
 {
-	struct super_block *sb = net->dynroot_sb;
-	struct dentry *root, *subdir;
-
-	if (!sb || atomic_read(&sb->s_active) == 0)
-		return;
-
-	root = sb->s_root;
-	inode_lock(root->d_inode);
+	struct dentry *subdir;
 
 	/* Don't want to trigger a lookup call, which will re-add the cell */
-	subdir = try_lookup_one_len(cell->name, root, cell->name_len);
+	subdir = try_lookup_one_len(name, root, name_len);
 	if (IS_ERR_OR_NULL(subdir)) {
 		_debug("lookup %ld", PTR_ERR(subdir));
-		goto no_dentry;
+		return;
 	}
 
 	_debug("rmdir %pd %u", subdir, d_count(subdir));
@@ -330,9 +274,161 @@ void afs_dynroot_rmdir(struct afs_net *net, struct afs_cell *cell)
 		dput(subdir);
 	}
 	dput(subdir);
-no_dentry:
-	inode_unlock(root->d_inode);
+}
+
+/*
+ * Remove a manually added cell mount directory.
+ * - The caller must hold net->proc_cells_lock
+ */
+void afs_dynroot_rmdir(struct afs_net *net, struct afs_cell *cell)
+{
+	struct super_block *sb = net->dynroot_sb;
+	char *dotname = cell->name - 1;
+
+	if (!sb || atomic_read(&sb->s_active) == 0)
+		return;
+
+	inode_lock(sb->s_root->d_inode);
+	afs_dynroot_rm_one_dir(sb->s_root, cell->name, cell->name_len);
+	afs_dynroot_rm_one_dir(sb->s_root, dotname, cell->name_len + 1);
+	inode_unlock(sb->s_root->d_inode);
 	_leave("");
+}
+
+static void afs_atcell_delayed_put_cell(void *arg)
+{
+	struct afs_cell *cell = arg;
+
+	afs_put_cell(cell, afs_cell_trace_put_atcell);
+}
+
+/*
+ * Read @cell or .@cell symlinks.
+ */
+static const char *afs_atcell_get_link(struct dentry *dentry, struct inode *inode,
+				       struct delayed_call *done)
+{
+	struct afs_vnode *vnode = AFS_FS_I(inode);
+	struct afs_cell *cell;
+	struct afs_net *net = afs_i2net(inode);
+	const char *name;
+	bool dotted = vnode->fid.vnode == 3;
+
+	if (!rcu_access_pointer(net->ws_cell))
+		return ERR_PTR(-ENOENT);
+
+	if (!dentry) {
+		/* We're in RCU-pathwalk. */
+		cell = rcu_dereference(net->ws_cell);
+		if (dotted)
+			name = cell->name - 1;
+		else
+			name = cell->name;
+		/* Shouldn't need to set a delayed call. */
+		return name;
+	}
+
+	down_read(&net->cells_lock);
+
+	cell = rcu_dereference_protected(net->ws_cell, lockdep_is_held(&net->cells_lock));
+	if (dotted)
+		name = cell->name - 1;
+	else
+		name = cell->name;
+	afs_get_cell(cell, afs_cell_trace_get_atcell);
+	set_delayed_call(done, afs_atcell_delayed_put_cell, cell);
+
+	up_read(&net->cells_lock);
+	return name;
+}
+
+static const struct inode_operations afs_atcell_inode_operations = {
+	.get_link	= afs_atcell_get_link,
+};
+
+/*
+ * Look up @cell or .@cell in a dynroot directory.  This is a substitution for
+ * the local cell name for the net namespace.
+ */
+static struct dentry *afs_dynroot_create_symlink(struct dentry *root, const char *name)
+{
+	struct afs_vnode *vnode;
+	struct afs_fid fid = { .vnode = 2, .unique = 1, };
+	struct dentry *dentry;
+	struct inode *inode;
+
+	if (name[0] == '.')
+		fid.vnode = 3;
+
+	dentry = d_alloc_name(root, name);
+	if (!dentry)
+		return ERR_PTR(-ENOMEM);
+
+	inode = iget5_locked(dentry->d_sb, fid.vnode,
+			     afs_iget5_pseudo_test, afs_iget5_pseudo_set, &fid);
+	if (!inode) {
+		dput(dentry);
+		return ERR_PTR(-ENOMEM);
+	}
+
+	vnode = AFS_FS_I(inode);
+
+	/* there shouldn't be an existing inode */
+	if (WARN_ON_ONCE(!(inode->i_state & I_NEW))) {
+		iput(inode);
+		dput(dentry);
+		return ERR_PTR(-EIO);
+	}
+
+	netfs_inode_init(&vnode->netfs, NULL, false);
+	simple_inode_init_ts(inode);
+	set_nlink(inode, 1);
+	inode->i_size		= 0;
+	inode->i_mode		= S_IFLNK | 0555;
+	inode->i_op		= &afs_atcell_inode_operations;
+	inode->i_uid		= GLOBAL_ROOT_UID;
+	inode->i_gid		= GLOBAL_ROOT_GID;
+	inode->i_blocks		= 0;
+	inode->i_generation	= 0;
+	inode->i_flags		|= S_NOATIME;
+
+	unlock_new_inode(inode);
+	d_splice_alias(inode, dentry);
+	return dentry;
+}
+
+/*
+ * Create @cell and .@cell symlinks.
+ */
+static int afs_dynroot_symlink(struct afs_net *net)
+{
+	struct super_block *sb = net->dynroot_sb;
+	struct dentry *root, *symlink, *dsymlink;
+	int ret;
+
+	/* Let the ->lookup op do the creation */
+	root = sb->s_root;
+	inode_lock(root->d_inode);
+	symlink = afs_dynroot_create_symlink(root, "@cell");
+	if (IS_ERR(symlink)) {
+		ret = PTR_ERR(symlink);
+		goto unlock;
+	}
+
+	dsymlink = afs_dynroot_create_symlink(root, ".@cell");
+	if (IS_ERR(dsymlink)) {
+		ret = PTR_ERR(dsymlink);
+		dput(symlink);
+		goto unlock;
+	}
+
+	/* Note that we're retaining extra refs on the dentries. */
+	symlink->d_fsdata = (void *)1UL;
+	dsymlink->d_fsdata = (void *)1UL;
+	ret = 0;
+unlock:
+	inode_unlock(root->d_inode);
+	return ret;
 }
 
 /*
@@ -347,6 +443,10 @@ int afs_dynroot_populate(struct super_block *sb)
 	mutex_lock(&net->proc_cells_lock);
 
 	net->dynroot_sb = sb;
+	ret = afs_dynroot_symlink(net);
+	if (ret < 0)
+		goto error;
+
 	hlist_for_each_entry(cell, &net->proc_cells, proc_link) {
 		ret = afs_dynroot_mkdir(net, cell);
 		if (ret < 0)
@@ -370,7 +470,7 @@ error:
 void afs_dynroot_depopulate(struct super_block *sb)
 {
 	struct afs_net *net = afs_sb2net(sb);
-	struct dentry *root = sb->s_root, *subdir, *tmp;
+	struct dentry *root = sb->s_root, *subdir;
 
 	/* Prevent more subdirs from being created */
 	mutex_lock(&net->proc_cells_lock);
@@ -379,10 +479,11 @@ void afs_dynroot_depopulate(struct super_block *sb)
 	mutex_unlock(&net->proc_cells_lock);
 
 	if (root) {
+		struct hlist_node *n;
 		inode_lock(root->d_inode);
 
 		/* Remove all the pins for dirs created for manually added cells */
-		list_for_each_entry_safe(subdir, tmp, &root->d_subdirs, d_child) {
+		hlist_for_each_entry_safe(subdir, n, &root->d_children, d_sib) {
 			if (subdir->d_fsdata) {
 				subdir->d_fsdata = NULL;
 				dput(subdir);

@@ -442,7 +442,7 @@ err:
 	return ret;
 }
 
-static int exynos_mic_remove(struct platform_device *pdev)
+static void exynos_mic_remove(struct platform_device *pdev)
 {
 	struct exynos_mic *mic = platform_get_drvdata(pdev);
 
@@ -450,8 +450,6 @@ static int exynos_mic_remove(struct platform_device *pdev)
 	pm_runtime_disable(&pdev->dev);
 
 	drm_bridge_remove(&mic->bridge);
-
-	return 0;
 }
 
 static const struct of_device_id exynos_mic_of_match[] = {
@@ -466,7 +464,6 @@ struct platform_driver mic_driver = {
 	.driver		= {
 		.name	= "exynos-mic",
 		.pm	= pm_ptr(&exynos_mic_pm_ops),
-		.owner	= THIS_MODULE,
 		.of_match_table = exynos_mic_of_match,
 	},
 };

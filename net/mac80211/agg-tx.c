@@ -58,36 +58,24 @@
  * complete.
  */
 
-static void ieee80211_send_addba_request(struct ieee80211_sub_if_data *sdata,
-					 const u8 *da, u16 tid,
+static void ieee80211_send_addba_request(struct sta_info *sta, u16 tid,
 					 u8 dialog_token, u16 start_seq_num,
 					 u16 agg_size, u16 timeout)
 {
+	struct ieee80211_sub_if_data *sdata = sta->sdata;
 	struct ieee80211_local *local = sdata->local;
 	struct sk_buff *skb;
 	struct ieee80211_mgmt *mgmt;
 	u16 capab;
 
-	skb = dev_alloc_skb(sizeof(*mgmt) + local->hw.extra_tx_headroom);
-
+	skb = dev_alloc_skb(sizeof(*mgmt) +
+			    2 + sizeof(struct ieee80211_addba_ext_ie) +
+			    local->hw.extra_tx_headroom);
 	if (!skb)
 		return;
 
 	skb_reserve(skb, local->hw.extra_tx_headroom);
-	mgmt = skb_put_zero(skb, 24);
-	memcpy(mgmt->da, da, ETH_ALEN);
-	memcpy(mgmt->sa, sdata->vif.addr, ETH_ALEN);
-	if (sdata->vif.type == NL80211_IFTYPE_AP ||
-	    sdata->vif.type == NL80211_IFTYPE_AP_VLAN ||
-	    sdata->vif.type == NL80211_IFTYPE_MESH_POINT)
-		memcpy(mgmt->bssid, sdata->vif.addr, ETH_ALEN);
-	else if (sdata->vif.type == NL80211_IFTYPE_STATION)
-		memcpy(mgmt->bssid, sdata->vif.cfg.ap_addr, ETH_ALEN);
-	else if (sdata->vif.type == NL80211_IFTYPE_ADHOC)
-		memcpy(mgmt->bssid, sdata->u.ibss.bssid, ETH_ALEN);
-
-	mgmt->frame_control = cpu_to_le16(IEEE80211_FTYPE_MGMT |
-					  IEEE80211_STYPE_ACTION);
+	mgmt = ieee80211_mgmt_ba(skb, sta->sta.addr, sdata);
 
 	skb_put(skb, 1 + sizeof(mgmt->u.action.u.addba_req));
 
@@ -105,6 +93,9 @@ static void ieee80211_send_addba_request(struct ieee80211_sub_if_data *sdata,
 	mgmt->u.action.u.addba_req.timeout = cpu_to_le16(timeout);
 	mgmt->u.action.u.addba_req.start_seq_num =
 					cpu_to_le16(start_seq_num << 4);
+
+	if (sta->sta.deflink.he_cap.has_he)
+		ieee80211_add_addbaext(skb, 0, agg_size);
 
 	ieee80211_tx_skb_tid(sdata, skb, tid, -1);
 }
@@ -142,7 +133,7 @@ EXPORT_SYMBOL(ieee80211_send_bar);
 void ieee80211_assign_tid_tx(struct sta_info *sta, int tid,
 			     struct tid_ampdu_tx *tid_tx)
 {
-	lockdep_assert_held(&sta->ampdu_mlme.mtx);
+	lockdep_assert_wiphy(sta->local->hw.wiphy);
 	lockdep_assert_held(&sta->lock);
 	rcu_assign_pointer(sta->ampdu_mlme.tid_tx[tid], tid_tx);
 }
@@ -213,7 +204,7 @@ ieee80211_agg_start_txq(struct sta_info *sta, int tid, bool enable)
 	struct ieee80211_txq *txq = sta->sta.txq[tid];
 	struct txq_info *txqi;
 
-	lockdep_assert_held(&sta->ampdu_mlme.mtx);
+	lockdep_assert_wiphy(sta->local->hw.wiphy);
 
 	if (!txq)
 		return;
@@ -271,7 +262,7 @@ static void ieee80211_remove_tid_tx(struct sta_info *sta, int tid)
 {
 	struct tid_ampdu_tx *tid_tx;
 
-	lockdep_assert_held(&sta->ampdu_mlme.mtx);
+	lockdep_assert_wiphy(sta->local->hw.wiphy);
 	lockdep_assert_held(&sta->lock);
 
 	tid_tx = rcu_dereference_protected_tid_tx(sta, tid);
@@ -296,8 +287,8 @@ static void ieee80211_remove_tid_tx(struct sta_info *sta, int tid)
 	kfree_rcu(tid_tx, rcu_head);
 }
 
-int ___ieee80211_stop_tx_ba_session(struct sta_info *sta, u16 tid,
-				    enum ieee80211_agg_stop_reason reason)
+int __ieee80211_stop_tx_ba_session(struct sta_info *sta, u16 tid,
+				   enum ieee80211_agg_stop_reason reason)
 {
 	struct ieee80211_local *local = sta->local;
 	struct tid_ampdu_tx *tid_tx;
@@ -311,7 +302,7 @@ int ___ieee80211_stop_tx_ba_session(struct sta_info *sta, u16 tid,
 	};
 	int ret;
 
-	lockdep_assert_held(&sta->ampdu_mlme.mtx);
+	lockdep_assert_wiphy(sta->local->hw.wiphy);
 
 	switch (reason) {
 	case AGG_STOP_DECLINED:
@@ -461,7 +452,7 @@ static void ieee80211_send_addba_with_timeout(struct sta_info *sta,
 			 test_bit(HT_AGG_STATE_WANT_STOP, &tid_tx->state)))
 		return;
 
-	lockdep_assert_held(&sta->ampdu_mlme.mtx);
+	lockdep_assert_wiphy(sta->local->hw.wiphy);
 
 	/* activate the timer for the recipient's addBA response */
 	mod_timer(&tid_tx->addba_resp_timer, jiffies + ADDBA_RESP_INTERVAL);
@@ -473,8 +464,11 @@ static void ieee80211_send_addba_with_timeout(struct sta_info *sta,
 	sta->ampdu_mlme.addba_req_num[tid]++;
 	spin_unlock_bh(&sta->lock);
 
-	if (sta->sta.deflink.he_cap.has_he) {
+	if (sta->sta.deflink.eht_cap.has_eht) {
 		buf_size = local->hw.max_tx_aggregation_subframes;
+	} else if (sta->sta.deflink.he_cap.has_he) {
+		buf_size = min_t(u16, local->hw.max_tx_aggregation_subframes,
+				 IEEE80211_MAX_AMPDU_BUF_HE);
 	} else {
 		/*
 		 * We really should use what the driver told us it will
@@ -486,9 +480,8 @@ static void ieee80211_send_addba_with_timeout(struct sta_info *sta,
 	}
 
 	/* send AddBA request */
-	ieee80211_send_addba_request(sdata, sta->sta.addr, tid,
-				     tid_tx->dialog_token, tid_tx->ssn,
-				     buf_size, tid_tx->timeout);
+	ieee80211_send_addba_request(sta, tid, tid_tx->dialog_token,
+				     tid_tx->ssn, buf_size, tid_tx->timeout);
 
 	WARN_ON(test_and_set_bit(HT_AGG_STATE_SENT_ADDBA, &tid_tx->state));
 }
@@ -497,7 +490,7 @@ void ieee80211_tx_ba_session_handle_start(struct sta_info *sta, int tid)
 {
 	struct tid_ampdu_tx *tid_tx;
 	struct ieee80211_local *local = sta->local;
-	struct ieee80211_sub_if_data *sdata;
+	struct ieee80211_sub_if_data *sdata = sta->sdata;
 	struct ieee80211_ampdu_params params = {
 		.sta = &sta->sta,
 		.action = IEEE80211_AMPDU_TX_START,
@@ -525,7 +518,6 @@ void ieee80211_tx_ba_session_handle_start(struct sta_info *sta, int tid)
 	 */
 	synchronize_net();
 
-	sdata = sta->sdata;
 	params.ssn = sta->tid_seq[tid] >> 4;
 	ret = drv_ampdu_action(local, sdata, &params);
 	tid_tx->ssn = params.ssn;
@@ -539,9 +531,6 @@ void ieee80211_tx_ba_session_handle_start(struct sta_info *sta, int tid)
 		 */
 		set_bit(HT_AGG_STATE_DRV_READY, &tid_tx->state);
 	} else if (ret) {
-		if (!sdata)
-			return;
-
 		ht_dbg(sdata,
 		       "BA request denied - HW unavailable for %pM tid %d\n",
 		       sta->sta.addr, tid);
@@ -620,7 +609,9 @@ int ieee80211_start_tx_ba_session(struct ieee80211_sta *pubsta, u16 tid,
 		return -EINVAL;
 
 	if (!pubsta->deflink.ht_cap.ht_supported &&
-	    sta->sdata->vif.bss_conf.chandef.chan->band != NL80211_BAND_6GHZ)
+	    !pubsta->deflink.vht_cap.vht_supported &&
+	    !pubsta->deflink.he_cap.has_he &&
+	    !pubsta->deflink.eht_cap.has_eht)
 		return -EINVAL;
 
 	if (WARN_ON_ONCE(!local->ops->ampdu_action))
@@ -743,7 +734,7 @@ int ieee80211_start_tx_ba_session(struct ieee80211_sta *pubsta, u16 tid,
 	 */
 	sta->ampdu_mlme.tid_start_tx[tid] = tid_tx;
 
-	ieee80211_queue_work(&local->hw, &sta->ampdu_mlme.work);
+	wiphy_work_queue(local->hw.wiphy, &sta->ampdu_mlme.work);
 
 	/* this flow continues off the work */
  err_unlock_sta:
@@ -764,7 +755,7 @@ static void ieee80211_agg_tx_operational(struct ieee80211_local *local,
 		.ssn = 0,
 	};
 
-	lockdep_assert_held(&sta->ampdu_mlme.mtx);
+	lockdep_assert_wiphy(sta->local->hw.wiphy);
 
 	tid_tx = rcu_dereference_protected_tid_tx(sta, tid);
 	params.buf_size = tid_tx->buf_size;
@@ -801,7 +792,7 @@ void ieee80211_start_tx_ba_cb(struct sta_info *sta, int tid,
 	struct ieee80211_sub_if_data *sdata = sta->sdata;
 	struct ieee80211_local *local = sdata->local;
 
-	lockdep_assert_held(&sta->ampdu_mlme.mtx);
+	lockdep_assert_wiphy(sta->local->hw.wiphy);
 
 	if (WARN_ON(test_and_set_bit(HT_AGG_STATE_DRV_READY, &tid_tx->state)))
 		return;
@@ -812,7 +803,7 @@ void ieee80211_start_tx_ba_cb(struct sta_info *sta, int tid,
 
 	if (!test_bit(HT_AGG_STATE_SENT_ADDBA, &tid_tx->state)) {
 		ieee80211_send_addba_with_timeout(sta, tid_tx);
-		/* RESPONSE_RECEIVED state whould trigger the flow again */
+		/* RESPONSE_RECEIVED state would trigger the flow again */
 		return;
 	}
 
@@ -862,25 +853,11 @@ void ieee80211_start_tx_ba_cb_irqsafe(struct ieee80211_vif *vif,
 		goto out;
 
 	set_bit(HT_AGG_STATE_START_CB, &tid_tx->state);
-	ieee80211_queue_work(&local->hw, &sta->ampdu_mlme.work);
+	wiphy_work_queue(local->hw.wiphy, &sta->ampdu_mlme.work);
  out:
 	rcu_read_unlock();
 }
 EXPORT_SYMBOL(ieee80211_start_tx_ba_cb_irqsafe);
-
-int __ieee80211_stop_tx_ba_session(struct sta_info *sta, u16 tid,
-				   enum ieee80211_agg_stop_reason reason)
-{
-	int ret;
-
-	mutex_lock(&sta->ampdu_mlme.mtx);
-
-	ret = ___ieee80211_stop_tx_ba_session(sta, tid, reason);
-
-	mutex_unlock(&sta->ampdu_mlme.mtx);
-
-	return ret;
-}
 
 int ieee80211_stop_tx_ba_session(struct ieee80211_sta *pubsta, u16 tid)
 {
@@ -916,7 +893,7 @@ int ieee80211_stop_tx_ba_session(struct ieee80211_sta *pubsta, u16 tid)
 	}
 
 	set_bit(HT_AGG_STATE_WANT_STOP, &tid_tx->state);
-	ieee80211_queue_work(&local->hw, &sta->ampdu_mlme.work);
+	wiphy_work_queue(local->hw.wiphy, &sta->ampdu_mlme.work);
 
  unlock:
 	spin_unlock_bh(&sta->lock);
@@ -976,7 +953,7 @@ void ieee80211_stop_tx_ba_cb_irqsafe(struct ieee80211_vif *vif,
 		goto out;
 
 	set_bit(HT_AGG_STATE_STOP_CB, &tid_tx->state);
-	ieee80211_queue_work(&local->hw, &sta->ampdu_mlme.work);
+	wiphy_work_queue(local->hw.wiphy, &sta->ampdu_mlme.work);
  out:
 	rcu_read_unlock();
 }
@@ -993,26 +970,33 @@ void ieee80211_process_addba_resp(struct ieee80211_local *local,
 	u16 capab, tid, buf_size;
 	bool amsdu;
 
+	lockdep_assert_wiphy(sta->local->hw.wiphy);
+
 	capab = le16_to_cpu(mgmt->u.action.u.addba_resp.capab);
 	amsdu = capab & IEEE80211_ADDBA_PARAM_AMSDU_MASK;
 	tid = u16_get_bits(capab, IEEE80211_ADDBA_PARAM_TID_MASK);
 	buf_size = u16_get_bits(capab, IEEE80211_ADDBA_PARAM_BUF_SIZE_MASK);
+
+	ieee80211_retrieve_addba_ext_data(sta,
+					  mgmt->u.action.u.addba_resp.variable,
+					  len - offsetof(typeof(*mgmt),
+							 u.action.u.addba_resp.variable),
+					  &buf_size);
+
 	buf_size = min(buf_size, local->hw.max_tx_aggregation_subframes);
 
 	txq = sta->sta.txq[tid];
 	if (!amsdu && txq)
 		set_bit(IEEE80211_TXQ_NO_AMSDU, &to_txq_info(txq)->flags);
 
-	mutex_lock(&sta->ampdu_mlme.mtx);
-
 	tid_tx = rcu_dereference_protected_tid_tx(sta, tid);
 	if (!tid_tx)
-		goto out;
+		return;
 
 	if (mgmt->u.action.u.addba_resp.dialog_token != tid_tx->dialog_token) {
 		ht_dbg(sta->sdata, "wrong addBA response token, %pM tid %d\n",
 		       sta->sta.addr, tid);
-		goto out;
+		return;
 	}
 
 	del_timer_sync(&tid_tx->addba_resp_timer);
@@ -1030,7 +1014,7 @@ void ieee80211_process_addba_resp(struct ieee80211_local *local,
 		ht_dbg(sta->sdata,
 		       "got addBA resp for %pM tid %d but we already gave up\n",
 		       sta->sta.addr, tid);
-		goto out;
+		return;
 	}
 
 	/*
@@ -1044,7 +1028,7 @@ void ieee80211_process_addba_resp(struct ieee80211_local *local,
 		if (test_and_set_bit(HT_AGG_STATE_RESPONSE_RECEIVED,
 				     &tid_tx->state)) {
 			/* ignore duplicate response */
-			goto out;
+			return;
 		}
 
 		tid_tx->buf_size = buf_size;
@@ -1065,9 +1049,6 @@ void ieee80211_process_addba_resp(struct ieee80211_local *local,
 		}
 
 	} else {
-		___ieee80211_stop_tx_ba_session(sta, tid, AGG_STOP_DECLINED);
+		__ieee80211_stop_tx_ba_session(sta, tid, AGG_STOP_DECLINED);
 	}
-
- out:
-	mutex_unlock(&sta->ampdu_mlme.mtx);
 }

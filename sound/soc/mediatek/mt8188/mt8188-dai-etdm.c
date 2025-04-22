@@ -576,13 +576,13 @@ static int mtk_apll_event(struct snd_soc_dapm_widget *w,
 
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMU:
-		if (strcmp(w->name, APLL1_W_NAME) == 0)
+		if (snd_soc_dapm_widget_name_cmp(w, APLL1_W_NAME) == 0)
 			mt8188_apll1_enable(afe);
 		else
 			mt8188_apll2_enable(afe);
 		break;
 	case SND_SOC_DAPM_POST_PMD:
-		if (strcmp(w->name, APLL1_W_NAME) == 0)
+		if (snd_soc_dapm_widget_name_cmp(w, APLL1_W_NAME) == 0)
 			mt8188_apll1_disable(afe);
 		else
 			mt8188_apll2_disable(afe);
@@ -2422,7 +2422,6 @@ static int mtk_dai_hdmitx_dptx_hw_params(struct snd_pcm_substream *substream,
 	unsigned int channels = params_channels(params);
 	snd_pcm_format_t format = params_format(params);
 	int width = snd_pcm_format_physical_width(format);
-	int ret;
 
 	if (!is_valid_etdm_dai(dai->id))
 		return -EINVAL;
@@ -2450,9 +2449,7 @@ static int mtk_dai_hdmitx_dptx_hw_params(struct snd_pcm_substream *substream,
 		etdm_data->data_mode = MTK_DAI_ETDM_DATA_MULTI_PIN;
 	}
 
-	ret = mtk_dai_etdm_configure(afe, rate, channels, width, dai->id);
-
-	return ret;
+	return mtk_dai_etdm_configure(afe, rate, channels, width, dai->id);
 }
 
 static int mtk_dai_hdmitx_dptx_set_sysclk(struct snd_soc_dai *dai,

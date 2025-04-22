@@ -893,7 +893,7 @@ out_free_netdev:
 	return ret;
 }
 
-static int hisi_femac_drv_remove(struct platform_device *pdev)
+static void hisi_femac_drv_remove(struct platform_device *pdev)
 {
 	struct net_device *ndev = platform_get_drvdata(pdev);
 	struct hisi_femac_priv *priv = netdev_priv(ndev);
@@ -904,8 +904,6 @@ static int hisi_femac_drv_remove(struct platform_device *pdev)
 	phy_disconnect(ndev->phydev);
 	clk_disable_unprepare(priv->clk);
 	free_netdev(ndev);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM

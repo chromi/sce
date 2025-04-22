@@ -560,7 +560,7 @@ post_pm_err:
 	return rc;
 }
 
-static int cctrng_remove(struct platform_device *pdev)
+static void cctrng_remove(struct platform_device *pdev)
 {
 	struct cctrng_drvdata *drvdata = platform_get_drvdata(pdev);
 	struct device *dev = &pdev->dev;
@@ -570,8 +570,6 @@ static int cctrng_remove(struct platform_device *pdev)
 	cc_trng_pm_fini(drvdata);
 
 	dev_info(dev, "ARM cctrng device terminated\n");
-
-	return 0;
 }
 
 static int __maybe_unused cctrng_suspend(struct device *dev)
@@ -624,6 +622,7 @@ static int __maybe_unused cctrng_resume(struct device *dev)
 	/* wait for Cryptocell reset completion */
 	if (!cctrng_wait_for_reset_completion(drvdata)) {
 		dev_err(dev, "Cryptocell reset not completed");
+		clk_disable_unprepare(drvdata->clk);
 		return -EBUSY;
 	}
 

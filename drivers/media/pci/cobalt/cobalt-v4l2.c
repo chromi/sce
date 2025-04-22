@@ -107,11 +107,9 @@ static void chain_all_buffers(struct cobalt_stream *s)
 {
 	struct sg_dma_desc_info *desc[NR_BUFS];
 	struct cobalt_buffer *cb;
-	struct list_head *p;
 	int i = 0;
 
-	list_for_each(p, &s->bufs) {
-		cb = list_entry(p, struct cobalt_buffer, list);
+	list_for_each_entry(cb, &s->bufs, list) {
 		desc[i] = &s->dma_desc_info[cb->vb.vb2_buf.index];
 		if (i > 0)
 			descriptor_list_chain(desc[i-1], desc[i]);
@@ -348,7 +346,6 @@ static void cobalt_dma_stop_streaming(struct cobalt_stream *s)
 	struct cobalt *cobalt = s->cobalt;
 	struct sg_dma_desc_info *desc;
 	struct cobalt_buffer *cb;
-	struct list_head *p;
 	unsigned long flags;
 	int timeout_msec = 100;
 	int rx = s->video_channel;
@@ -367,8 +364,7 @@ static void cobalt_dma_stop_streaming(struct cobalt_stream *s)
 
 	/* Try to stop the DMA engine gracefully */
 	spin_lock_irqsave(&s->irqlock, flags);
-	list_for_each(p, &s->bufs) {
-		cb = list_entry(p, struct cobalt_buffer, list);
+	list_for_each_entry(cb, &s->bufs, list) {
 		desc = &s->dma_desc_info[cb->vb.vb2_buf.index];
 		/* Stop DMA after this descriptor chain */
 		descriptor_list_end_of_chain(desc);
@@ -428,8 +424,6 @@ static const struct vb2_ops cobalt_qops = {
 	.buf_queue = cobalt_buf_queue,
 	.start_streaming = cobalt_start_streaming,
 	.stop_streaming = cobalt_stop_streaming,
-	.wait_prepare = vb2_ops_wait_prepare,
-	.wait_finish = vb2_ops_wait_finish,
 };
 
 /* V4L2 ioctls */
@@ -637,7 +631,7 @@ static int cobalt_s_dv_timings(struct file *file, void *priv_fh,
 		return -EBUSY;
 
 	err = v4l2_subdev_call(s->sd,
-			video, s_dv_timings, timings);
+			pad, s_dv_timings, 0, timings);
 	if (!err) {
 		s->timings = *timings;
 		s->width = timings->bt.width;
@@ -657,7 +651,7 @@ static int cobalt_g_dv_timings(struct file *file, void *priv_fh,
 		return 0;
 	}
 	return v4l2_subdev_call(s->sd,
-			video, g_dv_timings, timings);
+			pad, g_dv_timings, 0, timings);
 }
 
 static int cobalt_query_dv_timings(struct file *file, void *priv_fh,
@@ -670,7 +664,7 @@ static int cobalt_query_dv_timings(struct file *file, void *priv_fh,
 		return 0;
 	}
 	return v4l2_subdev_call(s->sd,
-			video, query_dv_timings, timings);
+			pad, query_dv_timings, 0, timings);
 }
 
 static int cobalt_dv_timings_cap(struct file *file, void *priv_fh,
@@ -1084,7 +1078,7 @@ static int cobalt_g_pixelaspect(struct file *file, void *fh,
 	if (s->input == 1)
 		timings = cea1080p60;
 	else
-		err = v4l2_subdev_call(s->sd, video, g_dv_timings, &timings);
+		err = v4l2_subdev_call(s->sd, pad, g_dv_timings, 0, &timings);
 	if (!err)
 		*f = v4l2_dv_timings_aspect_ratio(&timings);
 	return err;
@@ -1103,7 +1097,7 @@ static int cobalt_g_selection(struct file *file, void *fh,
 	if (s->input == 1)
 		timings = cea1080p60;
 	else
-		err = v4l2_subdev_call(s->sd, video, g_dv_timings, &timings);
+		err = v4l2_subdev_call(s->sd, pad, g_dv_timings, 0, &timings);
 
 	if (err)
 		return err;
@@ -1247,7 +1241,7 @@ static int cobalt_node_register(struct cobalt *cobalt, int node)
 		if (s->sd)
 			vdev->ctrl_handler = s->sd->ctrl_handler;
 		s->timings = dv1080p60;
-		v4l2_subdev_call(s->sd, video, s_dv_timings, &s->timings);
+		v4l2_subdev_call(s->sd, pad, s_dv_timings, 0, &s->timings);
 		if (!s->is_output && s->sd)
 			cobalt_enable_input(s);
 		vdev->ioctl_ops = s->is_dummy ? &cobalt_ioctl_empty_ops :
@@ -1264,7 +1258,7 @@ static int cobalt_node_register(struct cobalt *cobalt, int node)
 	q->ops = &cobalt_qops;
 	q->mem_ops = &vb2_dma_sg_memops;
 	q->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
-	q->min_buffers_needed = 2;
+	q->min_queued_buffers = 2;
 	q->lock = &s->lock;
 	q->dev = &cobalt->pci_dev->dev;
 	vdev->queue = q;

@@ -1208,14 +1208,12 @@ EXIT_DEV_REMOVE_SILENT:
 	return err;
 }
 
-static int vt1211_remove(struct platform_device *pdev)
+static void vt1211_remove(struct platform_device *pdev)
 {
 	struct vt1211_data *data = platform_get_drvdata(pdev);
 
 	hwmon_device_unregister(data->hwmon_dev);
 	vt1211_remove_sysfs(pdev);
-
-	return 0;
 }
 
 static struct platform_driver vt1211_driver = {

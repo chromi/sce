@@ -79,21 +79,10 @@ static const struct jh71x0_clk_data jh7100_audclk_data[] = {
 	JH71X0_GDIV(JH7100_AUDCLK_USB_LPM, "usb_lpm", CLK_IGNORE_UNUSED, 4, JH7100_AUDCLK_USB_APB),
 	JH71X0_GDIV(JH7100_AUDCLK_USB_STB, "usb_stb", CLK_IGNORE_UNUSED, 3, JH7100_AUDCLK_USB_APB),
 	JH71X0__DIV(JH7100_AUDCLK_APB_EN, "apb_en", 8, JH7100_AUDCLK_DOM7AHB_BUS),
-	JH71X0__MUX(JH7100_AUDCLK_VAD_MEM, "vad_mem", 2,
+	JH71X0__MUX(JH7100_AUDCLK_VAD_MEM, "vad_mem", 0, 2,
 		    JH7100_AUDCLK_VAD_INTMEM,
 		    JH7100_AUDCLK_AUDIO_12288),
 };
-
-static struct clk_hw *jh7100_audclk_get(struct of_phandle_args *clkspec, void *data)
-{
-	struct jh71x0_clk_priv *priv = data;
-	unsigned int idx = clkspec->args[0];
-
-	if (idx < JH7100_AUDCLK_END)
-		return &priv->reg[idx].hw;
-
-	return ERR_PTR(-EINVAL);
-}
 
 static int jh7100_audclk_probe(struct platform_device *pdev)
 {
@@ -106,6 +95,7 @@ static int jh7100_audclk_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	spin_lock_init(&priv->rmw_lock);
+	priv->num_reg = JH7100_AUDCLK_END;
 	priv->dev = &pdev->dev;
 	priv->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(priv->base))
@@ -146,7 +136,7 @@ static int jh7100_audclk_probe(struct platform_device *pdev)
 			return ret;
 	}
 
-	return devm_of_clk_add_hw_provider(priv->dev, jh7100_audclk_get, priv);
+	return devm_of_clk_add_hw_provider(priv->dev, jh71x0_clk_get, priv);
 }
 
 static const struct of_device_id jh7100_audclk_match[] = {

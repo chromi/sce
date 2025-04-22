@@ -198,7 +198,7 @@ static void iproc_gpio_irq_print_chip(struct irq_data *d, struct seq_file *p)
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
 	struct iproc_gpio_chip *chip = to_iproc_gpio(gc);
 
-	seq_printf(p, dev_name(chip->dev));
+	seq_puts(p, dev_name(chip->dev));
 }
 
 static const struct irq_chip iproc_gpio_irq_chip = {
@@ -291,7 +291,7 @@ static int iproc_gpio_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int iproc_gpio_remove(struct platform_device *pdev)
+static void iproc_gpio_remove(struct platform_device *pdev)
 {
 	struct iproc_gpio_chip *chip = platform_get_drvdata(pdev);
 
@@ -302,8 +302,6 @@ static int iproc_gpio_remove(struct platform_device *pdev)
 		val &= ~IPROC_CCA_INT_F_GPIOINT;
 		writel_relaxed(val, chip->intr + IPROC_CCA_INT_MASK);
 	}
-
-	return 0;
 }
 
 static const struct of_device_id bcm_iproc_gpio_of_match[] = {

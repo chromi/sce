@@ -300,13 +300,11 @@ static int tegra_bpmp_thermal_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int tegra_bpmp_thermal_remove(struct platform_device *pdev)
+static void tegra_bpmp_thermal_remove(struct platform_device *pdev)
 {
 	struct tegra_bpmp_thermal *tegra = platform_get_drvdata(pdev);
 
 	tegra_bpmp_free_mrq(tegra->bpmp, MRQ_THERMAL, tegra);
-
-	return 0;
 }
 
 static const struct of_device_id tegra_bpmp_thermal_of_match[] = {

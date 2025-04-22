@@ -261,7 +261,7 @@ err0:
 	return ret;
 }
 
-static int omap3_l3_remove(struct platform_device *pdev)
+static void omap3_l3_remove(struct platform_device *pdev)
 {
 	struct omap3_l3         *l3 = platform_get_drvdata(pdev);
 
@@ -269,8 +269,6 @@ static int omap3_l3_remove(struct platform_device *pdev)
 	free_irq(l3->debug_irq, l3);
 	iounmap(l3->rt);
 	kfree(l3);
-
-	return 0;
 }
 
 static struct platform_driver omap3_l3_driver = {

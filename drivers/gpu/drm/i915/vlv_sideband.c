@@ -9,7 +9,6 @@
 #include "vlv_sideband.h"
 
 #include "display/intel_dpio_phy.h"
-#include "display/intel_display_types.h"
 
 /*
  * IOSF sideband, see VLV2_SidebandMsg_HAS.docx and
@@ -44,7 +43,7 @@ static void __vlv_punit_get(struct drm_i915_private *i915)
 	 * to the Valleyview P-unit and not all sideband communications.
 	 */
 	if (IS_VALLEYVIEW(i915)) {
-		cpu_latency_qos_update_request(&i915->sb_qos, 0);
+		cpu_latency_qos_update_request(&i915->vlv_iosf_sb.qos, 0);
 		on_each_cpu(ping, NULL, 1);
 	}
 }
@@ -52,7 +51,7 @@ static void __vlv_punit_get(struct drm_i915_private *i915)
 static void __vlv_punit_put(struct drm_i915_private *i915)
 {
 	if (IS_VALLEYVIEW(i915))
-		cpu_latency_qos_update_request(&i915->sb_qos,
+		cpu_latency_qos_update_request(&i915->vlv_iosf_sb.qos,
 					       PM_QOS_DEFAULT_VALUE);
 
 	iosf_mbi_punit_release();
@@ -63,12 +62,12 @@ void vlv_iosf_sb_get(struct drm_i915_private *i915, unsigned long ports)
 	if (ports & BIT(VLV_IOSF_SB_PUNIT))
 		__vlv_punit_get(i915);
 
-	mutex_lock(&i915->sb_lock);
+	mutex_lock(&i915->vlv_iosf_sb.lock);
 }
 
 void vlv_iosf_sb_put(struct drm_i915_private *i915, unsigned long ports)
 {
-	mutex_unlock(&i915->sb_lock);
+	mutex_unlock(&i915->vlv_iosf_sb.lock);
 
 	if (ports & BIT(VLV_IOSF_SB_PUNIT))
 		__vlv_punit_put(i915);
@@ -82,7 +81,7 @@ static int vlv_sideband_rw(struct drm_i915_private *i915,
 	const bool is_read = (opcode == SB_MRD_NP || opcode == SB_CRRDDA_NP);
 	int err;
 
-	lockdep_assert_held(&i915->sb_lock);
+	lockdep_assert_held(&i915->vlv_iosf_sb.lock);
 	if (port == IOSF_PORT_PUNIT)
 		iosf_mbi_assert_punit_acquired();
 
@@ -166,23 +165,6 @@ u32 vlv_nc_read(struct drm_i915_private *i915, u8 addr)
 	return val;
 }
 
-u32 vlv_iosf_sb_read(struct drm_i915_private *i915, u8 port, u32 reg)
-{
-	u32 val = 0;
-
-	vlv_sideband_rw(i915, PCI_DEVFN(0, 0), port,
-			SB_CRRDDA_NP, reg, &val);
-
-	return val;
-}
-
-void vlv_iosf_sb_write(struct drm_i915_private *i915,
-		       u8 port, u32 reg, u32 val)
-{
-	vlv_sideband_rw(i915, PCI_DEVFN(0, 0), port,
-			SB_CRWRDA_NP, reg, &val);
-}
-
 u32 vlv_cck_read(struct drm_i915_private *i915, u32 reg)
 {
 	u32 val = 0;
@@ -227,9 +209,9 @@ static u32 vlv_dpio_phy_iosf_port(struct drm_i915_private *i915, enum dpio_phy p
 		return IOSF_PORT_DPIO;
 }
 
-u32 vlv_dpio_read(struct drm_i915_private *i915, enum pipe pipe, int reg)
+u32 vlv_dpio_read(struct drm_i915_private *i915, enum dpio_phy phy, int reg)
 {
-	u32 port = vlv_dpio_phy_iosf_port(i915, DPIO_PHY(pipe));
+	u32 port = vlv_dpio_phy_iosf_port(i915, phy);
 	u32 val = 0;
 
 	vlv_sideband_rw(i915, DPIO_DEVFN, port, SB_MRD_NP, reg, &val);
@@ -239,16 +221,16 @@ u32 vlv_dpio_read(struct drm_i915_private *i915, enum pipe pipe, int reg)
 	 * so ideally we should check the register offset instead...
 	 */
 	drm_WARN(&i915->drm, val == 0xffffffff,
-		 "DPIO read pipe %c reg 0x%x == 0x%x\n",
-		 pipe_name(pipe), reg, val);
+		 "DPIO PHY%d read reg 0x%x == 0x%x\n",
+		 phy, reg, val);
 
 	return val;
 }
 
 void vlv_dpio_write(struct drm_i915_private *i915,
-		    enum pipe pipe, int reg, u32 val)
+		    enum dpio_phy phy, int reg, u32 val)
 {
-	u32 port = vlv_dpio_phy_iosf_port(i915, DPIO_PHY(pipe));
+	u32 port = vlv_dpio_phy_iosf_port(i915, phy);
 
 	vlv_sideband_rw(i915, DPIO_DEVFN, port, SB_MWR_NP, reg, &val);
 }
@@ -266,4 +248,22 @@ void vlv_flisdsi_write(struct drm_i915_private *i915, u32 reg, u32 val)
 {
 	vlv_sideband_rw(i915, DPIO_DEVFN, IOSF_PORT_FLISDSI, SB_CRWRDA_NP,
 			reg, &val);
+}
+
+void vlv_iosf_sb_init(struct drm_i915_private *i915)
+{
+	if (IS_VALLEYVIEW(i915) || IS_CHERRYVIEW(i915))
+		mutex_init(&i915->vlv_iosf_sb.lock);
+
+	if (IS_VALLEYVIEW(i915))
+		cpu_latency_qos_add_request(&i915->vlv_iosf_sb.qos, PM_QOS_DEFAULT_VALUE);
+}
+
+void vlv_iosf_sb_fini(struct drm_i915_private *i915)
+{
+	if (IS_VALLEYVIEW(i915))
+		cpu_latency_qos_remove_request(&i915->vlv_iosf_sb.qos);
+
+	if (IS_VALLEYVIEW(i915) || IS_CHERRYVIEW(i915))
+		mutex_destroy(&i915->vlv_iosf_sb.lock);
 }

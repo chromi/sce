@@ -21,50 +21,6 @@
 
 #define base_idx(X) ((X) & 0xffffff)
 
-static char nulldfa_src[] = {
-	#include "nulldfa.in"
-};
-struct aa_dfa *nulldfa;
-
-static char stacksplitdfa_src[] = {
-	#include "stacksplitdfa.in"
-};
-struct aa_dfa *stacksplitdfa;
-
-int __init aa_setup_dfa_engine(void)
-{
-	int error;
-
-	nulldfa = aa_dfa_unpack(nulldfa_src, sizeof(nulldfa_src),
-				TO_ACCEPT1_FLAG(YYTD_DATA32) |
-				TO_ACCEPT2_FLAG(YYTD_DATA32));
-	if (IS_ERR(nulldfa)) {
-		error = PTR_ERR(nulldfa);
-		nulldfa = NULL;
-		return error;
-	}
-
-	stacksplitdfa = aa_dfa_unpack(stacksplitdfa_src,
-				      sizeof(stacksplitdfa_src),
-				      TO_ACCEPT1_FLAG(YYTD_DATA32) |
-				      TO_ACCEPT2_FLAG(YYTD_DATA32));
-	if (IS_ERR(stacksplitdfa)) {
-		aa_put_dfa(nulldfa);
-		nulldfa = NULL;
-		error = PTR_ERR(stacksplitdfa);
-		stacksplitdfa = NULL;
-		return error;
-	}
-
-	return 0;
-}
-
-void __init aa_teardown_dfa_engine(void)
-{
-	aa_put_dfa(stacksplitdfa);
-	aa_put_dfa(nulldfa);
-}
-
 /**
  * unpack_table - unpack a dfa table (one of accept, default, base, next check)
  * @blob: data to unpack (NOT NULL)
@@ -136,7 +92,7 @@ fail:
 
 /**
  * verify_table_headers - verify that the tables headers are as expected
- * @tables - array of dfa tables to check (NOT NULL)
+ * @tables: array of dfa tables to check (NOT NULL)
  * @flags: flags controlling what type of accept table are acceptable
  *
  * Assumes dfa has gone through the first pass verification done by unpacking
@@ -283,12 +239,48 @@ static void dfa_free(struct aa_dfa *dfa)
 
 /**
  * aa_dfa_free_kref - free aa_dfa by kref (called by aa_put_dfa)
- * @kr: kref callback for freeing of a dfa  (NOT NULL)
+ * @kref: kref callback for freeing of a dfa  (NOT NULL)
  */
 void aa_dfa_free_kref(struct kref *kref)
 {
 	struct aa_dfa *dfa = container_of(kref, struct aa_dfa, count);
 	dfa_free(dfa);
+}
+
+
+
+/**
+ * remap_data16_to_data32 - remap u16 @old table to a u32 based table
+ * @old: table to remap
+ *
+ * Returns: new table with u32 entries instead of u16.
+ *
+ * Note: will free @old so caller does not have to
+ */
+static struct table_header *remap_data16_to_data32(struct table_header *old)
+{
+	struct table_header *new;
+	size_t tsize;
+	u32 i;
+
+	tsize = table_size(old->td_lolen, YYTD_DATA32);
+	new = kvzalloc(tsize, GFP_KERNEL);
+	if (!new) {
+		kvfree(old);
+		return NULL;
+	}
+	new->td_id = old->td_id;
+	new->td_flags = YYTD_DATA32;
+	new->td_lolen = old->td_lolen;
+
+	for (i = 0; i < old->td_lolen; i++)
+		TABLE_DATAU32(new)[i] = (u32) TABLE_DATAU16(old)[i];
+
+	kvfree(old);
+	if (is_vmalloc_addr(new))
+		vm_unmap_aliases();
+
+	return new;
 }
 
 /**
@@ -370,8 +362,10 @@ struct aa_dfa *aa_dfa_unpack(void *blob, size_t size, int flags)
 		case YYTD_ID_DEF:
 		case YYTD_ID_NXT:
 		case YYTD_ID_CHK:
-			if (table->td_flags != YYTD_DATA16)
+			if (!(table->td_flags == YYTD_DATA16 ||
+			      table->td_flags == YYTD_DATA32)) {
 				goto fail;
+			}
 			break;
 		case YYTD_ID_EC:
 			if (table->td_flags != YYTD_DATA8)
@@ -386,6 +380,23 @@ struct aa_dfa *aa_dfa_unpack(void *blob, size_t size, int flags)
 		dfa->tables[table->td_id] = table;
 		data += table_size(table->td_lolen, table->td_flags);
 		size -= table_size(table->td_lolen, table->td_flags);
+
+		/*
+		 * this remapping has to be done after incrementing data above
+		 * for now straight remap, later have dfa support both
+		 */
+		switch (table->td_id) {
+		case YYTD_ID_DEF:
+		case YYTD_ID_NXT:
+		case YYTD_ID_CHK:
+			if (table->td_flags == YYTD_DATA16) {
+				table = remap_data16_to_data32(table);
+				if (!table)
+					goto fail;
+			}
+			dfa->tables[table->td_id] = table;
+			break;
+		}
 		table = NULL;
 	}
 	error = verify_table_headers(dfa->tables, flags);
@@ -439,10 +450,10 @@ do {							\
 aa_state_t aa_dfa_match_len(struct aa_dfa *dfa, aa_state_t start,
 			    const char *str, int len)
 {
-	u16 *def = DEFAULT_TABLE(dfa);
+	u32 *def = DEFAULT_TABLE(dfa);
 	u32 *base = BASE_TABLE(dfa);
-	u16 *next = NEXT_TABLE(dfa);
-	u16 *check = CHECK_TABLE(dfa);
+	u32 *next = NEXT_TABLE(dfa);
+	u32 *check = CHECK_TABLE(dfa);
 	aa_state_t state = start;
 
 	if (state == DFA_NOMATCH)
@@ -478,10 +489,10 @@ aa_state_t aa_dfa_match_len(struct aa_dfa *dfa, aa_state_t start,
  */
 aa_state_t aa_dfa_match(struct aa_dfa *dfa, aa_state_t start, const char *str)
 {
-	u16 *def = DEFAULT_TABLE(dfa);
+	u32 *def = DEFAULT_TABLE(dfa);
 	u32 *base = BASE_TABLE(dfa);
-	u16 *next = NEXT_TABLE(dfa);
-	u16 *check = CHECK_TABLE(dfa);
+	u32 *next = NEXT_TABLE(dfa);
+	u32 *check = CHECK_TABLE(dfa);
 	aa_state_t state = start;
 
 	if (state == DFA_NOMATCH)
@@ -516,10 +527,10 @@ aa_state_t aa_dfa_match(struct aa_dfa *dfa, aa_state_t start, const char *str)
  */
 aa_state_t aa_dfa_next(struct aa_dfa *dfa, aa_state_t state, const char c)
 {
-	u16 *def = DEFAULT_TABLE(dfa);
+	u32 *def = DEFAULT_TABLE(dfa);
 	u32 *base = BASE_TABLE(dfa);
-	u16 *next = NEXT_TABLE(dfa);
-	u16 *check = CHECK_TABLE(dfa);
+	u32 *next = NEXT_TABLE(dfa);
+	u32 *check = CHECK_TABLE(dfa);
 
 	/* current state is <state>, matching character *str */
 	if (dfa->tables[YYTD_ID_EC]) {
@@ -534,10 +545,10 @@ aa_state_t aa_dfa_next(struct aa_dfa *dfa, aa_state_t state, const char c)
 
 aa_state_t aa_dfa_outofband_transition(struct aa_dfa *dfa, aa_state_t state)
 {
-	u16 *def = DEFAULT_TABLE(dfa);
+	u32 *def = DEFAULT_TABLE(dfa);
 	u32 *base = BASE_TABLE(dfa);
-	u16 *next = NEXT_TABLE(dfa);
-	u16 *check = CHECK_TABLE(dfa);
+	u32 *next = NEXT_TABLE(dfa);
+	u32 *check = CHECK_TABLE(dfa);
 	u32 b = (base)[(state)];
 
 	if (!(b & MATCH_FLAG_OOB_TRANSITION))
@@ -565,10 +576,10 @@ aa_state_t aa_dfa_outofband_transition(struct aa_dfa *dfa, aa_state_t state)
 aa_state_t aa_dfa_match_until(struct aa_dfa *dfa, aa_state_t start,
 				const char *str, const char **retpos)
 {
-	u16 *def = DEFAULT_TABLE(dfa);
+	u32 *def = DEFAULT_TABLE(dfa);
 	u32 *base = BASE_TABLE(dfa);
-	u16 *next = NEXT_TABLE(dfa);
-	u16 *check = CHECK_TABLE(dfa);
+	u32 *next = NEXT_TABLE(dfa);
+	u32 *check = CHECK_TABLE(dfa);
 	u32 *accept = ACCEPT_TABLE(dfa);
 	aa_state_t state = start, pos;
 
@@ -626,10 +637,10 @@ aa_state_t aa_dfa_match_until(struct aa_dfa *dfa, aa_state_t start,
 aa_state_t aa_dfa_matchn_until(struct aa_dfa *dfa, aa_state_t start,
 				 const char *str, int n, const char **retpos)
 {
-	u16 *def = DEFAULT_TABLE(dfa);
+	u32 *def = DEFAULT_TABLE(dfa);
 	u32 *base = BASE_TABLE(dfa);
-	u16 *next = NEXT_TABLE(dfa);
-	u16 *check = CHECK_TABLE(dfa);
+	u32 *next = NEXT_TABLE(dfa);
+	u32 *check = CHECK_TABLE(dfa);
 	u32 *accept = ACCEPT_TABLE(dfa);
 	aa_state_t state = start, pos;
 
@@ -702,10 +713,10 @@ static aa_state_t leftmatch_fb(struct aa_dfa *dfa, aa_state_t start,
 				 const char *str, struct match_workbuf *wb,
 				 unsigned int *count)
 {
-	u16 *def = DEFAULT_TABLE(dfa);
+	u32 *def = DEFAULT_TABLE(dfa);
 	u32 *base = BASE_TABLE(dfa);
-	u16 *next = NEXT_TABLE(dfa);
-	u16 *check = CHECK_TABLE(dfa);
+	u32 *next = NEXT_TABLE(dfa);
+	u32 *check = CHECK_TABLE(dfa);
 	aa_state_t state = start, pos;
 
 	AA_BUG(!dfa);

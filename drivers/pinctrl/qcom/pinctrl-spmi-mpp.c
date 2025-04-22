@@ -11,6 +11,7 @@
 #include <linux/regmap.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
+#include <linux/string_choices.h>
 #include <linux/types.h>
 
 #include <linux/pinctrl/pinconf-generic.h>
@@ -544,7 +545,7 @@ static void pmic_mpp_config_dbg_show(struct pinctrl_dev *pctldev,
 		seq_printf(s, " %d", pad->aout_level);
 		if (pad->has_pullup)
 			seq_printf(s, " %-8s", biases[pad->pullup]);
-		seq_printf(s, " %-4s", pad->out_value ? "high" : "low");
+		seq_printf(s, " %-4s", str_high_low(pad->out_value));
 		if (pad->dtest)
 			seq_printf(s, " dtest%d", pad->dtest);
 		if (pad->paired)
@@ -971,12 +972,11 @@ err_range:
 	return ret;
 }
 
-static int pmic_mpp_remove(struct platform_device *pdev)
+static void pmic_mpp_remove(struct platform_device *pdev)
 {
 	struct pmic_mpp_state *state = platform_get_drvdata(pdev);
 
 	gpiochip_remove(&state->chip);
-	return 0;
 }
 
 static const struct of_device_id pmic_mpp_of_match[] = {
@@ -984,6 +984,7 @@ static const struct of_device_id pmic_mpp_of_match[] = {
 	{ .compatible = "qcom,pm8226-mpp", .data = (void *) 8 },
 	{ .compatible = "qcom,pm8841-mpp", .data = (void *) 4 },
 	{ .compatible = "qcom,pm8916-mpp", .data = (void *) 4 },
+	{ .compatible = "qcom,pm8937-mpp", .data = (void *) 4 },
 	{ .compatible = "qcom,pm8941-mpp", .data = (void *) 8 },
 	{ .compatible = "qcom,pm8950-mpp", .data = (void *) 4 },
 	{ .compatible = "qcom,pmi8950-mpp", .data = (void *) 4 },

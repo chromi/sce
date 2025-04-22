@@ -22,59 +22,15 @@
 #include <asm/setup.h>
 #include <asm/firmware.h>
 
-void machine_kexec_mask_interrupts(void) {
-	unsigned int i;
-	struct irq_desc *desc;
-
-	for_each_irq_desc(i, desc) {
-		struct irq_chip *chip;
-
-		chip = irq_desc_get_chip(desc);
-		if (!chip)
-			continue;
-
-		if (chip->irq_eoi && irqd_irq_inprogress(&desc->irq_data))
-			chip->irq_eoi(&desc->irq_data);
-
-		if (chip->irq_mask)
-			chip->irq_mask(&desc->irq_data);
-
-		if (chip->irq_disable && !irqd_irq_disabled(&desc->irq_data))
-			chip->irq_disable(&desc->irq_data);
-	}
-}
-
+#ifdef CONFIG_CRASH_DUMP
 void machine_crash_shutdown(struct pt_regs *regs)
 {
 	default_machine_crash_shutdown(regs);
 }
+#endif
 
 void machine_kexec_cleanup(struct kimage *image)
 {
-}
-
-void arch_crash_save_vmcoreinfo(void)
-{
-
-#ifdef CONFIG_NUMA
-	VMCOREINFO_SYMBOL(node_data);
-	VMCOREINFO_LENGTH(node_data, MAX_NUMNODES);
-#endif
-#ifndef CONFIG_NUMA
-	VMCOREINFO_SYMBOL(contig_page_data);
-#endif
-#if defined(CONFIG_PPC64) && defined(CONFIG_SPARSEMEM_VMEMMAP)
-	VMCOREINFO_SYMBOL(vmemmap_list);
-	VMCOREINFO_SYMBOL(mmu_vmemmap_psize);
-	VMCOREINFO_SYMBOL(mmu_psize_defs);
-	VMCOREINFO_STRUCT_SIZE(vmemmap_backing);
-	VMCOREINFO_OFFSET(vmemmap_backing, list);
-	VMCOREINFO_OFFSET(vmemmap_backing, phys);
-	VMCOREINFO_OFFSET(vmemmap_backing, virt_addr);
-	VMCOREINFO_STRUCT_SIZE(mmu_psize_def);
-	VMCOREINFO_OFFSET(mmu_psize_def, shift);
-#endif
-	vmcoreinfo_append_str("KERNELOFFSET=%lx\n", kaslr_offset());
 }
 
 /*
@@ -101,6 +57,7 @@ void machine_kexec(struct kimage *image)
 	for(;;);
 }
 
+#ifdef CONFIG_CRASH_RESERVE
 void __init reserve_crashkernel(void)
 {
 	unsigned long long crash_size, crash_base, total_mem_sz;
@@ -109,7 +66,7 @@ void __init reserve_crashkernel(void)
 	total_mem_sz = memory_limit ? memory_limit : memblock_phys_mem_size();
 	/* use common parsing */
 	ret = parse_crashkernel(boot_command_line, total_mem_sz,
-			&crash_size, &crash_base);
+			&crash_size, &crash_base, NULL, NULL);
 	if (ret == 0 && crash_size > 0) {
 		crashk_res.start = crash_base;
 		crashk_res.end = crash_base + crash_size - 1;
@@ -275,3 +232,4 @@ static int __init kexec_setup(void)
 	return 0;
 }
 late_initcall(kexec_setup);
+#endif /* CONFIG_CRASH_RESERVE */

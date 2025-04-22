@@ -81,7 +81,7 @@ static int mdsc_show(struct seq_file *s, void *p)
 		if (req->r_inode) {
 			seq_printf(s, " #%llx", ceph_ino(req->r_inode));
 		} else if (req->r_dentry) {
-			path = ceph_mdsc_build_path(req->r_dentry, &pathlen,
+			path = ceph_mdsc_build_path(mdsc, req->r_dentry, &pathlen,
 						    &pathbase, 0);
 			if (IS_ERR(path))
 				path = NULL;
@@ -100,7 +100,7 @@ static int mdsc_show(struct seq_file *s, void *p)
 		}
 
 		if (req->r_old_dentry) {
-			path = ceph_mdsc_build_path(req->r_old_dentry, &pathlen,
+			path = ceph_mdsc_build_path(mdsc, req->r_old_dentry, &pathlen,
 						    &pathbase, 0);
 			if (IS_ERR(path))
 				path = NULL;
@@ -357,7 +357,7 @@ static int status_show(struct seq_file *s, void *p)
 
 	seq_printf(s, "instance: %s.%lld %s/%u\n", ENTITY_NAME(inst->name),
 		   ceph_pr_addr(client_addr), le32_to_cpu(client_addr->nonce));
-	seq_printf(s, "blocklisted: %s\n", fsc->blocklisted ? "true" : "false");
+	seq_printf(s, "blocklisted: %s\n", str_true_false(fsc->blocklisted));
 
 	return 0;
 }
@@ -398,7 +398,7 @@ DEFINE_SIMPLE_ATTRIBUTE(congestion_kb_fops, congestion_kb_get,
 
 void ceph_fs_debugfs_cleanup(struct ceph_fs_client *fsc)
 {
-	dout("ceph_fs_debugfs_cleanup\n");
+	doutc(fsc->client, "begin\n");
 	debugfs_remove(fsc->debugfs_bdi);
 	debugfs_remove(fsc->debugfs_congestion_kb);
 	debugfs_remove(fsc->debugfs_mdsmap);
@@ -407,13 +407,14 @@ void ceph_fs_debugfs_cleanup(struct ceph_fs_client *fsc)
 	debugfs_remove(fsc->debugfs_status);
 	debugfs_remove(fsc->debugfs_mdsc);
 	debugfs_remove_recursive(fsc->debugfs_metrics_dir);
+	doutc(fsc->client, "done\n");
 }
 
 void ceph_fs_debugfs_init(struct ceph_fs_client *fsc)
 {
-	char name[100];
+	char name[NAME_MAX];
 
-	dout("ceph_fs_debugfs_init\n");
+	doutc(fsc->client, "begin\n");
 	fsc->debugfs_congestion_kb =
 		debugfs_create_file("writeback_congestion_kb",
 				    0600,
@@ -469,6 +470,7 @@ void ceph_fs_debugfs_init(struct ceph_fs_client *fsc)
 			    &metrics_size_fops);
 	debugfs_create_file("caps", 0400, fsc->debugfs_metrics_dir, fsc,
 			    &metrics_caps_fops);
+	doutc(fsc->client, "done\n");
 }
 
 

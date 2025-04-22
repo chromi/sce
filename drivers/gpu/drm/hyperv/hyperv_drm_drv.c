@@ -3,16 +3,16 @@
  * Copyright 2021 Microsoft
  */
 
+#include <linux/aperture.h>
 #include <linux/efi.h>
 #include <linux/hyperv.h>
 #include <linux/module.h>
 #include <linux/pci.h>
-#include <linux/screen_info.h>
 
-#include <drm/drm_aperture.h>
+#include <drm/clients/drm_client_setup.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_drv.h>
-#include <drm/drm_fbdev_generic.h>
+#include <drm/drm_fbdev_shmem.h>
 #include <drm/drm_gem_shmem_helper.h>
 #include <drm/drm_simple_kms_helper.h>
 
@@ -20,7 +20,6 @@
 
 #define DRIVER_NAME "hyperv_drm"
 #define DRIVER_DESC "DRM driver for Hyper-V synthetic video device"
-#define DRIVER_DATE "2020"
 #define DRIVER_MAJOR 1
 #define DRIVER_MINOR 0
 
@@ -31,12 +30,12 @@ static struct drm_driver hyperv_driver = {
 
 	.name		 = DRIVER_NAME,
 	.desc		 = DRIVER_DESC,
-	.date		 = DRIVER_DATE,
 	.major		 = DRIVER_MAJOR,
 	.minor		 = DRIVER_MINOR,
 
 	.fops		 = &hv_fops,
 	DRM_GEM_SHMEM_DRIVER_OPS,
+	DRM_FBDEV_SHMEM_DRIVER_OPS,
 };
 
 static int hyperv_pci_probe(struct pci_dev *pdev,
@@ -72,10 +71,6 @@ static int hyperv_setup_vram(struct hyperv_drm_device *hv,
 {
 	struct drm_device *dev = &hv->dev;
 	int ret;
-
-	drm_aperture_remove_conflicting_framebuffers(screen_info.lfb_base,
-						     screen_info.lfb_size,
-						     &hyperv_driver);
 
 	hv->fb_size = (unsigned long)hv->mmio_megabytes * 1024 * 1024;
 
@@ -129,6 +124,8 @@ static int hyperv_vmbus_probe(struct hv_device *hdev,
 		goto err_hv_set_drv_data;
 	}
 
+	aperture_remove_all_conflicting_devices(hyperv_driver.name);
+
 	ret = hyperv_setup_vram(hv, hdev);
 	if (ret)
 		goto err_vmbus_close;
@@ -152,11 +149,12 @@ static int hyperv_vmbus_probe(struct hv_device *hdev,
 		goto err_free_mmio;
 	}
 
-	drm_fbdev_generic_setup(dev, 0);
+	drm_client_setup(dev, NULL);
 
 	return 0;
 
 err_free_mmio:
+	iounmap(hv->vram);
 	vmbus_free_mmio(hv->mem->start, hv->fb_size);
 err_vmbus_close:
 	vmbus_close(hdev->channel);
@@ -175,7 +173,13 @@ static void hyperv_vmbus_remove(struct hv_device *hdev)
 	vmbus_close(hdev->channel);
 	hv_set_drvdata(hdev, NULL);
 
+	iounmap(hv->vram);
 	vmbus_free_mmio(hv->mem->start, hv->fb_size);
+}
+
+static void hyperv_vmbus_shutdown(struct hv_device *hdev)
+{
+	drm_atomic_helper_shutdown(hv_get_drvdata(hdev));
 }
 
 static int hyperv_vmbus_suspend(struct hv_device *hdev)
@@ -220,6 +224,7 @@ static struct hv_driver hyperv_hv_driver = {
 	.id_table = hyperv_vmbus_tbl,
 	.probe = hyperv_vmbus_probe,
 	.remove = hyperv_vmbus_remove,
+	.shutdown = hyperv_vmbus_shutdown,
 	.suspend = hyperv_vmbus_suspend,
 	.resume = hyperv_vmbus_resume,
 	.driver = {

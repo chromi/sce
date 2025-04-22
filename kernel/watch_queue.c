@@ -71,7 +71,7 @@ static void watch_queue_pipe_buf_release(struct pipe_inode_info *pipe,
 	bit /= WATCH_QUEUE_NOTE_SIZE;
 
 	page = buf->page;
-	bit += page->index;
+	bit += page->private;
 
 	set_bit(bit, wqueue->notes_bitmap);
 	generic_pipe_buf_release(pipe, buf);
@@ -270,7 +270,7 @@ long watch_queue_set_size(struct pipe_inode_info *pipe, unsigned int nr_notes)
 		goto error;
 
 	ret = -ENOMEM;
-	pages = kcalloc(sizeof(struct page *), nr_pages, GFP_KERNEL);
+	pages = kcalloc(nr_pages, sizeof(struct page *), GFP_KERNEL);
 	if (!pages)
 		goto error;
 
@@ -278,7 +278,7 @@ long watch_queue_set_size(struct pipe_inode_info *pipe, unsigned int nr_notes)
 		pages[i] = alloc_page(GFP_KERNEL);
 		if (!pages[i])
 			goto error_p;
-		pages[i]->index = i * WATCH_QUEUE_NOTES_PER_PAGE;
+		pages[i]->private = i * WATCH_QUEUE_NOTES_PER_PAGE;
 	}
 
 	bitmap = bitmap_alloc(nr_notes, GFP_KERNEL);
@@ -331,7 +331,7 @@ long watch_queue_set_filter(struct pipe_inode_info *pipe,
 	    filter.__reserved != 0)
 		return -EINVAL;
 
-	tf = memdup_user(_filter->filters, filter.nr_filters * sizeof(*tf));
+	tf = memdup_array_user(_filter->filters, filter.nr_filters, sizeof(*tf));
 	if (IS_ERR(tf))
 		return PTR_ERR(tf);
 
@@ -663,16 +663,14 @@ struct watch_queue *get_watch_queue(int fd)
 {
 	struct pipe_inode_info *pipe;
 	struct watch_queue *wqueue = ERR_PTR(-EINVAL);
-	struct fd f;
+	CLASS(fd, f)(fd);
 
-	f = fdget(fd);
-	if (f.file) {
-		pipe = get_pipe_info(f.file, false);
+	if (!fd_empty(f)) {
+		pipe = get_pipe_info(fd_file(f), false);
 		if (pipe && pipe->watch_queue) {
 			wqueue = pipe->watch_queue;
 			kref_get(&wqueue->usage);
 		}
-		fdput(f);
 	}
 
 	return wqueue;

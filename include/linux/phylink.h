@@ -5,6 +5,8 @@
 #include <linux/spinlock.h>
 #include <linux/workqueue.h>
 
+#include <net/eee.h>
+
 struct device_node;
 struct ethtool_cmd;
 struct fwnode_handle;
@@ -99,72 +101,6 @@ static inline bool phylink_autoneg_inband(unsigned int mode)
 }
 
 /**
- * phylink_pcs_neg_mode() - helper to determine PCS inband mode
- * @mode: one of %MLO_AN_FIXED, %MLO_AN_PHY, %MLO_AN_INBAND.
- * @interface: interface mode to be used
- * @advertising: adertisement ethtool link mode mask
- *
- * Determines the negotiation mode to be used by the PCS, and returns
- * one of:
- *
- * - %PHYLINK_PCS_NEG_NONE: interface mode does not support inband
- * - %PHYLINK_PCS_NEG_OUTBAND: an out of band mode (e.g. reading the PHY)
- *   will be used.
- * - %PHYLINK_PCS_NEG_INBAND_DISABLED: inband mode selected but autoneg
- *   disabled
- * - %PHYLINK_PCS_NEG_INBAND_ENABLED: inband mode selected and autoneg enabled
- *
- * Note: this is for cases where the PCS itself is involved in negotiation
- * (e.g. Clause 37, SGMII and similar) not Clause 73.
- */
-static inline unsigned int phylink_pcs_neg_mode(unsigned int mode,
-						phy_interface_t interface,
-						const unsigned long *advertising)
-{
-	unsigned int neg_mode;
-
-	switch (interface) {
-	case PHY_INTERFACE_MODE_SGMII:
-	case PHY_INTERFACE_MODE_QSGMII:
-	case PHY_INTERFACE_MODE_QUSGMII:
-	case PHY_INTERFACE_MODE_USXGMII:
-		/* These protocols are designed for use with a PHY which
-		 * communicates its negotiation result back to the MAC via
-		 * inband communication. Note: there exist PHYs that run
-		 * with SGMII but do not send the inband data.
-		 */
-		if (!phylink_autoneg_inband(mode))
-			neg_mode = PHYLINK_PCS_NEG_OUTBAND;
-		else
-			neg_mode = PHYLINK_PCS_NEG_INBAND_ENABLED;
-		break;
-
-	case PHY_INTERFACE_MODE_1000BASEX:
-	case PHY_INTERFACE_MODE_2500BASEX:
-		/* 1000base-X is designed for use media-side for Fibre
-		 * connections, and thus the Autoneg bit needs to be
-		 * taken into account. We also do this for 2500base-X
-		 * as well, but drivers may not support this, so may
-		 * need to override this.
-		 */
-		if (!phylink_autoneg_inband(mode))
-			neg_mode = PHYLINK_PCS_NEG_OUTBAND;
-		else if (linkmode_test_bit(ETHTOOL_LINK_MODE_Autoneg_BIT,
-					   advertising))
-			neg_mode = PHYLINK_PCS_NEG_INBAND_ENABLED;
-		else
-			neg_mode = PHYLINK_PCS_NEG_INBAND_DISABLED;
-		break;
-
-	default:
-		neg_mode = PHYLINK_PCS_NEG_NONE;
-		break;
-	}
-
-	return neg_mode;
-}
-
-/**
  * struct phylink_link_state - link state structure
  * @advertising: ethtool bitmask containing advertised link modes
  * @lp_advertising: ethtool bitmask containing link partner advertised link
@@ -204,43 +140,60 @@ enum phylink_op_type {
  * @poll_fixed_state: if true, starts link_poll,
  *		      if MAC link is at %MLO_AN_FIXED mode.
  * @mac_managed_pm: if true, indicate the MAC driver is responsible for PHY PM.
- * @ovr_an_inband: if true, override PCS to MLO_AN_INBAND
+ * @mac_requires_rxc: if true, the MAC always requires a receive clock from PHY.
+ *                    The PHY driver should start the clock signal as soon as
+ *                    possible and avoid stopping it during suspend events.
+ * @default_an_inband: if true, defaults to MLO_AN_INBAND rather than
+ *		       MLO_AN_PHY. A fixed-link specification will override.
+ * @eee_rx_clk_stop_enable: if true, PHY can stop the receive clock during LPI
  * @get_fixed_state: callback to execute to determine the fixed link state,
  *		     if MAC link is at %MLO_AN_FIXED mode.
  * @supported_interfaces: bitmap describing which PHY_INTERFACE_MODE_xxx
  *                        are supported by the MAC/PCS.
+ * @lpi_interfaces: bitmap describing which PHY interface modes can support
+ *		    LPI signalling.
  * @mac_capabilities: MAC pause/speed/duplex capabilities.
+ * @lpi_capabilities: MAC speeds which can support LPI signalling
+ * @lpi_timer_default: Default EEE LPI timer setting.
+ * @eee_enabled_default: If set, EEE will be enabled by phylink at creation time
  */
 struct phylink_config {
 	struct device *dev;
 	enum phylink_op_type type;
 	bool poll_fixed_state;
 	bool mac_managed_pm;
-	bool ovr_an_inband;
+	bool mac_requires_rxc;
+	bool default_an_inband;
+	bool eee_rx_clk_stop_enable;
 	void (*get_fixed_state)(struct phylink_config *config,
 				struct phylink_link_state *state);
 	DECLARE_PHY_INTERFACE_MASK(supported_interfaces);
+	DECLARE_PHY_INTERFACE_MASK(lpi_interfaces);
 	unsigned long mac_capabilities;
+	unsigned long lpi_capabilities;
+	u32 lpi_timer_default;
+	bool eee_enabled_default;
 };
 
 void phylink_limit_mac_speed(struct phylink_config *config, u32 max_speed);
 
 /**
  * struct phylink_mac_ops - MAC operations structure.
- * @validate: Validate and update the link configuration.
+ * @mac_get_caps: Get MAC capabilities for interface mode.
  * @mac_select_pcs: Select a PCS for the interface mode.
  * @mac_prepare: prepare for a major reconfiguration of the interface.
  * @mac_config: configure the MAC for the selected mode and state.
  * @mac_finish: finish a major reconfiguration of the interface.
  * @mac_link_down: take the link down.
  * @mac_link_up: allow the link to come up.
+ * @mac_disable_tx_lpi: disable LPI.
+ * @mac_enable_tx_lpi: enable and configure LPI.
  *
  * The individual methods are described more fully below.
  */
 struct phylink_mac_ops {
-	void (*validate)(struct phylink_config *config,
-			 unsigned long *supported,
-			 struct phylink_link_state *state);
+	unsigned long (*mac_get_caps)(struct phylink_config *config,
+				      phy_interface_t interface);
 	struct phylink_pcs *(*mac_select_pcs)(struct phylink_config *config,
 					      phy_interface_t interface);
 	int (*mac_prepare)(struct phylink_config *config, unsigned int mode,
@@ -255,43 +208,24 @@ struct phylink_mac_ops {
 			    struct phy_device *phy, unsigned int mode,
 			    phy_interface_t interface, int speed, int duplex,
 			    bool tx_pause, bool rx_pause);
+	void (*mac_disable_tx_lpi)(struct phylink_config *config);
+	int (*mac_enable_tx_lpi)(struct phylink_config *config, u32 timer,
+				 bool tx_clk_stop);
 };
 
 #if 0 /* For kernel-doc purposes only. */
 /**
- * validate - Validate and update the link configuration
+ * mac_get_caps: Get MAC capabilities for interface mode.
  * @config: a pointer to a &struct phylink_config.
- * @supported: ethtool bitmask for supported link modes.
- * @state: a pointer to a &struct phylink_link_state.
+ * @interface: PHY interface mode.
  *
- * Clear bits in the @supported and @state->advertising masks that
- * are not supportable by the MAC.
- *
- * Note that the PHY may be able to transform from one connection
- * technology to another, so, eg, don't clear 1000BaseX just
- * because the MAC is unable to BaseX mode. This is more about
- * clearing unsupported speeds and duplex settings. The port modes
- * should not be cleared; phylink_set_port_modes() will help with this.
- *
- * When @config->supported_interfaces has been set, phylink will iterate
- * over the supported interfaces to determine the full capability of the
- * MAC. The validation function must not print errors if @state->interface
- * is set to an unexpected value.
- *
- * When @config->supported_interfaces is empty, phylink will call this
- * function with @state->interface set to %PHY_INTERFACE_MODE_NA, and
- * expects the MAC driver to return all supported link modes.
- *
- * If the @state->interface mode is not supported, then the @supported
- * mask must be cleared.
- *
- * This member is optional; if not set, the generic validator will be
- * used making use of @config->mac_capabilities and
- * @config->supported_interfaces to determine which link modes are
- * supported.
+ * Optional method. When not provided, config->mac_capabilities will be used.
+ * When implemented, this returns the MAC capabilities for the specified
+ * interface mode where there is some special handling required by the MAC
+ * driver (e.g. not supporting half-duplex in certain interface modes.)
  */
-void validate(struct phylink_config *config, unsigned long *supported,
-	      struct phylink_link_state *state);
+unsigned long mac_get_caps(struct phylink_config *config,
+			   phy_interface_t interface);
 /**
  * mac_select_pcs: Select a PCS for the interface mode.
  * @config: a pointer to a &struct phylink_config.
@@ -471,16 +405,49 @@ void mac_link_down(struct phylink_config *config, unsigned int mode,
 void mac_link_up(struct phylink_config *config, struct phy_device *phy,
 		 unsigned int mode, phy_interface_t interface,
 		 int speed, int duplex, bool tx_pause, bool rx_pause);
+
+/**
+ * mac_disable_tx_lpi() - disable LPI generation at the MAC
+ * @config: a pointer to a &struct phylink_config.
+ *
+ * Disable generation of LPI at the MAC, effectively preventing the MAC
+ * from indicating that it is idle.
+ */
+void mac_disable_tx_lpi(struct phylink_config *config);
+
+/**
+ * mac_enable_tx_lpi() - configure and enable LPI generation at the MAC
+ * @config: a pointer to a &struct phylink_config.
+ * @timer: LPI timeout in microseconds.
+ * @tx_clk_stop: allow xMII transmit clock to be stopped during LPI
+ *
+ * Configure the LPI timeout accordingly. This will only be called when
+ * the link is already up, to cater for situations where the hardware
+ * needs to be programmed according to the link speed.
+ *
+ * Enable LPI generation at the MAC, and configure whether the xMII transmit
+ * clock may be stopped.
+ *
+ * Returns: 0 on success. Please consult with rmk before returning an error.
+ */
+int mac_enable_tx_lpi(struct phylink_config *config, u32 timer,
+		      bool tx_clk_stop);
 #endif
 
 struct phylink_pcs_ops;
 
 /**
  * struct phylink_pcs - PHYLINK PCS instance
+ * @supported_interfaces: describing which PHY_INTERFACE_MODE_xxx
+ *                        are supported by this PCS.
  * @ops: a pointer to the &struct phylink_pcs_ops structure
  * @phylink: pointer to &struct phylink_config
  * @neg_mode: provide PCS neg mode via "mode" argument
  * @poll: poll the PCS for link changes
+ * @rxc_always_on: The MAC driver requires the reference clock
+ *                 to always be on. Standalone PCS drivers which
+ *                 do not have access to a PHY device can check
+ *                 this instead of PHY_F_RXC_ALWAYS_ON.
  *
  * This structure is designed to be embedded within the PCS private data,
  * and will be passed between phylink and the PCS.
@@ -489,15 +456,18 @@ struct phylink_pcs_ops;
  * the PCS driver.
  */
 struct phylink_pcs {
+	DECLARE_PHY_INTERFACE_MASK(supported_interfaces);
 	const struct phylink_pcs_ops *ops;
 	struct phylink *phylink;
 	bool neg_mode;
 	bool poll;
+	bool rxc_always_on;
 };
 
 /**
  * struct phylink_pcs_ops - MAC PCS operations structure.
  * @pcs_validate: validate the link configuration.
+ * @pcs_inband_caps: query inband support for interface mode.
  * @pcs_enable: enable the PCS.
  * @pcs_disable: disable the PCS.
  * @pcs_pre_config: pre-mac_config method (for errata)
@@ -507,17 +477,21 @@ struct phylink_pcs {
  * @pcs_an_restart: restart 802.3z BaseX autonegotiation.
  * @pcs_link_up: program the PCS for the resolved link configuration
  *               (where necessary).
+ * @pcs_pre_init: configure PCS components necessary for MAC hardware
+ *                initialization e.g. RX clock for stmmac.
  */
 struct phylink_pcs_ops {
 	int (*pcs_validate)(struct phylink_pcs *pcs, unsigned long *supported,
 			    const struct phylink_link_state *state);
+	unsigned int (*pcs_inband_caps)(struct phylink_pcs *pcs,
+					phy_interface_t interface);
 	int (*pcs_enable)(struct phylink_pcs *pcs);
 	void (*pcs_disable)(struct phylink_pcs *pcs);
 	void (*pcs_pre_config)(struct phylink_pcs *pcs,
 			       phy_interface_t interface);
 	int (*pcs_post_config)(struct phylink_pcs *pcs,
 			       phy_interface_t interface);
-	void (*pcs_get_state)(struct phylink_pcs *pcs,
+	void (*pcs_get_state)(struct phylink_pcs *pcs, unsigned int neg_mode,
 			      struct phylink_link_state *state);
 	int (*pcs_config)(struct phylink_pcs *pcs, unsigned int neg_mode,
 			  phy_interface_t interface,
@@ -526,6 +500,7 @@ struct phylink_pcs_ops {
 	void (*pcs_an_restart)(struct phylink_pcs *pcs);
 	void (*pcs_link_up)(struct phylink_pcs *pcs, unsigned int neg_mode,
 			    phy_interface_t interface, int speed, int duplex);
+	int (*pcs_pre_init)(struct phylink_pcs *pcs);
 };
 
 #if 0 /* For kernel-doc purposes only. */
@@ -547,6 +522,20 @@ int pcs_validate(struct phylink_pcs *pcs, unsigned long *supported,
 		 const struct phylink_link_state *state);
 
 /**
+ * pcs_inband_caps - query PCS in-band capabilities for interface mode.
+ * @pcs: a pointer to a &struct phylink_pcs.
+ * @interface: interface mode to be queried
+ *
+ * Returns zero if it is unknown what in-band signalling is supported by the
+ * PHY (e.g. because the PHY driver doesn't implement the method.) Otherwise,
+ * returns a bit mask of the LINK_INBAND_* values from
+ * &enum link_inband_signalling to describe which inband modes are supported
+ * for this interface mode.
+ */
+unsigned int pcs_inband_caps(struct phylink_pcs *pcs,
+			     phy_interface_t interface);
+
+/**
  * pcs_enable() - enable the PCS.
  * @pcs: a pointer to a &struct phylink_pcs.
  */
@@ -561,6 +550,7 @@ void pcs_disable(struct phylink_pcs *pcs);
 /**
  * pcs_get_state() - Read the current inband link state from the hardware
  * @pcs: a pointer to a &struct phylink_pcs.
+ * @neg_mode: link negotiation mode (PHYLINK_PCS_NEG_xxx)
  * @state: a pointer to a &struct phylink_link_state.
  *
  * Read the current inband link state from the MAC PCS, reporting the
@@ -570,10 +560,10 @@ void pcs_disable(struct phylink_pcs *pcs);
  * in @state->link. If possible, @state->lp_advertising should also be
  * populated.
  *
- * When present, this overrides pcs_get_state() in &struct
- * phylink_pcs_ops.
+ * Note that the @neg_mode parameter is always the PHYLINK_PCS_NEG_xxx
+ * state, not MLO_AN_xxx.
  */
-void pcs_get_state(struct phylink_pcs *pcs,
+void pcs_get_state(struct phylink_pcs *pcs, unsigned int neg_mode,
 		   struct phylink_link_state *state);
 
 /**
@@ -634,18 +624,35 @@ void pcs_an_restart(struct phylink_pcs *pcs);
  */
 void pcs_link_up(struct phylink_pcs *pcs, unsigned int neg_mode,
 		 phy_interface_t interface, int speed, int duplex);
-#endif
 
-void phylink_caps_to_linkmodes(unsigned long *linkmodes, unsigned long caps);
-unsigned long phylink_get_capabilities(phy_interface_t interface,
-				       unsigned long mac_capabilities,
-				       int rate_matching);
-void phylink_validate_mask_caps(unsigned long *supported,
-				struct phylink_link_state *state,
-				unsigned long caps);
-void phylink_generic_validate(struct phylink_config *config,
-			      unsigned long *supported,
-			      struct phylink_link_state *state);
+/**
+ * pcs_pre_init() - Configure PCS components necessary for MAC initialization
+ * @pcs: a pointer to a &struct phylink_pcs.
+ *
+ * This function can be called by MAC drivers through the
+ * phylink_pcs_pre_init() wrapper, before their hardware is initialized. It
+ * should not be called after the link is brought up, as reconfiguring the PCS
+ * at this point could break the link.
+ *
+ * Some MAC devices require specific hardware initialization to be performed by
+ * their associated PCS device before they can properly initialize their own
+ * hardware. An example of this is the initialization of stmmac controllers,
+ * which requires an active REF_CLK signal to be provided by the PHY/PCS.
+ *
+ * By calling phylink_pcs_pre_init(), MAC drivers can ensure that the PCS is
+ * setup in a way that allows for successful hardware initialization.
+ *
+ * The specific configuration performed by pcs_pre_init() is dependent on the
+ * model of PCS and the requirements of the MAC device attached to it. PCS
+ * driver authors should consider whether their target device is to be used in
+ * conjunction with a MAC device whose driver calls phylink_pcs_pre_init(). MAC
+ * driver authors should document their requirements for the PCS
+ * pre-initialization.
+ *
+ */
+int pcs_pre_init(struct phylink_pcs *pcs);
+
+#endif
 
 struct phylink *phylink_create(struct phylink_config *,
 			       const struct fwnode_handle *,
@@ -660,9 +667,13 @@ int phylink_fwnode_phy_connect(struct phylink *pl,
 			       const struct fwnode_handle *fwnode,
 			       u32 flags);
 void phylink_disconnect_phy(struct phylink *);
+int phylink_set_fixed_link(struct phylink *,
+			   const struct phylink_link_state *);
 
 void phylink_mac_change(struct phylink *, bool up);
 void phylink_pcs_change(struct phylink_pcs *, bool up);
+
+int phylink_pcs_pre_init(struct phylink *pl, struct phylink_pcs *pcs);
 
 void phylink_start(struct phylink *);
 void phylink_stop(struct phylink *);
@@ -684,8 +695,8 @@ int phylink_ethtool_set_pauseparam(struct phylink *,
 				   struct ethtool_pauseparam *);
 int phylink_get_eee_err(struct phylink *);
 int phylink_init_eee(struct phylink *, bool);
-int phylink_ethtool_get_eee(struct phylink *, struct ethtool_eee *);
-int phylink_ethtool_set_eee(struct phylink *, struct ethtool_eee *);
+int phylink_ethtool_get_eee(struct phylink *link, struct ethtool_keee *eee);
+int phylink_ethtool_set_eee(struct phylink *link, struct ethtool_keee *eee);
 int phylink_mii_ioctl(struct phylink *, struct ifreq *, int);
 int phylink_speed_down(struct phylink *pl, bool sync);
 int phylink_speed_up(struct phylink *pl);
@@ -714,6 +725,7 @@ static inline int phylink_get_link_timer_ns(phy_interface_t interface)
 	case PHY_INTERFACE_MODE_SGMII:
 	case PHY_INTERFACE_MODE_QSGMII:
 	case PHY_INTERFACE_MODE_USXGMII:
+	case PHY_INTERFACE_MODE_10G_QXGMII:
 		return 1600000;
 
 	case PHY_INTERFACE_MODE_1000BASEX:
@@ -726,8 +738,9 @@ static inline int phylink_get_link_timer_ns(phy_interface_t interface)
 }
 
 void phylink_mii_c22_pcs_decode_state(struct phylink_link_state *state,
-				      u16 bmsr, u16 lpa);
+				      unsigned int neg_mode, u16 bmsr, u16 lpa);
 void phylink_mii_c22_pcs_get_state(struct mdio_device *pcs,
+				   unsigned int neg_mode,
 				   struct phylink_link_state *state);
 int phylink_mii_c22_pcs_encode_advertisement(phy_interface_t interface,
 					     const unsigned long *advertising);

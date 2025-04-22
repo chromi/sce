@@ -1363,6 +1363,8 @@ at_xdmac_prep_dma_memset(struct dma_chan *chan, dma_addr_t dest, int value,
 		return NULL;
 
 	desc = at_xdmac_memset_create_desc(chan, atchan, dest, len, value);
+	if (!desc)
+		return NULL;
 	list_add_tail(&desc->desc_node, &desc->descs_list);
 
 	desc->tx_dma_desc.cookie = -EBUSY;
@@ -2431,7 +2433,7 @@ err_free_irq:
 	return ret;
 }
 
-static int at_xdmac_remove(struct platform_device *pdev)
+static void at_xdmac_remove(struct platform_device *pdev)
 {
 	struct at_xdmac	*atxdmac = (struct at_xdmac *)platform_get_drvdata(pdev);
 	int		i;
@@ -2452,8 +2454,6 @@ static int at_xdmac_remove(struct platform_device *pdev)
 		tasklet_kill(&atchan->tasklet);
 		at_xdmac_free_chan_resources(&atchan->chan);
 	}
-
-	return 0;
 }
 
 static const struct dev_pm_ops __maybe_unused atmel_xdmac_dev_pm_ops = {

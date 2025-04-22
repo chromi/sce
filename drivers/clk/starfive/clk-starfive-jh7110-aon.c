@@ -26,7 +26,7 @@
 static const struct jh71x0_clk_data jh7110_aonclk_data[] = {
 	/* source */
 	JH71X0__DIV(JH7110_AONCLK_OSC_DIV4, "osc_div4", 4, JH7110_AONCLK_OSC),
-	JH71X0__MUX(JH7110_AONCLK_APB_FUNC, "apb_func", 2,
+	JH71X0__MUX(JH7110_AONCLK_APB_FUNC, "apb_func", 0, 2,
 		    JH7110_AONCLK_OSC_DIV4,
 		    JH7110_AONCLK_OSC),
 	/* gmac0 */
@@ -39,7 +39,7 @@ static const struct jh71x0_clk_data jh7110_aonclk_data[] = {
 		    JH7110_AONCLK_GMAC0_GTXCLK,
 		    JH7110_AONCLK_GMAC0_RMII_RTX),
 	JH71X0__INV(JH7110_AONCLK_GMAC0_TX_INV, "gmac0_tx_inv", JH7110_AONCLK_GMAC0_TX),
-	JH71X0__MUX(JH7110_AONCLK_GMAC0_RX, "gmac0_rx", 2,
+	JH71X0__MUX(JH7110_AONCLK_GMAC0_RX, "gmac0_rx", 0, 2,
 		    JH7110_AONCLK_GMAC0_RGMII_RXIN,
 		    JH7110_AONCLK_GMAC0_RMII_RTX),
 	JH71X0__INV(JH7110_AONCLK_GMAC0_RX_INV, "gmac0_rx_inv", JH7110_AONCLK_GMAC0_RX),
@@ -48,22 +48,11 @@ static const struct jh71x0_clk_data jh7110_aonclk_data[] = {
 	/* rtc */
 	JH71X0_GATE(JH7110_AONCLK_RTC_APB, "rtc_apb", 0, JH7110_AONCLK_APB_BUS),
 	JH71X0__DIV(JH7110_AONCLK_RTC_INTERNAL, "rtc_internal", 1022, JH7110_AONCLK_OSC),
-	JH71X0__MUX(JH7110_AONCLK_RTC_32K, "rtc_32k", 2,
+	JH71X0__MUX(JH7110_AONCLK_RTC_32K, "rtc_32k", 0, 2,
 		    JH7110_AONCLK_RTC_OSC,
 		    JH7110_AONCLK_RTC_INTERNAL),
 	JH71X0_GATE(JH7110_AONCLK_RTC_CAL, "rtc_cal", 0, JH7110_AONCLK_OSC),
 };
-
-static struct clk_hw *jh7110_aonclk_get(struct of_phandle_args *clkspec, void *data)
-{
-	struct jh71x0_clk_priv *priv = data;
-	unsigned int idx = clkspec->args[0];
-
-	if (idx < JH7110_AONCLK_END)
-		return &priv->reg[idx].hw;
-
-	return ERR_PTR(-EINVAL);
-}
 
 static int jh7110_aoncrg_probe(struct platform_device *pdev)
 {
@@ -78,6 +67,7 @@ static int jh7110_aoncrg_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	spin_lock_init(&priv->rmw_lock);
+	priv->num_reg = JH7110_AONCLK_END;
 	priv->dev = &pdev->dev;
 	priv->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(priv->base))
@@ -127,7 +117,7 @@ static int jh7110_aoncrg_probe(struct platform_device *pdev)
 			return ret;
 	}
 
-	ret = devm_of_clk_add_hw_provider(&pdev->dev, jh7110_aonclk_get, priv);
+	ret = devm_of_clk_add_hw_provider(&pdev->dev, jh71x0_clk_get, priv);
 	if (ret)
 		return ret;
 

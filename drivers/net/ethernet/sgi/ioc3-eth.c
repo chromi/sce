@@ -962,7 +962,7 @@ out_free:
 	return err;
 }
 
-static int ioc3eth_remove(struct platform_device *pdev)
+static void ioc3eth_remove(struct platform_device *pdev)
 {
 	struct net_device *dev = platform_get_drvdata(pdev);
 	struct ioc3_private *ip = netdev_priv(dev);
@@ -973,8 +973,6 @@ static int ioc3eth_remove(struct platform_device *pdev)
 	unregister_netdev(dev);
 	del_timer_sync(&ip->ioc3_timer);
 	free_netdev(dev);
-
-	return 0;
 }
 
 

@@ -18,7 +18,7 @@ struct temperature_state {
 	struct hid_sensor_hub_attribute_info temperature_attr;
 	struct {
 		s32 temperature_data;
-		u64 timestamp __aligned(8);
+		aligned_s64 timestamp;
 	} scan;
 	int scale_pre_decml;
 	int scale_post_decml;
@@ -257,7 +257,7 @@ error_remove_trigger:
 }
 
 /* Function to deinitialize the processing for usage id */
-static int hid_temperature_remove(struct platform_device *pdev)
+static void hid_temperature_remove(struct platform_device *pdev)
 {
 	struct hid_sensor_hub_device *hsdev = dev_get_platdata(&pdev->dev);
 	struct iio_dev *indio_dev = platform_get_drvdata(pdev);
@@ -265,8 +265,6 @@ static int hid_temperature_remove(struct platform_device *pdev)
 
 	sensor_hub_remove_callback(hsdev, HID_USAGE_SENSOR_TEMPERATURE);
 	hid_sensor_remove_trigger(indio_dev, &temp_st->common_attributes);
-
-	return 0;
 }
 
 static const struct platform_device_id hid_temperature_ids[] = {
@@ -292,4 +290,4 @@ module_platform_driver(hid_temperature_platform_driver);
 MODULE_DESCRIPTION("HID Environmental temperature sensor");
 MODULE_AUTHOR("Song Hongyan <hongyan.song@intel.com>");
 MODULE_LICENSE("GPL v2");
-MODULE_IMPORT_NS(IIO_HID);
+MODULE_IMPORT_NS("IIO_HID");

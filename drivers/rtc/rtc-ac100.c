@@ -99,7 +99,7 @@ struct ac100_rtc_dev {
 	struct clk_hw_onecell_data *clk_data;
 };
 
-/**
+/*
  * Clock controls for 3 clock output pins
  */
 
@@ -378,7 +378,7 @@ static void ac100_rtc_unregister_clks(struct ac100_rtc_dev *chip)
 	clk_unregister_fixed_rate(chip->rtc_32k_clk->clk);
 }
 
-/**
+/*
  * RTC related bits
  */
 static int ac100_rtc_get_time(struct device *dev, struct rtc_time *rtc_tm)
@@ -628,7 +628,7 @@ MODULE_DEVICE_TABLE(of, ac100_rtc_match);
 
 static struct platform_driver ac100_rtc_driver = {
 	.probe		= ac100_rtc_probe,
-	.remove_new	= ac100_rtc_remove,
+	.remove		= ac100_rtc_remove,
 	.driver		= {
 		.name		= "ac100-rtc",
 		.of_match_table	= of_match_ptr(ac100_rtc_match),

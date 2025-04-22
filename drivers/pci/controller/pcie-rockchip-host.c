@@ -294,7 +294,7 @@ static int rockchip_pcie_host_init_port(struct rockchip_pcie *rockchip)
 	int err, i = MAX_LANE_NUM;
 	u32 status;
 
-	gpiod_set_value_cansleep(rockchip->ep_gpio, 0);
+	gpiod_set_value_cansleep(rockchip->perst_gpio, 0);
 
 	err = rockchip_pcie_init_port(rockchip);
 	if (err)
@@ -322,7 +322,10 @@ static int rockchip_pcie_host_init_port(struct rockchip_pcie *rockchip)
 	rockchip_pcie_write(rockchip, PCIE_CLIENT_LINK_TRAIN_ENABLE,
 			    PCIE_CLIENT_CONFIG);
 
-	gpiod_set_value_cansleep(rockchip->ep_gpio, 1);
+	msleep(PCIE_T_PVPERL_MS);
+	gpiod_set_value_cansleep(rockchip->perst_gpio, 1);
+
+	msleep(PCIE_T_RRS_READY_MS);
 
 	/* 500ms timeout value should be enough for Gen1/2 training */
 	err = readl_poll_timeout(rockchip->apb_base + PCIE_CLIENT_BASIC_STATUS1,
@@ -505,7 +508,7 @@ static irqreturn_t rockchip_pcie_client_irq_handler(int irq, void *arg)
 	return IRQ_HANDLED;
 }
 
-static void rockchip_pcie_legacy_int_handler(struct irq_desc *desc)
+static void rockchip_pcie_intx_handler(struct irq_desc *desc)
 {
 	struct irq_chip *chip = irq_desc_get_chip(desc);
 	struct rockchip_pcie *rockchip = irq_desc_get_handler_data(desc);
@@ -553,7 +556,7 @@ static int rockchip_pcie_setup_irq(struct rockchip_pcie *rockchip)
 		return irq;
 
 	irq_set_chained_handler_and_data(irq,
-					 rockchip_pcie_legacy_int_handler,
+					 rockchip_pcie_intx_handler,
 					 rockchip);
 
 	irq = platform_get_irq_byname(pdev, "client");
@@ -1047,7 +1050,7 @@ static struct platform_driver rockchip_pcie_driver = {
 		.pm = &rockchip_pcie_pm_ops,
 	},
 	.probe = rockchip_pcie_probe,
-	.remove_new = rockchip_pcie_remove,
+	.remove = rockchip_pcie_remove,
 };
 module_platform_driver(rockchip_pcie_driver);
 

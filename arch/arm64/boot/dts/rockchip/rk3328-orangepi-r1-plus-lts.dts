@@ -7,7 +7,8 @@
  */
 
 /dts-v1/;
-#include "rk3328-orangepi-r1-plus.dts"
+
+#include "rk3328-orangepi-r1-plus.dtsi"
 
 / {
 	model = "Xunlong Orange Pi R1 Plus LTS";
@@ -16,19 +17,19 @@
 
 &gmac2io {
 	phy-handle = <&yt8531c>;
-	tx_delay = <0x19>;
-	rx_delay = <0x05>;
+	phy-mode = "rgmii-id";
+	status = "okay";
 
 	mdio {
-		/delete-node/ ethernet-phy@1;
-
 		yt8531c: ethernet-phy@0 {
 			compatible = "ethernet-phy-ieee802.3-c22";
 			reg = <0>;
 
+			motorcomm,auto-sleep-disabled;
 			motorcomm,clk-out-frequency-hz = <125000000>;
 			motorcomm,keep-pll-enabled;
-			motorcomm,auto-sleep-disabled;
+			motorcomm,rx-clk-drv-microamp = <5020>;
+			motorcomm,rx-data-drv-microamp = <5020>;
 
 			pinctrl-0 = <&eth_phy_reset_pin>;
 			pinctrl-names = "default";

@@ -17,6 +17,8 @@
 
 #include <asm/barrier.h>
 #include <asm/cpufeature.h>
+#include <linux/kvm_host.h>
+#include <linux/vmalloc.h>
 
 #include "coresight-self-hosted-trace.h"
 #include "coresight-trbe.h"
@@ -220,6 +222,7 @@ static inline void set_trbe_enabled(struct trbe_cpudata *cpudata, u64 trblimitr)
 	 */
 	trblimitr |= TRBLIMITR_EL1_E;
 	write_sysreg_s(trblimitr, SYS_TRBLIMITR_EL1);
+	kvm_enable_trbe();
 
 	/* Synchronize the TRBE enable event */
 	isb();
@@ -238,6 +241,7 @@ static inline void set_trbe_disabled(struct trbe_cpudata *cpudata)
 	 */
 	trblimitr &= ~TRBLIMITR_EL1_E;
 	write_sysreg_s(trblimitr, SYS_TRBLIMITR_EL1);
+	kvm_disable_trbe();
 
 	if (trbe_needs_drain_after_disable(cpudata))
 		trbe_drain_buffer();
@@ -252,8 +256,8 @@ static void trbe_drain_and_disable_local(struct trbe_cpudata *cpudata)
 
 static void trbe_reset_local(struct trbe_cpudata *cpudata)
 {
-	trbe_drain_and_disable_local(cpudata);
 	write_sysreg_s(0, SYS_TRBLIMITR_EL1);
+	trbe_drain_buffer();
 	write_sysreg_s(0, SYS_TRBPTR_EL1);
 	write_sysreg_s(0, SYS_TRBBASER_EL1);
 	write_sysreg_s(0, SYS_TRBSR_EL1);
@@ -1109,6 +1113,16 @@ static bool is_perf_trbe(struct perf_output_handle *handle)
 	return true;
 }
 
+static u64 cpu_prohibit_trace(void)
+{
+	u64 trfcr = read_trfcr();
+
+	/* Prohibit tracing at EL0 & the kernel EL */
+	write_trfcr(trfcr & ~(TRFCR_EL1_ExTRE | TRFCR_EL1_E0TRE));
+	/* Return the original value of the TRFCR */
+	return trfcr;
+}
+
 static irqreturn_t arm_trbe_irq_handler(int irq, void *dev)
 {
 	struct perf_output_handle **handle_ptr = dev;
@@ -1253,8 +1267,18 @@ static void arm_trbe_register_coresight_cpu(struct trbe_drvdata *drvdata, int cp
 	desc.name = devm_kasprintf(dev, GFP_KERNEL, "trbe%d", cpu);
 	if (!desc.name)
 		goto cpu_clear;
-
-	desc.pdata = coresight_get_platform_data(dev);
+	/*
+	 * TRBE coresight devices do not need regular connections
+	 * information, as the paths get built between all percpu
+	 * source and their respective percpu sink devices. Though
+	 * coresight_register() expect device connections via the
+	 * platform_data, which TRBE devices do not have. As they
+	 * are not real ACPI devices, coresight_get_platform_data()
+	 * ends up failing. Instead let's allocate a dummy zeroed
+	 * coresight_platform_data structure and assign that back
+	 * into the device for that purpose.
+	 */
+	desc.pdata = devm_kzalloc(dev, sizeof(*desc.pdata), GFP_KERNEL);
 	if (IS_ERR(desc.pdata))
 		goto cpu_clear;
 
@@ -1520,14 +1544,13 @@ probe_failed:
 	return ret;
 }
 
-static int arm_trbe_device_remove(struct platform_device *pdev)
+static void arm_trbe_device_remove(struct platform_device *pdev)
 {
 	struct trbe_drvdata *drvdata = platform_get_drvdata(pdev);
 
 	arm_trbe_remove_cpuhp(drvdata);
 	arm_trbe_remove_coresight(drvdata);
 	arm_trbe_remove_irq(drvdata);
-	return 0;
 }
 
 static const struct of_device_id arm_trbe_of_match[] = {
@@ -1536,14 +1559,23 @@ static const struct of_device_id arm_trbe_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, arm_trbe_of_match);
 
+#ifdef CONFIG_ACPI
+static const struct platform_device_id arm_trbe_acpi_match[] = {
+	{ ARMV8_TRBE_PDEV_NAME, 0 },
+	{ }
+};
+MODULE_DEVICE_TABLE(platform, arm_trbe_acpi_match);
+#endif
+
 static struct platform_driver arm_trbe_driver = {
+	.id_table = ACPI_PTR(arm_trbe_acpi_match),
 	.driver	= {
 		.name = DRVNAME,
 		.of_match_table = of_match_ptr(arm_trbe_of_match),
 		.suppress_bind_attrs = true,
 	},
 	.probe	= arm_trbe_device_probe,
-	.remove	= arm_trbe_device_remove,
+	.remove = arm_trbe_device_remove,
 };
 
 static int __init arm_trbe_init(void)

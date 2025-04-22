@@ -148,9 +148,6 @@ that only one external action is invoked at a time.
 #include <linux/acpi.h>
 #include <linux/ctype.h>
 #include <linux/pm_qos.h>
-
-#include <net/lib80211.h>
-
 #include "ipw2100.h"
 #include "ipw.h"
 
@@ -317,8 +314,6 @@ static int ipw2100_get_firmware(struct ipw2100_priv *priv,
 				struct ipw2100_fw *fw);
 static int ipw2100_get_fwversion(struct ipw2100_priv *priv, char *buf,
 				 size_t max);
-static int ipw2100_get_ucodeversion(struct ipw2100_priv *priv, char *buf,
-				    size_t max);
 static void ipw2100_release_firmware(struct ipw2100_priv *priv,
 				     struct ipw2100_fw *fw);
 static int ipw2100_ucode_download(struct ipw2100_priv *priv,
@@ -2520,7 +2515,7 @@ static void isr_rx_monitor(struct ipw2100_priv *priv, int i,
 	 * to build this manually element by element, we can write it much
 	 * more efficiently than we can parse it. ORDER MATTERS HERE */
 	struct ipw_rt_hdr {
-		struct ieee80211_radiotap_header rt_hdr;
+		struct ieee80211_radiotap_header_fixed rt_hdr;
 		s8 rt_dbmsignal; /* signal in dbM, kluged to signed */
 	} *ipw_rt;
 
@@ -5894,17 +5889,14 @@ static void ipw_ethtool_get_drvinfo(struct net_device *dev,
 				    struct ethtool_drvinfo *info)
 {
 	struct ipw2100_priv *priv = libipw_priv(dev);
-	char fw_ver[64], ucode_ver[64];
+	char fw_ver[64];
 
 	strscpy(info->driver, DRV_NAME, sizeof(info->driver));
 	strscpy(info->version, DRV_VERSION, sizeof(info->version));
 
 	ipw2100_get_fwversion(priv, fw_ver, sizeof(fw_ver));
-	ipw2100_get_ucodeversion(priv, ucode_ver, sizeof(ucode_ver));
 
-	snprintf(info->fw_version, sizeof(info->fw_version), "%s:%d:%s",
-		 fw_ver, priv->eeprom_version, ucode_ver);
-
+	strscpy(info->fw_version, fw_ver, sizeof(info->fw_version));
 	strscpy(info->bus_info, pci_name(priv->pci_dev),
 		sizeof(info->bus_info));
 }
@@ -6030,8 +6022,6 @@ static struct net_device *ipw2100_alloc_device(struct pci_dev *pci_dev,
 	dev->netdev_ops = &ipw2100_netdev_ops;
 	dev->ethtool_ops = &ipw2100_ethtool_ops;
 	dev->wireless_handlers = &ipw2100_wx_handler_def;
-	priv->wireless_data.libipw = priv->ieee;
-	dev->wireless_data = &priv->wireless_data;
 	dev->watchdog_timeo = 3 * HZ;
 	dev->irq = 0;
 	dev->min_mtu = 68;
@@ -7576,7 +7566,7 @@ static int ipw2100_wx_set_auth(struct net_device *dev,
 	struct ipw2100_priv *priv = libipw_priv(dev);
 	struct libipw_device *ieee = priv->ieee;
 	struct iw_param *param = &wrqu->param;
-	struct lib80211_crypt_data *crypt;
+	struct libipw_crypt_data *crypt;
 	unsigned long flags;
 	int ret = 0;
 
@@ -7668,7 +7658,7 @@ static int ipw2100_wx_get_auth(struct net_device *dev,
 {
 	struct ipw2100_priv *priv = libipw_priv(dev);
 	struct libipw_device *ieee = priv->ieee;
-	struct lib80211_crypt_data *crypt;
+	struct libipw_crypt_data *crypt;
 	struct iw_param *param = &wrqu->param;
 
 	switch (param->flags & IW_AUTH_INDEX) {
@@ -8404,17 +8394,6 @@ static int ipw2100_get_fwversion(struct ipw2100_priv *priv, char *buf,
 		buf[i] = ver[i];
 	buf[i] = '\0';
 	return tmp;
-}
-
-static int ipw2100_get_ucodeversion(struct ipw2100_priv *priv, char *buf,
-				    size_t max)
-{
-	u32 ver;
-	u32 len = sizeof(ver);
-	/* microcode version is a 32 bit integer */
-	if (ipw2100_get_ordinal(priv, IPW_ORD_UCODE_VERSION, &ver, &len))
-		return -EIO;
-	return snprintf(buf, max, "%08X", ver);
 }
 
 /*

@@ -126,15 +126,13 @@ static int npcm_rng_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int npcm_rng_remove(struct platform_device *pdev)
+static void npcm_rng_remove(struct platform_device *pdev)
 {
 	struct npcm_rng *priv = platform_get_drvdata(pdev);
 
 	devm_hwrng_unregister(&pdev->dev, &priv->rng);
 	pm_runtime_disable(&pdev->dev);
 	pm_runtime_set_suspended(&pdev->dev);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM

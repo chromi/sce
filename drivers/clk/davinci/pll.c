@@ -18,11 +18,9 @@
 #include <linux/kernel.h>
 #include <linux/mfd/syscon.h>
 #include <linux/notifier.h>
-#include <linux/of_address.h>
-#include <linux/of_device.h>
 #include <linux/of.h>
-#include <linux/platform_data/clk-davinci-pll.h>
 #include <linux/platform_device.h>
+#include <linux/property.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
 #include <linux/types.h>
@@ -841,27 +839,6 @@ int of_davinci_pll_init(struct device *dev, struct device_node *node,
 	return 0;
 }
 
-static struct davinci_pll_platform_data *davinci_pll_get_pdata(struct device *dev)
-{
-	struct davinci_pll_platform_data *pdata = dev_get_platdata(dev);
-
-	/*
-	 * Platform data is optional, so allocate a new struct if one was not
-	 * provided. For device tree, this will always be the case.
-	 */
-	if (!pdata)
-		pdata = devm_kzalloc(dev, sizeof(*pdata), GFP_KERNEL);
-	if (!pdata)
-		return NULL;
-
-	/* for device tree, we need to fill in the struct */
-	if (dev->of_node)
-		pdata->cfgchip =
-			syscon_regmap_lookup_by_compatible("ti,da830-cfgchip");
-
-	return pdata;
-}
-
 /* needed in early boot for clocksource/clockevent */
 #ifdef CONFIG_ARCH_DAVINCI_DA850
 CLK_OF_DECLARE(da850_pll0, "ti,da850-pll0", of_da850_pll0_init);
@@ -891,15 +868,12 @@ typedef int (*davinci_pll_init)(struct device *dev, void __iomem *base,
 static int davinci_pll_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
-	struct davinci_pll_platform_data *pdata;
-	const struct of_device_id *of_id;
 	davinci_pll_init pll_init = NULL;
+	struct regmap *cfgchip;
 	void __iomem *base;
 
-	of_id = of_match_device(davinci_pll_of_match, dev);
-	if (of_id)
-		pll_init = of_id->data;
-	else if (pdev->id_entry)
+	pll_init = device_get_match_data(dev);
+	if (!pll_init && pdev->id_entry)
 		pll_init = (void *)pdev->id_entry->driver_data;
 
 	if (!pll_init) {
@@ -907,17 +881,13 @@ static int davinci_pll_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	pdata = davinci_pll_get_pdata(dev);
-	if (!pdata) {
-		dev_err(dev, "missing platform data\n");
-		return -EINVAL;
-	}
+	cfgchip = syscon_regmap_lookup_by_compatible("ti,da830-cfgchip");
 
 	base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(base))
 		return PTR_ERR(base);
 
-	return pll_init(dev, base, pdata->cfgchip);
+	return pll_init(dev, base, cfgchip);
 }
 
 static struct platform_driver davinci_pll_driver = {

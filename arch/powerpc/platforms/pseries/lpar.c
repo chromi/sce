@@ -16,6 +16,7 @@
 #include <linux/export.h>
 #include <linux/jump_label.h>
 #include <linux/delay.h>
+#include <linux/seq_file.h>
 #include <linux/stop_machine.h>
 #include <linux/spinlock.h>
 #include <linux/cpuhotplug.h>
@@ -169,7 +170,7 @@ struct vcpu_dispatch_data {
  */
 #define NR_CPUS_H	NR_CPUS
 
-DEFINE_RWLOCK(dtl_access_lock);
+DECLARE_RWSEM(dtl_access_lock);
 static DEFINE_PER_CPU(struct vcpu_dispatch_data, vcpu_disp_data);
 static DEFINE_PER_CPU(u64, dtl_entry_ridx);
 static DEFINE_PER_CPU(struct dtl_worker, dtl_workers);
@@ -192,9 +193,9 @@ static void free_dtl_buffers(unsigned long *time_limit)
 			continue;
 		kmem_cache_free(dtl_cache, pp->dispatch_log);
 		pp->dtl_ridx = 0;
-		pp->dispatch_log = 0;
-		pp->dispatch_log_end = 0;
-		pp->dtl_curr = 0;
+		pp->dispatch_log = NULL;
+		pp->dispatch_log_end = NULL;
+		pp->dtl_curr = NULL;
 
 		if (time_limit && time_after(jiffies, *time_limit)) {
 			cond_resched();
@@ -223,7 +224,7 @@ static void destroy_cpu_associativity(void)
 {
 	kfree(vcpu_associativity);
 	kfree(pcpu_associativity);
-	vcpu_associativity = pcpu_associativity = 0;
+	vcpu_associativity = pcpu_associativity = NULL;
 }
 
 static __be32 *__get_cpu_associativity(int cpu, __be32 *cpu_assoc, int flag)
@@ -463,7 +464,7 @@ static int dtl_worker_enable(unsigned long *time_limit)
 {
 	int rc = 0, state;
 
-	if (!write_trylock(&dtl_access_lock)) {
+	if (!down_write_trylock(&dtl_access_lock)) {
 		rc = -EBUSY;
 		goto out;
 	}
@@ -479,7 +480,7 @@ static int dtl_worker_enable(unsigned long *time_limit)
 		pr_err("vcpudispatch_stats: unable to setup workqueue for DTL processing\n");
 		free_dtl_buffers(time_limit);
 		reset_global_dtl_mask();
-		write_unlock(&dtl_access_lock);
+		up_write(&dtl_access_lock);
 		rc = -EINVAL;
 		goto out;
 	}
@@ -494,7 +495,7 @@ static void dtl_worker_disable(unsigned long *time_limit)
 	cpuhp_remove_state(dtl_worker_state);
 	free_dtl_buffers(time_limit);
 	reset_global_dtl_mask();
-	write_unlock(&dtl_access_lock);
+	up_write(&dtl_access_lock);
 }
 
 static ssize_t vcpudispatch_stats_write(struct file *file, const char __user *p,
@@ -526,8 +527,10 @@ static ssize_t vcpudispatch_stats_write(struct file *file, const char __user *p,
 
 	if (cmd) {
 		rc = init_cpu_associativity();
-		if (rc)
+		if (rc) {
+			destroy_cpu_associativity();
 			goto out;
+		}
 
 		for_each_possible_cpu(cpu) {
 			disp = per_cpu_ptr(&vcpu_disp_data, cpu);
@@ -660,8 +663,12 @@ u64 pseries_paravirt_steal_clock(int cpu)
 {
 	struct lppaca *lppaca = &lppaca_of(cpu);
 
-	return be64_to_cpu(READ_ONCE(lppaca->enqueue_dispatch_tb)) +
-		be64_to_cpu(READ_ONCE(lppaca->ready_enqueue_tb));
+	/*
+	 * VPA steal time counters are reported at TB frequency. Hence do a
+	 * conversion to ns before returning
+	 */
+	return tb_to_ns(be64_to_cpu(READ_ONCE(lppaca->enqueue_dispatch_tb)) +
+			be64_to_cpu(READ_ONCE(lppaca->ready_enqueue_tb)));
 }
 #endif
 
@@ -1880,10 +1887,10 @@ out:
  * h_get_mpp
  * H_GET_MPP hcall returns info in 7 parms
  */
-int h_get_mpp(struct hvcall_mpp_data *mpp_data)
+long h_get_mpp(struct hvcall_mpp_data *mpp_data)
 {
-	int rc;
-	unsigned long retbuf[PLPAR_HCALL9_BUFSIZE];
+	unsigned long retbuf[PLPAR_HCALL9_BUFSIZE] = {0};
+	long rc;
 
 	rc = plpar_hcall9(H_GET_MPP, retbuf);
 

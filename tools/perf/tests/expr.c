@@ -6,9 +6,11 @@
 #include "util/header.h"
 #include "util/smt.h"
 #include "tests.h"
+#include <perf/cpumap.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include <string2.h>
 #include <linux/zalloc.h>
 
 static int test_ids_union(void)
@@ -73,11 +75,12 @@ static int test__expr(struct test_suite *t __maybe_unused, int subtest __maybe_u
 	double val, num_cpus_online, num_cpus, num_cores, num_dies, num_packages;
 	int ret;
 	struct expr_parse_ctx *ctx;
-	bool is_intel = false;
-	char buf[128];
+	char strcmp_cpuid_buf[256];
+	struct perf_cpu cpu = {-1};
+	char *cpuid = get_cpuid_allow_env_override(cpu);
+	char *escaped_cpuid1, *escaped_cpuid2;
 
-	if (!get_cpuid(buf, sizeof(buf)))
-		is_intel = strstr(buf, "Intel") != NULL;
+	TEST_ASSERT_VAL("get_cpuid", cpuid);
 
 	TEST_ASSERT_EQUAL("ids_union", test_ids_union(), 0);
 
@@ -240,12 +243,19 @@ static int test__expr(struct test_suite *t __maybe_unused, int subtest __maybe_u
 	if (num_dies) // Some platforms do not have CPU die support, for example s390
 		TEST_ASSERT_VAL("#num_dies >= #num_packages", num_dies >= num_packages);
 
-	TEST_ASSERT_VAL("#system_tsc_freq", expr__parse(&val, ctx, "#system_tsc_freq") == 0);
-	if (is_intel)
-		TEST_ASSERT_VAL("#system_tsc_freq > 0", val > 0);
-	else
-		TEST_ASSERT_VAL("#system_tsc_freq == 0", fpclassify(val) == FP_ZERO);
 
+	if (expr__parse(&val, ctx, "#system_tsc_freq") == 0) {
+		bool is_intel = strstr(cpuid, "Intel") != NULL;
+
+		if (is_intel)
+			TEST_ASSERT_VAL("#system_tsc_freq > 0", val > 0);
+		else
+			TEST_ASSERT_VAL("#system_tsc_freq == 0", fpclassify(val) == FP_ZERO);
+	} else {
+#if defined(__i386__) || defined(__x86_64__)
+		TEST_ASSERT_VAL("#system_tsc_freq unsupported", 0);
+#endif
+	}
 	/*
 	 * Source count returns the number of events aggregating in a leader
 	 * event including the leader. Check parsing yields an id.
@@ -257,13 +267,32 @@ static int test__expr(struct test_suite *t __maybe_unused, int subtest __maybe_u
 	TEST_ASSERT_VAL("source count", hashmap__size(ctx->ids) == 1);
 	TEST_ASSERT_VAL("source count", hashmap__find(ctx->ids, "EVENT1", &val_ptr));
 
+
+	/* Test no cpuid match */
+	ret = test(ctx, "strcmp_cpuid_str(0x0)", 0);
+
+	/*
+	 * Test cpuid match with current cpuid. Special chars have to be
+	 * escaped.
+	 */
+	escaped_cpuid1 = strreplace_chars('-', cpuid, "\\-");
+	free(cpuid);
+	escaped_cpuid2 = strreplace_chars(',', escaped_cpuid1, "\\,");
+	free(escaped_cpuid1);
+	escaped_cpuid1 = strreplace_chars('=', escaped_cpuid2, "\\=");
+	free(escaped_cpuid2);
+	scnprintf(strcmp_cpuid_buf, sizeof(strcmp_cpuid_buf),
+		  "strcmp_cpuid_str(%s)", escaped_cpuid1);
+	free(escaped_cpuid1);
+	ret |= test(ctx, strcmp_cpuid_buf, 1);
+
 	/* has_event returns 1 when an event exists. */
 	expr__add_id_val(ctx, strdup("cycles"), 2);
-	ret = test(ctx, "has_event(cycles)", 1);
+	ret |= test(ctx, "has_event(cycles)", 1);
 
 	expr__ctx_free(ctx);
 
-	return 0;
+	return ret;
 }
 
 DEFINE_SUITE("Simple expression parser", expr);

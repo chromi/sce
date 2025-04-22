@@ -93,6 +93,10 @@ static const struct iio_chan_spec imx93_adc_iio_channels[] = {
 	IMX93_ADC_CHAN(1),
 	IMX93_ADC_CHAN(2),
 	IMX93_ADC_CHAN(3),
+	IMX93_ADC_CHAN(4),
+	IMX93_ADC_CHAN(5),
+	IMX93_ADC_CHAN(6),
+	IMX93_ADC_CHAN(7),
 };
 
 static void imx93_adc_power_down(struct imx93_adc *adc)
@@ -392,7 +396,7 @@ error_regulator_disable:
 	return ret;
 }
 
-static int imx93_adc_remove(struct platform_device *pdev)
+static void imx93_adc_remove(struct platform_device *pdev)
 {
 	struct iio_dev *indio_dev = platform_get_drvdata(pdev);
 	struct imx93_adc *adc = iio_priv(indio_dev);
@@ -410,8 +414,6 @@ static int imx93_adc_remove(struct platform_device *pdev)
 	free_irq(adc->irq, adc);
 	clk_disable_unprepare(adc->ipg_clk);
 	regulator_disable(adc->vref);
-
-	return 0;
 }
 
 static int imx93_adc_runtime_suspend(struct device *dev)

@@ -21,6 +21,10 @@
 #include <asm/bug.h>
 
 static bool riscv_v_implicit_uacc = IS_ENABLED(CONFIG_RISCV_ISA_V_DEFAULT_ENABLE);
+static struct kmem_cache *riscv_v_user_cachep;
+#ifdef CONFIG_RISCV_ISA_V_PREEMPTIVE
+static struct kmem_cache *riscv_v_kernel_cachep;
+#endif
 
 unsigned long riscv_v_vsize __read_mostly;
 EXPORT_SYMBOL_GPL(riscv_v_vsize);
@@ -29,7 +33,17 @@ int riscv_v_setup_vsize(void)
 {
 	unsigned long this_vsize;
 
-	/* There are 32 vector registers with vlenb length. */
+	/*
+	 * There are 32 vector registers with vlenb length.
+	 *
+	 * If the thead,vlenb property was provided by the firmware, use that
+	 * instead of probing the CSRs.
+	 */
+	if (thead_vlenb_of) {
+		riscv_v_vsize = thead_vlenb_of * 32;
+		return 0;
+	}
+
 	riscv_v_enable();
 	this_vsize = csr_read(CSR_VLENB) * 32;
 	riscv_v_disable();
@@ -47,7 +61,22 @@ int riscv_v_setup_vsize(void)
 	return 0;
 }
 
-static bool insn_is_vector(u32 insn_buf)
+void __init riscv_v_setup_ctx_cache(void)
+{
+	if (!(has_vector() || has_xtheadvector()))
+		return;
+
+	riscv_v_user_cachep = kmem_cache_create_usercopy("riscv_vector_ctx",
+							 riscv_v_vsize, 16, SLAB_PANIC,
+							 0, riscv_v_vsize, NULL);
+#ifdef CONFIG_RISCV_ISA_V_PREEMPTIVE
+	riscv_v_kernel_cachep = kmem_cache_create("riscv_vector_kctx",
+						  riscv_v_vsize, 16,
+						  SLAB_PANIC, NULL);
+#endif
+}
+
+bool insn_is_vector(u32 insn_buf)
 {
 	u32 opcode = insn_buf & __INSN_OPCODE_MASK;
 	u32 width, csr;
@@ -80,18 +109,35 @@ static bool insn_is_vector(u32 insn_buf)
 	return false;
 }
 
-static int riscv_v_thread_zalloc(void)
+static int riscv_v_thread_zalloc(struct kmem_cache *cache,
+				 struct __riscv_v_ext_state *ctx)
 {
 	void *datap;
 
-	datap = kzalloc(riscv_v_vsize, GFP_KERNEL);
+	datap = kmem_cache_zalloc(cache, GFP_KERNEL);
 	if (!datap)
 		return -ENOMEM;
 
-	current->thread.vstate.datap = datap;
-	memset(&current->thread.vstate, 0, offsetof(struct __riscv_v_ext_state,
-						    datap));
+	ctx->datap = datap;
+	memset(ctx, 0, offsetof(struct __riscv_v_ext_state, datap));
 	return 0;
+}
+
+void riscv_v_thread_alloc(struct task_struct *tsk)
+{
+#ifdef CONFIG_RISCV_ISA_V_PREEMPTIVE
+	riscv_v_thread_zalloc(riscv_v_kernel_cachep, &tsk->thread.kernel_vstate);
+#endif
+}
+
+void riscv_v_thread_free(struct task_struct *tsk)
+{
+	if (tsk->thread.vstate.datap)
+		kmem_cache_free(riscv_v_user_cachep, tsk->thread.vstate.datap);
+#ifdef CONFIG_RISCV_ISA_V_PREEMPTIVE
+	if (tsk->thread.kernel_vstate.datap)
+		kmem_cache_free(riscv_v_kernel_cachep, tsk->thread.kernel_vstate.datap);
+#endif
 }
 
 #define VSTATE_CTRL_GET_CUR(x) ((x) & PR_RISCV_V_VSTATE_CTRL_CUR_MASK)
@@ -122,7 +168,8 @@ static inline void riscv_v_ctrl_set(struct task_struct *tsk, int cur, int nxt,
 	ctrl |= VSTATE_CTRL_MAKE_NEXT(nxt);
 	if (inherit)
 		ctrl |= PR_RISCV_V_VSTATE_CTRL_INHERIT;
-	tsk->thread.vstate_ctrl = ctrl;
+	tsk->thread.vstate_ctrl &= ~PR_RISCV_V_VSTATE_CTRL_MASK;
+	tsk->thread.vstate_ctrl |= ctrl;
 }
 
 bool riscv_v_vstate_ctrl_user_allowed(void)
@@ -136,8 +183,11 @@ bool riscv_v_first_use_handler(struct pt_regs *regs)
 	u32 __user *epc = (u32 __user *)regs->epc;
 	u32 insn = (u32)regs->badaddr;
 
+	if (!(has_vector() || has_xtheadvector()))
+		return false;
+
 	/* Do not handle if V is not supported, or disabled */
-	if (!(ELF_HWCAP & COMPAT_HWCAP_ISA_V))
+	if (!riscv_v_vstate_ctrl_user_allowed())
 		return false;
 
 	/* If V has been enabled then it is not the first-use trap */
@@ -162,12 +212,12 @@ bool riscv_v_first_use_handler(struct pt_regs *regs)
 	 * context where VS has been off. So, try to allocate the user's V
 	 * context and resume execution.
 	 */
-	if (riscv_v_thread_zalloc()) {
+	if (riscv_v_thread_zalloc(riscv_v_user_cachep, &current->thread.vstate)) {
 		force_sig(SIGBUS);
 		return true;
 	}
 	riscv_v_vstate_on(regs);
-	riscv_v_vstate_restore(current, regs);
+	riscv_v_vstate_set_restore(current, regs);
 	return true;
 }
 
@@ -176,7 +226,7 @@ void riscv_v_vstate_ctrl_init(struct task_struct *tsk)
 	bool inherit;
 	int cur, next;
 
-	if (!has_vector())
+	if (!(has_vector() || has_xtheadvector()))
 		return;
 
 	next = riscv_v_ctrl_get_next(tsk);
@@ -198,7 +248,7 @@ void riscv_v_vstate_ctrl_init(struct task_struct *tsk)
 
 long riscv_v_vstate_ctrl_get_current(void)
 {
-	if (!has_vector())
+	if (!(has_vector() || has_xtheadvector()))
 		return -EINVAL;
 
 	return current->thread.vstate_ctrl & PR_RISCV_V_VSTATE_CTRL_MASK;
@@ -209,7 +259,7 @@ long riscv_v_vstate_ctrl_set_current(unsigned long arg)
 	bool inherit;
 	int cur, next;
 
-	if (!has_vector())
+	if (!(has_vector() || has_xtheadvector()))
 		return -EINVAL;
 
 	if (arg & ~PR_RISCV_V_VSTATE_CTRL_MASK)
@@ -247,7 +297,7 @@ long riscv_v_vstate_ctrl_set_current(unsigned long arg)
 
 #ifdef CONFIG_SYSCTL
 
-static struct ctl_table riscv_v_default_vstate_table[] = {
+static const struct ctl_table riscv_v_default_vstate_table[] = {
 	{
 		.procname	= "riscv_v_default_allow",
 		.data		= &riscv_v_implicit_uacc,
@@ -255,12 +305,11 @@ static struct ctl_table riscv_v_default_vstate_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_dobool,
 	},
-	{ }
 };
 
 static int __init riscv_v_sysctl_init(void)
 {
-	if (has_vector())
+	if (has_vector() || has_xtheadvector())
 		if (!register_sysctl("abi", riscv_v_default_vstate_table))
 			return -EINVAL;
 	return 0;
@@ -270,7 +319,7 @@ static int __init riscv_v_sysctl_init(void)
 static int __init riscv_v_sysctl_init(void) { return 0; }
 #endif /* ! CONFIG_SYSCTL */
 
-static int riscv_v_init(void)
+static int __init riscv_v_init(void)
 {
 	return riscv_v_sysctl_init();
 }

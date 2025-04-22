@@ -126,7 +126,7 @@ mlxreg_io_attr_show(struct device *dev, struct device_attribute *attr,
 
 	mutex_unlock(&priv->io_lock);
 
-	return sprintf(buf, "%u\n", regval);
+	return sysfs_emit(buf, "%u\n", regval);
 
 access_error:
 	mutex_unlock(&priv->io_lock);
@@ -263,13 +263,11 @@ static int mlxreg_io_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int mlxreg_io_remove(struct platform_device *pdev)
+static void mlxreg_io_remove(struct platform_device *pdev)
 {
 	struct mlxreg_io_priv_data *priv = dev_get_drvdata(&pdev->dev);
 
 	mutex_destroy(&priv->io_lock);
-
-	return 0;
 }
 
 static struct platform_driver mlxreg_io_driver = {

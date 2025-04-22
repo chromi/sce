@@ -16,6 +16,7 @@
 #include <linux/delay.h>
 #include <linux/ioport.h>
 #include <linux/slab.h>
+#include <linux/string_choices.h>
 #include <linux/errno.h>
 #include <linux/list.h>
 #include <linux/interrupt.h>
@@ -131,7 +132,7 @@ static void proc_ep_show(struct seq_file *s, struct at91_ep *ep)
 	seq_printf(s, "csr %08x rxbytes=%d %s %s %s" EIGHTBITS "\n",
 		csr,
 		(csr & 0x07ff0000) >> 16,
-		(csr & (1 << 15)) ? "enabled" : "disabled",
+		str_enabled_disabled(csr & (1 << 15)),
 		(csr & (1 << 11)) ? "DATA1" : "DATA0",
 		types[(csr & 0x700) >> 8],
 
@@ -1924,7 +1925,7 @@ err_unprepare_fclk:
 	return retval;
 }
 
-static int at91udc_remove(struct platform_device *pdev)
+static void at91udc_remove(struct platform_device *pdev)
 {
 	struct at91_udc *udc = platform_get_drvdata(pdev);
 	unsigned long	flags;
@@ -1932,8 +1933,11 @@ static int at91udc_remove(struct platform_device *pdev)
 	DBG("remove\n");
 
 	usb_del_gadget_udc(&udc->gadget);
-	if (udc->driver)
-		return -EBUSY;
+	if (udc->driver) {
+		dev_err(&pdev->dev,
+			"Driver still in use but removing anyhow\n");
+		return;
+	}
 
 	spin_lock_irqsave(&udc->lock, flags);
 	pullup(udc, 0);
@@ -1943,8 +1947,6 @@ static int at91udc_remove(struct platform_device *pdev)
 	remove_debug_file(udc);
 	clk_unprepare(udc->fclk);
 	clk_unprepare(udc->iclk);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM
@@ -2000,6 +2002,7 @@ static int at91udc_resume(struct platform_device *pdev)
 #endif
 
 static struct platform_driver at91_udc_driver = {
+	.probe		= at91udc_probe,
 	.remove		= at91udc_remove,
 	.shutdown	= at91udc_shutdown,
 	.suspend	= at91udc_suspend,
@@ -2010,7 +2013,7 @@ static struct platform_driver at91_udc_driver = {
 	},
 };
 
-module_platform_driver_probe(at91_udc_driver, at91udc_probe);
+module_platform_driver(at91_udc_driver);
 
 MODULE_DESCRIPTION("AT91 udc driver");
 MODULE_AUTHOR("Thomas Rathbone, David Brownell");

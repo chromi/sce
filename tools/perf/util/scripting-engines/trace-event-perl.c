@@ -27,7 +27,7 @@
 #include <errno.h>
 #include <linux/bitmap.h>
 #include <linux/time64.h>
-#include <traceevent/event-parse.h>
+#include <event-parse.h>
 
 #include <stdbool.h>
 /* perl needs the following define, right after including stdbool.h */
@@ -320,10 +320,10 @@ static SV *perl_process_callchain(struct perf_sample *sample,
 			const char *dsoname = "[unknown]";
 
 			if (dso) {
-				if (symbol_conf.show_kernel_path && dso->long_name)
-					dsoname = dso->long_name;
+				if (symbol_conf.show_kernel_path && dso__long_name(dso))
+					dsoname = dso__long_name(dso);
 				else
-					dsoname = dso->name;
+					dsoname = dso__name(dso);
 			}
 			if (!hv_stores(elem, "dso", newSVpv(dsoname,0))) {
 				hv_undef(elem);
@@ -344,7 +344,7 @@ static void perl_process_tracepoint(struct perf_sample *sample,
 				    struct addr_location *al)
 {
 	struct thread *thread = al->thread;
-	struct tep_event *event = evsel->tp_format;
+	struct tep_event *event;
 	struct tep_format_field *field;
 	static char handler[256];
 	unsigned long long val;
@@ -362,6 +362,7 @@ static void perl_process_tracepoint(struct perf_sample *sample,
 	if (evsel->core.attr.type != PERF_TYPE_TRACEPOINT)
 		return;
 
+	event = evsel__tp_format(evsel);
 	if (!event) {
 		pr_debug("ug! no event found for type %" PRIu64, (u64)evsel->core.attr.config);
 		return;
@@ -490,6 +491,9 @@ static int perl_start_script(const char *script, int argc, const char **argv,
 	scripting_context->session = session;
 
 	command_line = malloc((argc + 2) * sizeof(const char *));
+	if (!command_line)
+		return -ENOMEM;
+
 	command_line[0] = "";
 	command_line[1] = script;
 	for (i = 2; i < argc + 2; i++)

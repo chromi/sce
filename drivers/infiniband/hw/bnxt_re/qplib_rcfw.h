@@ -131,6 +131,8 @@ static inline u32 bnxt_qplib_set_cmd_slots(struct cmdq_base *req)
 #define RCFW_CMD_IS_BLOCKING		0x8000
 
 #define HWRM_VERSION_DEV_ATTR_MAX_DPI  0x1000A0000000DULL
+/* HWRM version 1.10.3.18 */
+#define HWRM_VERSION_READ_CTX           0x1000A00030012
 
 /* Crsq buf is 1024-Byte */
 struct bnxt_qplib_crsbe {
@@ -141,9 +143,9 @@ struct bnxt_qplib_crsbe {
 /* Allocate 1 per QP for async error notification for now */
 #define BNXT_QPLIB_CREQE_MAX_CNT	(64 * 1024)
 #define BNXT_QPLIB_CREQE_UNITS		16	/* 16-Bytes per prod unit */
-#define CREQ_CMP_VALID(hdr, raw_cons, cp_bit)			\
+#define CREQ_CMP_VALID(hdr, pass)			\
 	(!!((hdr)->v & CREQ_BASE_V) ==				\
-	   !((raw_cons) & (cp_bit)))
+	   !((pass) & BNXT_QPLIB_FLAG_EPOCH_CONS_MASK))
 #define CREQ_ENTRY_POLL_BUDGET		0x100
 
 /* HWQ */
@@ -224,6 +226,8 @@ struct bnxt_qplib_rcfw {
 	struct bnxt_qplib_crsqe		*crsqe_tbl;
 	int qp_tbl_size;
 	struct bnxt_qplib_qp_node *qp_tbl;
+	/* To synchronize the qp-handle hash table */
+	spinlock_t			tbl_lock;
 	u64 oos_prev;
 	u32 init_oos_stats;
 	u32 cmdq_depth;
@@ -258,8 +262,7 @@ static inline void bnxt_qplib_fill_cmdqmsg(struct bnxt_qplib_cmdqmsg *msg,
 void bnxt_qplib_free_rcfw_channel(struct bnxt_qplib_rcfw *rcfw);
 int bnxt_qplib_alloc_rcfw_channel(struct bnxt_qplib_res *res,
 				  struct bnxt_qplib_rcfw *rcfw,
-				  struct bnxt_qplib_ctx *ctx,
-				  int qp_tbl_sz);
+				  struct bnxt_qplib_ctx *ctx);
 void bnxt_qplib_rcfw_stop_irq(struct bnxt_qplib_rcfw *rcfw, bool kill);
 void bnxt_qplib_disable_rcfw_channel(struct bnxt_qplib_rcfw *rcfw);
 int bnxt_qplib_rcfw_start_irq(struct bnxt_qplib_rcfw *rcfw, int msix_vector,
@@ -281,9 +284,10 @@ int bnxt_qplib_deinit_rcfw(struct bnxt_qplib_rcfw *rcfw);
 int bnxt_qplib_init_rcfw(struct bnxt_qplib_rcfw *rcfw,
 			 struct bnxt_qplib_ctx *ctx, int is_virtfn);
 void bnxt_qplib_mark_qp_error(void *qp_handle);
+
 static inline u32 map_qp_id_to_tbl_indx(u32 qid, struct bnxt_qplib_rcfw *rcfw)
 {
 	/* Last index of the qp_tbl is for QP1 ie. qp_tbl_size - 1*/
-	return (qid == 1) ? rcfw->qp_tbl_size - 1 : qid % rcfw->qp_tbl_size - 2;
+	return (qid == 1) ? rcfw->qp_tbl_size - 1 : (qid % (rcfw->qp_tbl_size - 2));
 }
 #endif /* __BNXT_QPLIB_RCFW_H__ */

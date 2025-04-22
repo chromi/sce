@@ -333,7 +333,7 @@ void posix_state_to_acl(struct posix_acl_state *state,
 	pace->e_perm = state->other.allow;
 }
 
-int init_acl_state(struct posix_acl_state *state, int cnt)
+int init_acl_state(struct posix_acl_state *state, u16 cnt)
 {
 	int alloc;
 
@@ -345,10 +345,10 @@ int init_acl_state(struct posix_acl_state *state, int cnt)
 	 */
 	alloc = sizeof(struct posix_ace_state_array)
 		+ cnt * sizeof(struct posix_user_ace_state);
-	state->users = kzalloc(alloc, GFP_KERNEL);
+	state->users = kzalloc(alloc, KSMBD_DEFAULT_GFP);
 	if (!state->users)
 		return -ENOMEM;
-	state->groups = kzalloc(alloc, GFP_KERNEL);
+	state->groups = kzalloc(alloc, KSMBD_DEFAULT_GFP);
 	if (!state->groups) {
 		kfree(state->users);
 		return -ENOMEM;
@@ -368,7 +368,7 @@ static void parse_dacl(struct mnt_idmap *idmap,
 		       struct smb_fattr *fattr)
 {
 	int i, ret;
-	int num_aces = 0;
+	u16 num_aces = 0;
 	unsigned int acl_size;
 	char *acl_base;
 	struct smb_ace **ppace;
@@ -389,20 +389,18 @@ static void parse_dacl(struct mnt_idmap *idmap,
 
 	ksmbd_debug(SMB, "DACL revision %d size %d num aces %d\n",
 		    le16_to_cpu(pdacl->revision), le16_to_cpu(pdacl->size),
-		    le32_to_cpu(pdacl->num_aces));
+		    le16_to_cpu(pdacl->num_aces));
 
 	acl_base = (char *)pdacl;
 	acl_size = sizeof(struct smb_acl);
 
-	num_aces = le32_to_cpu(pdacl->num_aces);
+	num_aces = le16_to_cpu(pdacl->num_aces);
 	if (num_aces <= 0)
 		return;
 
-	if (num_aces > ULONG_MAX / sizeof(struct smb_ace *))
-		return;
-
-	ppace = kmalloc_array(num_aces, sizeof(struct smb_ace *), GFP_KERNEL);
-	if (!ppace)
+	if (num_aces > (le16_to_cpu(pdacl->size) - sizeof(struct smb_acl)) /
+			(offsetof(struct smb_ace, sid) +
+			 offsetof(struct smb_sid, sub_auth) + sizeof(__le16)))
 		return;
 
 	ret = init_acl_state(&acl_state, num_aces);
@@ -410,6 +408,13 @@ static void parse_dacl(struct mnt_idmap *idmap,
 		return;
 	ret = init_acl_state(&default_acl_state, num_aces);
 	if (ret) {
+		free_acl_state(&acl_state);
+		return;
+	}
+
+	ppace = kmalloc_array(num_aces, sizeof(struct smb_ace *), KSMBD_DEFAULT_GFP);
+	if (!ppace) {
+		free_acl_state(&default_acl_state);
 		free_acl_state(&acl_state);
 		return;
 	}
@@ -429,6 +434,7 @@ static void parse_dacl(struct mnt_idmap *idmap,
 			offsetof(struct smb_sid, sub_auth);
 
 		if (end_of_acl - acl_base < acl_size ||
+		    ppace[i]->sid.num_subauth == 0 ||
 		    ppace[i]->sid.num_subauth > SID_MAX_SUB_AUTHORITIES ||
 		    (end_of_acl - acl_base <
 		     acl_size + sizeof(__le32) * ppace[i]->sid.num_subauth) ||
@@ -550,7 +556,7 @@ static void parse_dacl(struct mnt_idmap *idmap,
 		if (IS_ENABLED(CONFIG_FS_POSIX_ACL)) {
 			fattr->cf_acls =
 				posix_acl_alloc(acl_state.users->n +
-					acl_state.groups->n + 4, GFP_KERNEL);
+					acl_state.groups->n + 4, KSMBD_DEFAULT_GFP);
 			if (fattr->cf_acls) {
 				cf_pace = fattr->cf_acls->a_entries;
 				posix_state_to_acl(&acl_state, cf_pace);
@@ -564,7 +570,7 @@ static void parse_dacl(struct mnt_idmap *idmap,
 		if (IS_ENABLED(CONFIG_FS_POSIX_ACL)) {
 			fattr->cf_dacls =
 				posix_acl_alloc(default_acl_state.users->n +
-				default_acl_state.groups->n + 4, GFP_KERNEL);
+				default_acl_state.groups->n + 4, KSMBD_DEFAULT_GFP);
 			if (fattr->cf_dacls) {
 				cf_pdace = fattr->cf_dacls->a_entries;
 				posix_state_to_acl(&default_acl_state, cf_pdace);
@@ -577,7 +583,7 @@ static void parse_dacl(struct mnt_idmap *idmap,
 
 static void set_posix_acl_entries_dacl(struct mnt_idmap *idmap,
 				       struct smb_ace *pndace,
-				       struct smb_fattr *fattr, u32 *num_aces,
+				       struct smb_fattr *fattr, u16 *num_aces,
 				       u16 *size, u32 nt_aces_num)
 {
 	struct posix_acl_entry *pace;
@@ -592,7 +598,7 @@ static void set_posix_acl_entries_dacl(struct mnt_idmap *idmap,
 	for (i = 0; i < fattr->cf_acls->a_count; i++, pace++) {
 		int flags = 0;
 
-		sid = kmalloc(sizeof(struct smb_sid), GFP_KERNEL);
+		sid = kmalloc(sizeof(struct smb_sid), KSMBD_DEFAULT_GFP);
 		if (!sid)
 			break;
 
@@ -659,7 +665,7 @@ posix_default_acl:
 
 	pace = fattr->cf_dacls->a_entries;
 	for (i = 0; i < fattr->cf_dacls->a_count; i++, pace++) {
-		sid = kmalloc(sizeof(struct smb_sid), GFP_KERNEL);
+		sid = kmalloc(sizeof(struct smb_sid), KSMBD_DEFAULT_GFP);
 		if (!sid)
 			break;
 
@@ -698,7 +704,7 @@ static void set_ntacl_dacl(struct mnt_idmap *idmap,
 			   struct smb_fattr *fattr)
 {
 	struct smb_ace *ntace, *pndace;
-	int nt_num_aces = le32_to_cpu(nt_dacl->num_aces), num_aces = 0;
+	u16 nt_num_aces = le16_to_cpu(nt_dacl->num_aces), num_aces = 0;
 	unsigned short size = 0;
 	int i;
 
@@ -725,7 +731,7 @@ static void set_ntacl_dacl(struct mnt_idmap *idmap,
 
 	set_posix_acl_entries_dacl(idmap, pndace, fattr,
 				   &num_aces, &size, nt_num_aces);
-	pndacl->num_aces = cpu_to_le32(num_aces);
+	pndacl->num_aces = cpu_to_le16(num_aces);
 	pndacl->size = cpu_to_le16(le16_to_cpu(pndacl->size) + size);
 }
 
@@ -733,7 +739,7 @@ static void set_mode_dacl(struct mnt_idmap *idmap,
 			  struct smb_acl *pndacl, struct smb_fattr *fattr)
 {
 	struct smb_ace *pace, *pndace;
-	u32 num_aces = 0;
+	u16 num_aces = 0;
 	u16 size = 0, ace_size = 0;
 	uid_t uid;
 	const struct smb_sid *sid;
@@ -789,7 +795,7 @@ static void set_mode_dacl(struct mnt_idmap *idmap,
 				 fattr->cf_mode, 0007);
 
 out:
-	pndacl->num_aces = cpu_to_le32(num_aces);
+	pndacl->num_aces = cpu_to_le16(num_aces);
 	pndacl->size = cpu_to_le16(le16_to_cpu(pndacl->size) + size);
 }
 
@@ -803,6 +809,13 @@ static int parse_sid(struct smb_sid *psid, char *end_of_acl)
 		pr_err("ACL too small to parse SID %p\n", psid);
 		return -EINVAL;
 	}
+
+	if (!psid->num_subauth)
+		return 0;
+
+	if (psid->num_subauth > SID_MAX_SUB_AUTHORITIES ||
+	    end_of_acl < (char *)psid + 8 + sizeof(__le32) * psid->num_subauth)
+		return -EINVAL;
 
 	return 0;
 }
@@ -845,6 +858,9 @@ int parse_sec_desc(struct mnt_idmap *idmap, struct smb_ntsd *pntsd,
 	pntsd->type = cpu_to_le16(DACL_PRESENT);
 
 	if (pntsd->osidoffset) {
+		if (le32_to_cpu(pntsd->osidoffset) < sizeof(struct smb_ntsd))
+			return -EINVAL;
+
 		rc = parse_sid(owner_sid_ptr, end_of_acl);
 		if (rc) {
 			pr_err("%s: Error %d parsing Owner SID\n", __func__, rc);
@@ -860,6 +876,9 @@ int parse_sec_desc(struct mnt_idmap *idmap, struct smb_ntsd *pntsd,
 	}
 
 	if (pntsd->gsidoffset) {
+		if (le32_to_cpu(pntsd->gsidoffset) < sizeof(struct smb_ntsd))
+			return -EINVAL;
+
 		rc = parse_sid(group_sid_ptr, end_of_acl);
 		if (rc) {
 			pr_err("%s: Error %d mapping Owner SID to gid\n",
@@ -881,6 +900,9 @@ int parse_sec_desc(struct mnt_idmap *idmap, struct smb_ntsd *pntsd,
 		pntsd->type |= cpu_to_le16(DACL_PROTECTED);
 
 	if (dacloffset) {
+		if (dacloffset < sizeof(struct smb_ntsd))
+			return -EINVAL;
+
 		parse_dacl(idmap, dacl_ptr, end_of_acl,
 			   owner_sid_ptr, group_sid_ptr, fattr);
 	}
@@ -903,7 +925,7 @@ int build_sec_desc(struct mnt_idmap *idmap,
 	gid_t gid;
 	unsigned int sid_type = SIDOWNER;
 
-	nowner_sid_ptr = kmalloc(sizeof(struct smb_sid), GFP_KERNEL);
+	nowner_sid_ptr = kmalloc(sizeof(struct smb_sid), KSMBD_DEFAULT_GFP);
 	if (!nowner_sid_ptr)
 		return -ENOMEM;
 
@@ -912,7 +934,7 @@ int build_sec_desc(struct mnt_idmap *idmap,
 		sid_type = SIDUNIX_USER;
 	id_to_sid(uid, sid_type, nowner_sid_ptr);
 
-	ngroup_sid_ptr = kmalloc(sizeof(struct smb_sid), GFP_KERNEL);
+	ngroup_sid_ptr = kmalloc(sizeof(struct smb_sid), KSMBD_DEFAULT_GFP);
 	if (!ngroup_sid_ptr) {
 		kfree(nowner_sid_ptr);
 		return -ENOMEM;
@@ -1003,8 +1025,9 @@ int smb_inherit_dacl(struct ksmbd_conn *conn,
 	struct smb_sid owner_sid, group_sid;
 	struct dentry *parent = path->dentry->d_parent;
 	struct mnt_idmap *idmap = mnt_idmap(path->mnt);
-	int inherited_flags = 0, flags = 0, i, ace_cnt = 0, nt_size = 0, pdacl_size;
-	int rc = 0, num_aces, dacloffset, pntsd_type, pntsd_size, acl_len, aces_size;
+	int inherited_flags = 0, flags = 0, i, nt_size = 0, pdacl_size;
+	int rc = 0, dacloffset, pntsd_type, pntsd_size, acl_len, aces_size;
+	u16 num_aces, ace_cnt = 0;
 	char *aces_base;
 	bool is_dir = S_ISDIR(d_inode(path->dentry)->i_mode);
 
@@ -1020,7 +1043,7 @@ int smb_inherit_dacl(struct ksmbd_conn *conn,
 
 	parent_pdacl = (struct smb_acl *)((char *)parent_pntsd + dacloffset);
 	acl_len = pntsd_size - dacloffset;
-	num_aces = le32_to_cpu(parent_pdacl->num_aces);
+	num_aces = le16_to_cpu(parent_pdacl->num_aces);
 	pntsd_type = le16_to_cpu(parent_pntsd->type);
 	pdacl_size = le16_to_cpu(parent_pdacl->size);
 
@@ -1029,7 +1052,8 @@ int smb_inherit_dacl(struct ksmbd_conn *conn,
 		goto free_parent_pntsd;
 	}
 
-	aces_base = kmalloc(sizeof(struct smb_ace) * num_aces * 2, GFP_KERNEL);
+	aces_base = kmalloc(sizeof(struct smb_ace) * num_aces * 2,
+			    KSMBD_DEFAULT_GFP);
 	if (!aces_base) {
 		rc = -ENOMEM;
 		goto free_parent_pntsd;
@@ -1107,6 +1131,7 @@ pass:
 		struct smb_acl *pdacl;
 		struct smb_sid *powner_sid = NULL, *pgroup_sid = NULL;
 		int powner_sid_size = 0, pgroup_sid_size = 0, pntsd_size;
+		int pntsd_alloc_size;
 
 		if (parent_pntsd->osidoffset) {
 			powner_sid = (struct smb_sid *)((char *)parent_pntsd +
@@ -1119,9 +1144,10 @@ pass:
 			pgroup_sid_size = 1 + 1 + 6 + (pgroup_sid->num_subauth * 4);
 		}
 
-		pntsd = kzalloc(sizeof(struct smb_ntsd) + powner_sid_size +
-				pgroup_sid_size + sizeof(struct smb_acl) +
-				nt_size, GFP_KERNEL);
+		pntsd_alloc_size = sizeof(struct smb_ntsd) + powner_sid_size +
+			pgroup_sid_size + sizeof(struct smb_acl) + nt_size;
+
+		pntsd = kzalloc(pntsd_alloc_size, KSMBD_DEFAULT_GFP);
 		if (!pntsd) {
 			rc = -ENOMEM;
 			goto free_aces_base;
@@ -1135,6 +1161,27 @@ pass:
 		pntsd->osidoffset = parent_pntsd->osidoffset;
 		pntsd->gsidoffset = parent_pntsd->gsidoffset;
 		pntsd->dacloffset = parent_pntsd->dacloffset;
+
+		if ((u64)le32_to_cpu(pntsd->osidoffset) + powner_sid_size >
+		    pntsd_alloc_size) {
+			rc = -EINVAL;
+			kfree(pntsd);
+			goto free_aces_base;
+		}
+
+		if ((u64)le32_to_cpu(pntsd->gsidoffset) + pgroup_sid_size >
+		    pntsd_alloc_size) {
+			rc = -EINVAL;
+			kfree(pntsd);
+			goto free_aces_base;
+		}
+
+		if ((u64)le32_to_cpu(pntsd->dacloffset) + sizeof(struct smb_acl) + nt_size >
+		    pntsd_alloc_size) {
+			rc = -EINVAL;
+			kfree(pntsd);
+			goto free_aces_base;
+		}
 
 		if (pntsd->osidoffset) {
 			struct smb_sid *owner_sid = (struct smb_sid *)((char *)pntsd +
@@ -1156,13 +1203,13 @@ pass:
 			pdacl = (struct smb_acl *)((char *)pntsd + le32_to_cpu(pntsd->dacloffset));
 			pdacl->revision = cpu_to_le16(2);
 			pdacl->size = cpu_to_le16(sizeof(struct smb_acl) + nt_size);
-			pdacl->num_aces = cpu_to_le32(ace_cnt);
+			pdacl->num_aces = cpu_to_le16(ace_cnt);
 			pace = (struct smb_ace *)((char *)pdacl + sizeof(struct smb_acl));
 			memcpy(pace, aces_base, nt_size);
 			pntsd_size += sizeof(struct smb_acl) + nt_size;
 		}
 
-		ksmbd_vfs_set_sd_xattr(conn, idmap, path, pntsd, pntsd_size);
+		ksmbd_vfs_set_sd_xattr(conn, idmap, path, pntsd, pntsd_size, false);
 		kfree(pntsd);
 	}
 
@@ -1237,7 +1284,7 @@ int smb_check_perm_dacl(struct ksmbd_conn *conn, const struct path *path,
 
 		ace = (struct smb_ace *)((char *)pdacl + sizeof(struct smb_acl));
 		aces_size = acl_size - sizeof(struct smb_acl);
-		for (i = 0; i < le32_to_cpu(pdacl->num_aces); i++) {
+		for (i = 0; i < le16_to_cpu(pdacl->num_aces); i++) {
 			if (offsetof(struct smb_ace, access_req) > aces_size)
 				break;
 			ace_size = le16_to_cpu(ace->size);
@@ -1258,7 +1305,7 @@ int smb_check_perm_dacl(struct ksmbd_conn *conn, const struct path *path,
 
 	ace = (struct smb_ace *)((char *)pdacl + sizeof(struct smb_acl));
 	aces_size = acl_size - sizeof(struct smb_acl);
-	for (i = 0; i < le32_to_cpu(pdacl->num_aces); i++) {
+	for (i = 0; i < le16_to_cpu(pdacl->num_aces); i++) {
 		if (offsetof(struct smb_ace, access_req) > aces_size)
 			break;
 		ace_size = le16_to_cpu(ace->size);
@@ -1354,7 +1401,7 @@ err_out:
 
 int set_info_sec(struct ksmbd_conn *conn, struct ksmbd_tree_connect *tcon,
 		 const struct path *path, struct smb_ntsd *pntsd, int ntsd_len,
-		 bool type_check)
+		 bool type_check, bool get_write)
 {
 	int rc;
 	struct smb_fattr fattr = {{0}};
@@ -1414,7 +1461,8 @@ int set_info_sec(struct ksmbd_conn *conn, struct ksmbd_tree_connect *tcon,
 	if (test_share_config_flag(tcon->share_conf, KSMBD_SHARE_FLAG_ACL_XATTR)) {
 		/* Update WinACL in xattr */
 		ksmbd_vfs_remove_sd_xattrs(idmap, path);
-		ksmbd_vfs_set_sd_xattr(conn, idmap, path, pntsd, ntsd_len);
+		ksmbd_vfs_set_sd_xattr(conn, idmap, path, pntsd, ntsd_len,
+				get_write);
 	}
 
 out:

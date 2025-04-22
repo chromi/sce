@@ -886,6 +886,69 @@ l1_%=:	r0 = 0;						\
 }
 
 SEC("socket")
+__description("bounds check for non const xor src dst")
+__success __log_level(2)
+__msg("5: (af) r0 ^= r6                      ; R0_w=scalar(smin=smin32=0,smax=umax=smax32=umax32=431,var_off=(0x0; 0x1af))")
+__naked void non_const_xor_src_dst(void)
+{
+	asm volatile ("					\
+	call %[bpf_get_prandom_u32];                    \
+	r6 = r0;					\
+	call %[bpf_get_prandom_u32];                    \
+	r6 &= 0xaf;					\
+	r0 &= 0x1a0;					\
+	r0 ^= r6;					\
+	exit;						\
+"	:
+	: __imm(bpf_map_lookup_elem),
+	__imm_addr(map_hash_8b),
+	__imm(bpf_get_prandom_u32)
+	: __clobber_all);
+}
+
+SEC("socket")
+__description("bounds check for non const or src dst")
+__success __log_level(2)
+__msg("5: (4f) r0 |= r6                      ; R0_w=scalar(smin=smin32=0,smax=umax=smax32=umax32=431,var_off=(0x0; 0x1af))")
+__naked void non_const_or_src_dst(void)
+{
+	asm volatile ("					\
+	call %[bpf_get_prandom_u32];                    \
+	r6 = r0;					\
+	call %[bpf_get_prandom_u32];                    \
+	r6 &= 0xaf;					\
+	r0 &= 0x1a0;					\
+	r0 |= r6;					\
+	exit;						\
+"	:
+	: __imm(bpf_map_lookup_elem),
+	__imm_addr(map_hash_8b),
+	__imm(bpf_get_prandom_u32)
+	: __clobber_all);
+}
+
+SEC("socket")
+__description("bounds check for non const mul regs")
+__success __log_level(2)
+__msg("5: (2f) r0 *= r6                      ; R0_w=scalar(smin=smin32=0,smax=umax=smax32=umax32=3825,var_off=(0x0; 0xfff))")
+__naked void non_const_mul_regs(void)
+{
+	asm volatile ("					\
+	call %[bpf_get_prandom_u32];                    \
+	r6 = r0;					\
+	call %[bpf_get_prandom_u32];                    \
+	r6 &= 0xff;					\
+	r0 &= 0x0f;					\
+	r0 *= r6;					\
+	exit;						\
+"	:
+	: __imm(bpf_map_lookup_elem),
+	__imm_addr(map_hash_8b),
+	__imm(bpf_get_prandom_u32)
+	: __clobber_all);
+}
+
+SEC("socket")
 __description("bounds checks after 32-bit truncation. test 1")
 __success __failure_unpriv __msg_unpriv("R0 leaks addr")
 __retval(0)
@@ -965,6 +1028,7 @@ l0_%=:	r0 = 0;						\
 SEC("xdp")
 __description("bound check with JMP_JSLT for crossing 64-bit signed boundary")
 __success __retval(0)
+__flag(!BPF_F_TEST_REG_INVARIANTS) /* known invariants violation */
 __naked void crossing_64_bit_signed_boundary_2(void)
 {
 	asm volatile ("					\
@@ -1046,6 +1110,7 @@ l0_%=:	r0 = 0;						\
 SEC("xdp")
 __description("bound check with JMP32_JSLT for crossing 32-bit signed boundary")
 __success __retval(0)
+__flag(!BPF_F_TEST_REG_INVARIANTS) /* known invariants violation */
 __naked void crossing_32_bit_signed_boundary_2(void)
 {
 	asm volatile ("					\
@@ -1073,4 +1138,200 @@ l0_%=:	r0 = 0;						\
 	: __clobber_all);
 }
 
+SEC("tc")
+__description("bounds check with JMP_NE for reg edge")
+__success __retval(0)
+__naked void reg_not_equal_const(void)
+{
+	asm volatile ("					\
+	r6 = r1;					\
+	r1 = 0;						\
+	*(u64*)(r10 - 8) = r1;				\
+	call %[bpf_get_prandom_u32];			\
+	r4 = r0;					\
+	r4 &= 7;					\
+	if r4 != 0 goto l0_%=;				\
+	r0 = 0;						\
+	exit;						\
+l0_%=:	r1 = r6;					\
+	r2 = 0;						\
+	r3 = r10;					\
+	r3 += -8;					\
+	r5 = 0;						\
+	/* The 4th argument of bpf_skb_store_bytes is defined as \
+	 * ARG_CONST_SIZE, so 0 is not allowed. The 'r4 != 0' \
+	 * is providing us this exclusion of zero from initial \
+	 * [0, 7] range.				\
+	 */						\
+	call %[bpf_skb_store_bytes];			\
+	r0 = 0;						\
+	exit;						\
+"	:
+	: __imm(bpf_get_prandom_u32),
+	  __imm(bpf_skb_store_bytes)
+	: __clobber_all);
+}
+
+SEC("tc")
+__description("bounds check with JMP_EQ for reg edge")
+__success __retval(0)
+__naked void reg_equal_const(void)
+{
+	asm volatile ("					\
+	r6 = r1;					\
+	r1 = 0;						\
+	*(u64*)(r10 - 8) = r1;				\
+	call %[bpf_get_prandom_u32];			\
+	r4 = r0;					\
+	r4 &= 7;					\
+	if r4 == 0 goto l0_%=;				\
+	r1 = r6;					\
+	r2 = 0;						\
+	r3 = r10;					\
+	r3 += -8;					\
+	r5 = 0;						\
+	/* Just the same as what we do in reg_not_equal_const() */ \
+	call %[bpf_skb_store_bytes];			\
+l0_%=:	r0 = 0;						\
+	exit;						\
+"	:
+	: __imm(bpf_get_prandom_u32),
+	  __imm(bpf_skb_store_bytes)
+	: __clobber_all);
+}
+
+SEC("tc")
+__description("multiply mixed sign bounds. test 1")
+__success __log_level(2)
+__msg("r6 *= r7 {{.*}}; R6_w=scalar(smin=umin=0x1bc16d5cd4927ee1,smax=umax=0x1bc16d674ec80000,smax32=0x7ffffeff,umax32=0xfffffeff,var_off=(0x1bc16d4000000000; 0x3ffffffeff))")
+__naked void mult_mixed0_sign(void)
+{
+	asm volatile (
+	"call %[bpf_get_prandom_u32];"
+	"r6 = r0;"
+	"call %[bpf_get_prandom_u32];"
+	"r7 = r0;"
+	"r6 &= 0xf;"
+	"r6 -= 1000000000;"
+	"r7 &= 0xf;"
+	"r7 -= 2000000000;"
+	"r6 *= r7;"
+	"exit"
+	:
+	: __imm(bpf_get_prandom_u32),
+	  __imm(bpf_skb_store_bytes)
+	: __clobber_all);
+}
+
+SEC("tc")
+__description("multiply mixed sign bounds. test 2")
+__success __log_level(2)
+__msg("r6 *= r7 {{.*}}; R6_w=scalar(smin=smin32=-100,smax=smax32=200)")
+__naked void mult_mixed1_sign(void)
+{
+	asm volatile (
+	"call %[bpf_get_prandom_u32];"
+	"r6 = r0;"
+	"call %[bpf_get_prandom_u32];"
+	"r7 = r0;"
+	"r6 &= 0xf;"
+	"r6 -= 0xa;"
+	"r7 &= 0xf;"
+	"r7 -= 0x14;"
+	"r6 *= r7;"
+	"exit"
+	:
+	: __imm(bpf_get_prandom_u32),
+	  __imm(bpf_skb_store_bytes)
+	: __clobber_all);
+}
+
+SEC("tc")
+__description("multiply negative bounds")
+__success __log_level(2)
+__msg("r6 *= r7 {{.*}}; R6_w=scalar(smin=umin=smin32=umin32=0x3ff280b0,smax=umax=smax32=umax32=0x3fff0001,var_off=(0x3ff00000; 0xf81ff))")
+__naked void mult_sign_bounds(void)
+{
+	asm volatile (
+	"r8 = 0x7fff;"
+	"call %[bpf_get_prandom_u32];"
+	"r6 = r0;"
+	"call %[bpf_get_prandom_u32];"
+	"r7 = r0;"
+	"r6 &= 0xa;"
+	"r6 -= r8;"
+	"r7 &= 0xf;"
+	"r7 -= r8;"
+	"r6 *= r7;"
+	"exit"
+	:
+	: __imm(bpf_get_prandom_u32),
+	  __imm(bpf_skb_store_bytes)
+	: __clobber_all);
+}
+
+SEC("tc")
+__description("multiply bounds that don't cross signed boundary")
+__success __log_level(2)
+__msg("r8 *= r6 {{.*}}; R6_w=scalar(smin=smin32=0,smax=umax=smax32=umax32=11,var_off=(0x0; 0xb)) R8_w=scalar(smin=0,smax=umax=0x7b96bb0a94a3a7cd,var_off=(0x0; 0x7fffffffffffffff))")
+__naked void mult_no_sign_crossing(void)
+{
+	asm volatile (
+	"r6 = 0xb;"
+	"r8 = 0xb3c3f8c99262687 ll;"
+	"call %[bpf_get_prandom_u32];"
+	"r7 = r0;"
+	"r6 &= r7;"
+	"r8 *= r6;"
+	"exit"
+	:
+	: __imm(bpf_get_prandom_u32),
+	  __imm(bpf_skb_store_bytes)
+	: __clobber_all);
+}
+
+SEC("tc")
+__description("multiplication overflow, result in unbounded reg. test 1")
+__success __log_level(2)
+__msg("r6 *= r7 {{.*}}; R6_w=scalar()")
+__naked void mult_unsign_ovf(void)
+{
+	asm volatile (
+	"r8 = 0x7ffffffffff ll;"
+	"call %[bpf_get_prandom_u32];"
+	"r6 = r0;"
+	"call %[bpf_get_prandom_u32];"
+	"r7 = r0;"
+	"r6 &= 0x7fffffff;"
+	"r7 &= r8;"
+	"r6 *= r7;"
+	"exit"
+	:
+	: __imm(bpf_get_prandom_u32),
+	  __imm(bpf_skb_store_bytes)
+	: __clobber_all);
+}
+
+SEC("tc")
+__description("multiplication overflow, result in unbounded reg. test 2")
+__success __log_level(2)
+__msg("r6 *= r7 {{.*}}; R6_w=scalar()")
+__naked void mult_sign_ovf(void)
+{
+	asm volatile (
+	"r8 = 0x7ffffffff ll;"
+	"call %[bpf_get_prandom_u32];"
+	"r6 = r0;"
+	"call %[bpf_get_prandom_u32];"
+	"r7 = r0;"
+	"r6 &= 0xa;"
+	"r6 -= r8;"
+	"r7 &= 0x7fffffff;"
+	"r6 *= r7;"
+	"exit"
+	:
+	: __imm(bpf_get_prandom_u32),
+	  __imm(bpf_skb_store_bytes)
+	: __clobber_all);
+}
 char _license[] SEC("license") = "GPL";

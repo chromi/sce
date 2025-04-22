@@ -56,7 +56,6 @@
 #include <scsi/sas_ata.h>
 #include <linux/atomic.h>
 #include <linux/blk-mq.h>
-#include <linux/blk-mq-pci.h>
 #include "pm8001_defs.h"
 
 #define DRV_NAME		"pm80xx"
@@ -83,10 +82,7 @@ do {									\
 		pm8001_info(HBA, fmt, ##__VA_ARGS__);			\
 } while (0)
 
-#define PM8001_USE_TASKLET
-#define PM8001_USE_MSIX
-#define PM8001_READ_VPD
-
+extern bool pm8001_use_msix;
 
 #define IS_SPCV_12G(dev)	((dev->device == 0X8074)		\
 				|| (dev->device == 0X8076)		\
@@ -98,6 +94,8 @@ do {									\
 extern struct list_head hba_list;
 extern const struct pm8001_dispatch pm8001_8001_dispatch;
 extern const struct pm8001_dispatch pm8001_80xx_dispatch;
+
+extern uint pcs_event_log_severity;
 
 struct pm8001_hba_info;
 struct pm8001_ccb_info;
@@ -520,14 +518,12 @@ struct pm8001_hba_info {
 	struct pm8001_device	*devices;
 	struct pm8001_ccb_info	*ccb_info;
 	u32			ccb_count;
-#ifdef PM8001_USE_MSIX
+
+	bool			use_msix;
 	int			number_of_intr;/*will be used in remove()*/
 	char			intr_drvname[PM8001_MAX_MSIX_VEC]
 				[PM8001_NAME_LENGTH+1+3+1];
-#endif
-#ifdef PM8001_USE_TASKLET
 	struct tasklet_struct	tasklet[PM8001_MAX_MSIX_VEC];
-#endif
 	u32			logging_level;
 	u32			link_rate;
 	u32			fw_status;
@@ -722,6 +718,7 @@ int pm80xx_fatal_errors(struct pm8001_hba_info *pm8001_ha);
 void pm8001_free_dev(struct pm8001_device *pm8001_dev);
 /* ctl shared API */
 extern const struct attribute_group *pm8001_host_groups[];
+extern const struct attribute_group *pm8001_sdev_groups[];
 
 #define PM8001_INVALID_TAG	((u32)-1)
 
@@ -789,6 +786,8 @@ static inline void pm8001_ccb_task_free_done(struct pm8001_hba_info *pm8001_ha,
 }
 void pm8001_setds_completion(struct domain_device *dev);
 void pm8001_tmf_aborted(struct sas_task *task);
+void pm80xx_show_pending_commands(struct pm8001_hba_info *pm8001_ha,
+				  struct pm8001_device *dev);
 
 #endif
 

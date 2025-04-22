@@ -1197,6 +1197,10 @@ static int tegra_nand_probe(struct platform_device *pdev)
 	init_completion(&ctrl->dma_complete);
 
 	ctrl->irq = platform_get_irq(pdev, 0);
+	if (ctrl->irq < 0) {
+		err = ctrl->irq;
+		goto err_put_pm;
+	}
 	err = devm_request_irq(&pdev->dev, ctrl->irq, tegra_nand_irq, 0,
 			       dev_name(&pdev->dev), ctrl);
 	if (err) {
@@ -1275,7 +1279,7 @@ static struct platform_driver tegra_nand_driver = {
 		.pm = &tegra_nand_pm,
 	},
 	.probe = tegra_nand_probe,
-	.remove_new = tegra_nand_remove,
+	.remove = tegra_nand_remove,
 };
 module_platform_driver(tegra_nand_driver);
 

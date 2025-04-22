@@ -2415,6 +2415,7 @@ static int ahash_hmac_setkey(struct crypto_ahash *ahash, const u8 *key,
 
 static int ahash_hmac_init(struct ahash_request *req)
 {
+	int ret;
 	struct iproc_reqctx_s *rctx = ahash_request_ctx(req);
 	struct crypto_ahash *tfm = crypto_ahash_reqtfm(req);
 	struct iproc_ctx_s *ctx = crypto_ahash_ctx(tfm);
@@ -2424,7 +2425,9 @@ static int ahash_hmac_init(struct ahash_request *req)
 	flow_log("ahash_hmac_init()\n");
 
 	/* init the context as a hash */
-	ahash_init(req);
+	ret = ahash_init(req);
+	if (ret)
+		return ret;
 
 	if (!spu_no_incr_hash(ctx)) {
 		/* SPU-M can do incr hashing but needs sw for outer HMAC */
@@ -3517,25 +3520,6 @@ static struct iproc_alg_s driver_algs[] = {
 	{
 	 .type = CRYPTO_ALG_TYPE_SKCIPHER,
 	 .alg.skcipher = {
-			.base.cra_name = "ofb(des)",
-			.base.cra_driver_name = "ofb-des-iproc",
-			.base.cra_blocksize = DES_BLOCK_SIZE,
-			.min_keysize = DES_KEY_SIZE,
-			.max_keysize = DES_KEY_SIZE,
-			.ivsize = DES_BLOCK_SIZE,
-			},
-	 .cipher_info = {
-			 .alg = CIPHER_ALG_DES,
-			 .mode = CIPHER_MODE_OFB,
-			 },
-	 .auth_info = {
-		       .alg = HASH_ALG_NONE,
-		       .mode = HASH_MODE_NONE,
-		       },
-	 },
-	{
-	 .type = CRYPTO_ALG_TYPE_SKCIPHER,
-	 .alg.skcipher = {
 			.base.cra_name = "cbc(des)",
 			.base.cra_driver_name = "cbc-des-iproc",
 			.base.cra_blocksize = DES_BLOCK_SIZE,
@@ -3574,25 +3558,6 @@ static struct iproc_alg_s driver_algs[] = {
 	{
 	 .type = CRYPTO_ALG_TYPE_SKCIPHER,
 	 .alg.skcipher = {
-			.base.cra_name = "ofb(des3_ede)",
-			.base.cra_driver_name = "ofb-des3-iproc",
-			.base.cra_blocksize = DES3_EDE_BLOCK_SIZE,
-			.min_keysize = DES3_EDE_KEY_SIZE,
-			.max_keysize = DES3_EDE_KEY_SIZE,
-			.ivsize = DES3_EDE_BLOCK_SIZE,
-			},
-	 .cipher_info = {
-			 .alg = CIPHER_ALG_3DES,
-			 .mode = CIPHER_MODE_OFB,
-			 },
-	 .auth_info = {
-		       .alg = HASH_ALG_NONE,
-		       .mode = HASH_MODE_NONE,
-		       },
-	 },
-	{
-	 .type = CRYPTO_ALG_TYPE_SKCIPHER,
-	 .alg.skcipher = {
 			.base.cra_name = "cbc(des3_ede)",
 			.base.cra_driver_name = "cbc-des3-iproc",
 			.base.cra_blocksize = DES3_EDE_BLOCK_SIZE,
@@ -3622,25 +3587,6 @@ static struct iproc_alg_s driver_algs[] = {
 	 .cipher_info = {
 			 .alg = CIPHER_ALG_3DES,
 			 .mode = CIPHER_MODE_ECB,
-			 },
-	 .auth_info = {
-		       .alg = HASH_ALG_NONE,
-		       .mode = HASH_MODE_NONE,
-		       },
-	 },
-	{
-	 .type = CRYPTO_ALG_TYPE_SKCIPHER,
-	 .alg.skcipher = {
-			.base.cra_name = "ofb(aes)",
-			.base.cra_driver_name = "ofb-aes-iproc",
-			.base.cra_blocksize = AES_BLOCK_SIZE,
-			.min_keysize = AES_MIN_KEY_SIZE,
-			.max_keysize = AES_MAX_KEY_SIZE,
-			.ivsize = AES_BLOCK_SIZE,
-			},
-	 .cipher_info = {
-			 .alg = CIPHER_ALG_AES,
-			 .mode = CIPHER_MODE_OFB,
 			 },
 	 .auth_info = {
 		       .alg = HASH_ALG_NONE,
@@ -4713,7 +4659,7 @@ failure:
 	return err;
 }
 
-static int bcm_spu_remove(struct platform_device *pdev)
+static void bcm_spu_remove(struct platform_device *pdev)
 {
 	int i;
 	struct device *dev = &pdev->dev;
@@ -4751,7 +4697,6 @@ static int bcm_spu_remove(struct platform_device *pdev)
 	}
 	spu_free_debugfs();
 	spu_mb_release(pdev);
-	return 0;
 }
 
 /* ===== Kernel Module API ===== */

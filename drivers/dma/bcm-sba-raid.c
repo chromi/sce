@@ -15,7 +15,7 @@
  * number of hardware rings over one or more SBA hardware devices. By
  * design, the internal buffer size of SBA hardware device is limited
  * but all offload operations supported by SBA can be broken down into
- * multiple small size requests and executed parallely on multiple SBA
+ * multiple small size requests and executed parallelly on multiple SBA
  * hardware devices for achieving high through-put.
  *
  * The Broadcom SBA RAID driver does not require any register programming
@@ -135,7 +135,7 @@ struct sba_device {
 	u32 max_xor_srcs;
 	u32 max_resp_pool_size;
 	u32 max_cmds_pool_size;
-	/* Maibox client and Mailbox channels */
+	/* Mailbox client and Mailbox channels */
 	struct mbox_client client;
 	struct mbox_chan *mchan;
 	struct device *mbox_dev;
@@ -1734,7 +1734,7 @@ fail_free_mchan:
 	return ret;
 }
 
-static int sba_remove(struct platform_device *pdev)
+static void sba_remove(struct platform_device *pdev)
 {
 	struct sba_device *sba = platform_get_drvdata(pdev);
 
@@ -1745,8 +1745,6 @@ static int sba_remove(struct platform_device *pdev)
 	sba_freeup_channel_resources(sba);
 
 	mbox_free_channel(sba->mchan);
-
-	return 0;
 }
 
 static const struct of_device_id sba_of_match[] = {

@@ -231,7 +231,7 @@ nouveau_debugfs_gpuva(struct seq_file *m, void *data)
 			continue;
 
 		nouveau_uvmm_lock(uvmm);
-		drm_debugfs_gpuva_info(m, &uvmm->umgr);
+		drm_debugfs_gpuva_info(m, &uvmm->base);
 		seq_puts(m, "\n");
 		nouveau_debugfs_gpuva_regions(m, uvmm);
 		nouveau_uvmm_unlock(uvmm);
@@ -312,4 +312,20 @@ nouveau_debugfs_fini(struct nouveau_drm *drm)
 
 	kfree(drm->debugfs);
 	drm->debugfs = NULL;
+}
+
+int
+nouveau_module_debugfs_init(void)
+{
+	nouveau_debugfs_root = debugfs_create_dir("nouveau", NULL);
+	if (IS_ERR(nouveau_debugfs_root))
+		return PTR_ERR(nouveau_debugfs_root);
+
+	return 0;
+}
+
+void
+nouveau_module_debugfs_fini(void)
+{
+	debugfs_remove(nouveau_debugfs_root);
 }

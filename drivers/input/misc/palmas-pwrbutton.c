@@ -245,7 +245,7 @@ err_free_mem:
  *
  * Return: 0
  */
-static int palmas_pwron_remove(struct platform_device *pdev)
+static void palmas_pwron_remove(struct platform_device *pdev)
 {
 	struct palmas_pwron *pwron = platform_get_drvdata(pdev);
 
@@ -254,8 +254,6 @@ static int palmas_pwron_remove(struct platform_device *pdev)
 
 	input_unregister_device(pwron->input_dev);
 	kfree(pwron);
-
-	return 0;
 }
 
 /**

@@ -27,6 +27,7 @@
 #include <linux/clk.h>
 #include <linux/console.h>
 #include <linux/io.h>
+#include <linux/string_choices.h>
 
 #include <linux/uaccess.h>
 #include <asm/div64.h>
@@ -1452,6 +1453,7 @@ static void sm501fb_fillrect(struct fb_info *info, const struct fb_fillrect *rec
 
 static struct fb_ops sm501fb_ops_crt = {
 	.owner		= THIS_MODULE,
+	__FB_DEFAULT_IOMEM_OPS_RDWR,
 	.fb_check_var	= sm501fb_check_var_crt,
 	.fb_set_par	= sm501fb_set_par_crt,
 	.fb_blank	= sm501fb_blank_crt,
@@ -1462,10 +1464,12 @@ static struct fb_ops sm501fb_ops_crt = {
 	.fb_copyarea	= sm501fb_copyarea,
 	.fb_imageblit	= cfb_imageblit,
 	.fb_sync	= sm501fb_sync,
+	__FB_DEFAULT_IOMEM_OPS_MMAP,
 };
 
 static struct fb_ops sm501fb_ops_pnl = {
 	.owner		= THIS_MODULE,
+	__FB_DEFAULT_IOMEM_OPS_RDWR,
 	.fb_check_var	= sm501fb_check_var_pnl,
 	.fb_set_par	= sm501fb_set_par_pnl,
 	.fb_pan_display	= sm501fb_pan_pnl,
@@ -1476,6 +1480,7 @@ static struct fb_ops sm501fb_ops_pnl = {
 	.fb_copyarea	= sm501fb_copyarea,
 	.fb_imageblit	= cfb_imageblit,
 	.fb_sync	= sm501fb_sync,
+	__FB_DEFAULT_IOMEM_OPS_MMAP,
 };
 
 /* sm501_init_cursor
@@ -1708,8 +1713,8 @@ static int sm501fb_init_fb(struct fb_info *fb, enum sm501_controller head,
 		BUG();
 	}
 
-	dev_info(info->dev, "fb %s %sabled at start\n",
-		 fbname, enable ? "en" : "dis");
+	dev_info(info->dev, "fb %s %s at start\n",
+		 fbname, str_enabled_disabled(enable));
 
 	/* check to see if our routing allows this */
 
@@ -2207,7 +2212,7 @@ static int sm501fb_resume(struct platform_device *pdev)
 
 static struct platform_driver sm501fb_driver = {
 	.probe		= sm501fb_probe,
-	.remove_new	= sm501fb_remove,
+	.remove		= sm501fb_remove,
 	.suspend	= sm501fb_suspend,
 	.resume		= sm501fb_resume,
 	.driver		= {

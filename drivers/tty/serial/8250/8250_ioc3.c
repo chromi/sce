@@ -75,12 +75,11 @@ static int serial8250_ioc3_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int serial8250_ioc3_remove(struct platform_device *pdev)
+static void serial8250_ioc3_remove(struct platform_device *pdev)
 {
 	struct ioc3_8250_data *data = platform_get_drvdata(pdev);
 
 	serial8250_unregister_port(data->line);
-	return 0;
 }
 
 static struct platform_driver serial8250_ioc3_driver = {

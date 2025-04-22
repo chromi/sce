@@ -73,19 +73,17 @@ int pci_host_common_probe(struct platform_device *pdev)
 	if (IS_ERR(cfg))
 		return PTR_ERR(cfg);
 
-	/* Do not reassign resources if probe only */
-	if (!pci_has_flag(PCI_PROBE_ONLY))
-		pci_add_flags(PCI_REASSIGN_ALL_BUS);
-
 	bridge->sysdata = cfg;
 	bridge->ops = (struct pci_ops *)&ops->pci_ops;
+	bridge->enable_device = ops->enable_device;
+	bridge->disable_device = ops->disable_device;
 	bridge->msi_domain = true;
 
 	return pci_host_probe(bridge);
 }
 EXPORT_SYMBOL_GPL(pci_host_common_probe);
 
-int pci_host_common_remove(struct platform_device *pdev)
+void pci_host_common_remove(struct platform_device *pdev)
 {
 	struct pci_host_bridge *bridge = platform_get_drvdata(pdev);
 
@@ -93,9 +91,8 @@ int pci_host_common_remove(struct platform_device *pdev)
 	pci_stop_root_bus(bridge->bus);
 	pci_remove_root_bus(bridge->bus);
 	pci_unlock_rescan_remove();
-
-	return 0;
 }
 EXPORT_SYMBOL_GPL(pci_host_common_remove);
 
+MODULE_DESCRIPTION("Generic PCI host common driver");
 MODULE_LICENSE("GPL v2");

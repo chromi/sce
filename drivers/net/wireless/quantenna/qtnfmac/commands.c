@@ -257,7 +257,7 @@ int qtnf_cmd_send_start_ap(struct qtnf_vif *vif,
 	cmd->beacon_interval = cpu_to_le16(s->beacon_interval);
 	cmd->hidden_ssid = qlink_hidden_ssid_nl2q(s->hidden_ssid);
 	cmd->inactivity_timeout = cpu_to_le16(s->inactivity_timeout);
-	cmd->smps_mode = s->smps_mode;
+	cmd->smps_mode = NL80211_SMPS_OFF;
 	cmd->p2p_ctwindow = s->p2p_ctwindow;
 	cmd->p2p_opp_ps = s->p2p_opp_ps;
 	cmd->pbss = s->pbss;
@@ -1335,7 +1335,7 @@ static int qtnf_cmd_band_fill_iftype(const u8 *data,
 		return -EINVAL;
 	}
 
-	kfree(band->iftype_data);
+	kfree((__force void *)band->iftype_data);
 	band->iftype_data = NULL;
 	band->n_iftype_data = tlv->n_iftype_data;
 	if (band->n_iftype_data == 0)
@@ -1347,7 +1347,8 @@ static int qtnf_cmd_band_fill_iftype(const u8 *data,
 		band->n_iftype_data = 0;
 		return -ENOMEM;
 	}
-	band->iftype_data = iftype_data;
+
+	_ieee80211_set_sband_iftype_data(band, iftype_data, tlv->n_iftype_data);
 
 	for (i = 0; i < band->n_iftype_data; i++)
 		qtnf_cmd_conv_iftype(iftype_data++, &tlv->iftype_data[i]);

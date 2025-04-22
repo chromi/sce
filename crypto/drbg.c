@@ -101,6 +101,7 @@
 #include <crypto/internal/cipher.h>
 #include <linux/kernel.h>
 #include <linux/jiffies.h>
+#include <linux/string_choices.h>
 
 /***************************************************************
  * Backend cipher definitions available to DRBG
@@ -111,9 +112,9 @@
  * as stdrng. Each DRBG receives an increasing cra_priority values the later
  * they are defined in this array (see drbg_fill_array).
  *
- * HMAC DRBGs are favored over Hash DRBGs over CTR DRBGs, and
- * the SHA256 / AES 256 over other ciphers. Thus, the favored
- * DRBGs are the latest entries in this array.
+ * HMAC DRBGs are favored over Hash DRBGs over CTR DRBGs, and the
+ * HMAC-SHA512 / SHA256 / AES 256 over other ciphers. Thus, the
+ * favored DRBGs are the latest entries in this array.
  */
 static const struct drbg_core drbg_cores[] = {
 #ifdef CONFIG_CRYPTO_DRBG_CTR
@@ -139,12 +140,6 @@ static const struct drbg_core drbg_cores[] = {
 #endif /* CONFIG_CRYPTO_DRBG_CTR */
 #ifdef CONFIG_CRYPTO_DRBG_HASH
 	{
-		.flags = DRBG_HASH | DRBG_STRENGTH128,
-		.statelen = 55, /* 440 bits */
-		.blocklen_bytes = 20,
-		.cra_name = "sha1",
-		.backend_cra_name = "sha1",
-	}, {
 		.flags = DRBG_HASH | DRBG_STRENGTH256,
 		.statelen = 111, /* 888 bits */
 		.blocklen_bytes = 48,
@@ -166,12 +161,6 @@ static const struct drbg_core drbg_cores[] = {
 #endif /* CONFIG_CRYPTO_DRBG_HASH */
 #ifdef CONFIG_CRYPTO_DRBG_HMAC
 	{
-		.flags = DRBG_HMAC | DRBG_STRENGTH128,
-		.statelen = 20, /* block length of cipher */
-		.blocklen_bytes = 20,
-		.cra_name = "hmac_sha1",
-		.backend_cra_name = "hmac(sha1)",
-	}, {
 		.flags = DRBG_HMAC | DRBG_STRENGTH256,
 		.statelen = 48, /* block length of cipher */
 		.blocklen_bytes = 48,
@@ -648,8 +637,6 @@ MODULE_ALIAS_CRYPTO("drbg_pr_hmac_sha384");
 MODULE_ALIAS_CRYPTO("drbg_nopr_hmac_sha384");
 MODULE_ALIAS_CRYPTO("drbg_pr_hmac_sha256");
 MODULE_ALIAS_CRYPTO("drbg_nopr_hmac_sha256");
-MODULE_ALIAS_CRYPTO("drbg_pr_hmac_sha1");
-MODULE_ALIAS_CRYPTO("drbg_nopr_hmac_sha1");
 
 /* update function of HMAC DRBG as defined in 10.1.2.2 */
 static int drbg_hmac_update(struct drbg_state *drbg, struct list_head *seed,
@@ -768,8 +755,6 @@ MODULE_ALIAS_CRYPTO("drbg_pr_sha384");
 MODULE_ALIAS_CRYPTO("drbg_nopr_sha384");
 MODULE_ALIAS_CRYPTO("drbg_pr_sha256");
 MODULE_ALIAS_CRYPTO("drbg_nopr_sha256");
-MODULE_ALIAS_CRYPTO("drbg_pr_sha1");
-MODULE_ALIAS_CRYPTO("drbg_nopr_sha1");
 
 /*
  * Increment buffer
@@ -1428,7 +1413,7 @@ static int drbg_generate(struct drbg_state *drbg,
 	if (drbg->pr || drbg->seeded == DRBG_SEED_STATE_UNSEEDED) {
 		pr_devel("DRBG: reseeding before generation (prediction "
 			 "resistance: %s, state %s)\n",
-			 drbg->pr ? "true" : "false",
+			 str_true_false(drbg->pr),
 			 (drbg->seeded ==  DRBG_SEED_STATE_FULL ?
 			  "seeded" : "unseeded"));
 		/* 9.3.1 steps 7.1 through 7.3 */
@@ -1475,11 +1460,11 @@ static int drbg_generate(struct drbg_state *drbg,
 		int err = 0;
 		pr_devel("DRBG: start to perform self test\n");
 		if (drbg->core->flags & DRBG_HMAC)
-			err = alg_test("drbg_pr_hmac_sha256",
-				       "drbg_pr_hmac_sha256", 0, 0);
+			err = alg_test("drbg_pr_hmac_sha512",
+				       "drbg_pr_hmac_sha512", 0, 0);
 		else if (drbg->core->flags & DRBG_CTR)
-			err = alg_test("drbg_pr_ctr_aes128",
-				       "drbg_pr_ctr_aes128", 0, 0);
+			err = alg_test("drbg_pr_ctr_aes256",
+				       "drbg_pr_ctr_aes256", 0, 0);
 		else
 			err = alg_test("drbg_pr_sha256",
 				       "drbg_pr_sha256", 0, 0);
@@ -1578,7 +1563,7 @@ static int drbg_instantiate(struct drbg_state *drbg, struct drbg_string *pers,
 	bool reseed = true;
 
 	pr_devel("DRBG: Initializing DRBG core %d with prediction resistance "
-		 "%s\n", coreref, pr ? "enabled" : "disabled");
+		 "%s\n", coreref, str_enabled_disabled(pr));
 	mutex_lock(&drbg->drbg_mutex);
 
 	/* 9.1 step 1 is implicit with the selected DRBG type */
@@ -1698,7 +1683,7 @@ static int drbg_init_hash_kernel(struct drbg_state *drbg)
 	sdesc->shash.tfm = tfm;
 	drbg->priv_data = sdesc;
 
-	return crypto_shash_alignmask(tfm);
+	return 0;
 }
 
 static int drbg_fini_hash_kernel(struct drbg_state *drbg)
@@ -2017,11 +2002,13 @@ static inline int __init drbg_healthcheck_sanity(void)
 		return 0;
 
 #ifdef CONFIG_CRYPTO_DRBG_CTR
-	drbg_convert_tfm_core("drbg_nopr_ctr_aes128", &coreref, &pr);
-#elif defined CONFIG_CRYPTO_DRBG_HASH
+	drbg_convert_tfm_core("drbg_nopr_ctr_aes256", &coreref, &pr);
+#endif
+#ifdef CONFIG_CRYPTO_DRBG_HASH
 	drbg_convert_tfm_core("drbg_nopr_sha256", &coreref, &pr);
-#else
-	drbg_convert_tfm_core("drbg_nopr_hmac_sha256", &coreref, &pr);
+#endif
+#ifdef CONFIG_CRYPTO_DRBG_HMAC
+	drbg_convert_tfm_core("drbg_nopr_hmac_sha512", &coreref, &pr);
 #endif
 
 	drbg = kzalloc(sizeof(struct drbg_state), GFP_KERNEL);
@@ -2164,4 +2151,4 @@ MODULE_DESCRIPTION("NIST SP800-90A Deterministic Random Bit Generator (DRBG) "
 		   CRYPTO_DRBG_HMAC_STRING
 		   CRYPTO_DRBG_CTR_STRING);
 MODULE_ALIAS_CRYPTO("stdrng");
-MODULE_IMPORT_NS(CRYPTO_INTERNAL);
+MODULE_IMPORT_NS("CRYPTO_INTERNAL");

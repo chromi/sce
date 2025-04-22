@@ -24,7 +24,14 @@
     unsafe_op_in_unsafe_fn
 )]
 
+#[allow(dead_code)]
+#[allow(clippy::undocumented_unsafe_blocks)]
 mod bindings_raw {
+    // Manual definition for blocklisted types.
+    type __kernel_size_t = usize;
+    type __kernel_ssize_t = isize;
+    type __kernel_ptrdiff_t = isize;
+
     // Use glob import here to expose all helpers.
     // Symbols defined within the module will take precedence to the glob import.
     pub use super::bindings_helper::*;
@@ -48,6 +55,3 @@ mod bindings_helper {
 }
 
 pub use bindings_raw::*;
-
-pub const GFP_KERNEL: gfp_t = BINDINGS_GFP_KERNEL;
-pub const __GFP_ZERO: gfp_t = BINDINGS___GFP_ZERO;

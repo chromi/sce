@@ -13,6 +13,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/uaccess.h>
 
+#include <drm/clients/drm_client_setup.h>
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_drv.h>
@@ -34,7 +35,6 @@
 
 #define DRIVER_NAME	"exynos"
 #define DRIVER_DESC	"Samsung SoC DRM"
-#define DRIVER_DATE	"20180330"
 
 /*
  * Interface history:
@@ -111,12 +111,12 @@ static const struct drm_driver exynos_drm_driver = {
 	.dumb_create		= exynos_drm_gem_dumb_create,
 	.gem_prime_import	= exynos_drm_gem_prime_import,
 	.gem_prime_import_sg_table	= exynos_drm_gem_prime_import_sg_table,
+	EXYNOS_DRM_FBDEV_DRIVER_OPS,
 	.ioctls			= exynos_ioctls,
 	.num_ioctls		= ARRAY_SIZE(exynos_ioctls),
 	.fops			= &exynos_drm_driver_fops,
 	.name	= DRIVER_NAME,
 	.desc	= DRIVER_DESC,
-	.date	= DRIVER_DATE,
 	.major	= DRIVER_MAJOR,
 	.minor	= DRIVER_MINOR,
 };
@@ -288,7 +288,7 @@ static int exynos_drm_bind(struct device *dev)
 	if (ret < 0)
 		goto err_cleanup_poll;
 
-	exynos_drm_fbdev_setup(drm);
+	drm_client_setup(drm, NULL);
 
 	return 0;
 
@@ -300,6 +300,7 @@ err_mode_config_cleanup:
 	drm_mode_config_cleanup(drm);
 	exynos_drm_cleanup_dma(drm);
 	kfree(private);
+	dev_set_drvdata(dev, NULL);
 err_free_drm:
 	drm_dev_put(drm);
 
@@ -313,6 +314,7 @@ static void exynos_drm_unbind(struct device *dev)
 	drm_dev_unregister(drm);
 
 	drm_kms_helper_poll_fini(drm);
+	drm_atomic_helper_shutdown(drm);
 
 	component_unbind_all(drm->dev, drm);
 	drm_mode_config_cleanup(drm);
@@ -344,15 +346,23 @@ static int exynos_drm_platform_probe(struct platform_device *pdev)
 					       match);
 }
 
-static int exynos_drm_platform_remove(struct platform_device *pdev)
+static void exynos_drm_platform_remove(struct platform_device *pdev)
 {
 	component_master_del(&pdev->dev, &exynos_drm_ops);
-	return 0;
+}
+
+static void exynos_drm_platform_shutdown(struct platform_device *pdev)
+{
+	struct drm_device *drm = platform_get_drvdata(pdev);
+
+	if (drm)
+		drm_atomic_helper_shutdown(drm);
 }
 
 static struct platform_driver exynos_drm_platform_driver = {
 	.probe	= exynos_drm_platform_probe,
-	.remove	= exynos_drm_platform_remove,
+	.remove		= exynos_drm_platform_remove,
+	.shutdown = exynos_drm_platform_shutdown,
 	.driver	= {
 		.name	= "exynos-drm",
 		.pm	= &exynos_drm_pm_ops,

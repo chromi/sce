@@ -115,8 +115,6 @@ static void si_dma_stop(struct amdgpu_device *adev)
 	u32 rb_cntl;
 	unsigned i;
 
-	amdgpu_sdma_unset_buffer_funcs_helper(adev);
-
 	for (i = 0; i < adev->sdma.num_instances; i++) {
 		/* dma0 */
 		rb_cntl = RREG32(DMA_RB_CNTL + sdma_offsets[i]);
@@ -177,9 +175,6 @@ static int si_dma_start(struct amdgpu_device *adev)
 		r = amdgpu_ring_test_helper(ring);
 		if (r)
 			return r;
-
-		if (adev->mman.buffer_funcs_ring == ring)
-			amdgpu_ttm_set_buffer_funcs_status(adev, true);
 	}
 
 	return 0;
@@ -291,7 +286,7 @@ static int si_dma_ring_test_ib(struct amdgpu_ring *ring, long timeout)
 		r = -EINVAL;
 
 err1:
-	amdgpu_ib_free(adev, &ib, NULL);
+	amdgpu_ib_free(&ib, NULL);
 	dma_fence_put(f);
 err0:
 	amdgpu_device_wb_free(adev, index);
@@ -462,9 +457,9 @@ static void si_dma_ring_emit_wreg(struct amdgpu_ring *ring,
 	amdgpu_ring_write(ring, val);
 }
 
-static int si_dma_early_init(void *handle)
+static int si_dma_early_init(struct amdgpu_ip_block *ip_block)
 {
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+	struct amdgpu_device *adev = ip_block->adev;
 
 	adev->sdma.num_instances = 2;
 
@@ -476,11 +471,11 @@ static int si_dma_early_init(void *handle)
 	return 0;
 }
 
-static int si_dma_sw_init(void *handle)
+static int si_dma_sw_init(struct amdgpu_ip_block *ip_block)
 {
 	struct amdgpu_ring *ring;
 	int r, i;
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+	struct amdgpu_device *adev = ip_block->adev;
 
 	/* DMA0 trap event */
 	r = amdgpu_irq_add_id(adev, AMDGPU_IRQ_CLIENTID_LEGACY, 224,
@@ -511,9 +506,9 @@ static int si_dma_sw_init(void *handle)
 	return r;
 }
 
-static int si_dma_sw_fini(void *handle)
+static int si_dma_sw_fini(struct amdgpu_ip_block *ip_block)
 {
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+	struct amdgpu_device *adev = ip_block->adev;
 	int i;
 
 	for (i = 0; i < adev->sdma.num_instances; i++)
@@ -522,39 +517,34 @@ static int si_dma_sw_fini(void *handle)
 	return 0;
 }
 
-static int si_dma_hw_init(void *handle)
+static int si_dma_hw_init(struct amdgpu_ip_block *ip_block)
 {
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+	struct amdgpu_device *adev = ip_block->adev;
 
 	return si_dma_start(adev);
 }
 
-static int si_dma_hw_fini(void *handle)
+static int si_dma_hw_fini(struct amdgpu_ip_block *ip_block)
 {
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
-
-	si_dma_stop(adev);
+	si_dma_stop(ip_block->adev);
 
 	return 0;
 }
 
-static int si_dma_suspend(void *handle)
+static int si_dma_suspend(struct amdgpu_ip_block *ip_block)
 {
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
-
-	return si_dma_hw_fini(adev);
+	return si_dma_hw_fini(ip_block);
 }
 
-static int si_dma_resume(void *handle)
+static int si_dma_resume(struct amdgpu_ip_block *ip_block)
 {
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
-
-	return si_dma_hw_init(adev);
+	return si_dma_hw_init(ip_block);
 }
 
 static bool si_dma_is_idle(void *handle)
 {
 	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+
 	u32 tmp = RREG32(SRBM_STATUS2);
 
 	if (tmp & (DMA_BUSY_MASK | DMA1_BUSY_MASK))
@@ -563,20 +553,20 @@ static bool si_dma_is_idle(void *handle)
 	return true;
 }
 
-static int si_dma_wait_for_idle(void *handle)
+static int si_dma_wait_for_idle(struct amdgpu_ip_block *ip_block)
 {
 	unsigned i;
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+	struct amdgpu_device *adev = ip_block->adev;
 
 	for (i = 0; i < adev->usec_timeout; i++) {
-		if (si_dma_is_idle(handle))
+		if (si_dma_is_idle(adev))
 			return 0;
 		udelay(1);
 	}
 	return -ETIMEDOUT;
 }
 
-static int si_dma_soft_reset(void *handle)
+static int si_dma_soft_reset(struct amdgpu_ip_block *ip_block)
 {
 	DRM_INFO("si_dma_soft_reset --- not implemented !!!!!!!\n");
 	return 0;
@@ -639,13 +629,13 @@ static int si_dma_process_trap_irq(struct amdgpu_device *adev,
 	return 0;
 }
 
-static int si_dma_set_clockgating_state(void *handle,
+static int si_dma_set_clockgating_state(struct amdgpu_ip_block *ip_block,
 					  enum amd_clockgating_state state)
 {
 	u32 orig, data, offset;
 	int i;
 	bool enable;
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+	struct amdgpu_device *adev = ip_block->adev;
 
 	enable = (state == AMD_CG_STATE_GATE);
 
@@ -682,12 +672,12 @@ static int si_dma_set_clockgating_state(void *handle,
 	return 0;
 }
 
-static int si_dma_set_powergating_state(void *handle,
+static int si_dma_set_powergating_state(struct amdgpu_ip_block *ip_block,
 					  enum amd_powergating_state state)
 {
 	u32 tmp;
 
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+	struct amdgpu_device *adev = ip_block->adev;
 
 	WREG32(DMA_PGFSM_WRITE,  0x00002000);
 	WREG32(DMA_PGFSM_CONFIG, 0x100010ff);
@@ -701,7 +691,6 @@ static int si_dma_set_powergating_state(void *handle,
 static const struct amd_ip_funcs si_dma_ip_funcs = {
 	.name = "si_dma",
 	.early_init = si_dma_early_init,
-	.late_init = NULL,
 	.sw_init = si_dma_sw_init,
 	.sw_fini = si_dma_sw_fini,
 	.hw_init = si_dma_hw_init,
@@ -766,7 +755,7 @@ static void si_dma_set_irq_funcs(struct amdgpu_device *adev)
  * @src_offset: src GPU address
  * @dst_offset: dst GPU address
  * @byte_count: number of bytes to xfer
- * @tmz: is this a secure operation
+ * @copy_flags: unused
  *
  * Copy GPU buffers using the DMA engine (VI).
  * Used by the amdgpu ttm implementation to move pages if
@@ -776,7 +765,7 @@ static void si_dma_emit_copy_buffer(struct amdgpu_ib *ib,
 				       uint64_t src_offset,
 				       uint64_t dst_offset,
 				       uint32_t byte_count,
-				       bool tmz)
+				       uint32_t copy_flags)
 {
 	ib->ptr[ib->length_dw++] = DMA_PACKET(DMA_PACKET_COPY,
 					      1, 0, 0, byte_count);

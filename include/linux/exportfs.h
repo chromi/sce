@@ -3,6 +3,7 @@
 #define LINUX_EXPORTFS_H 1
 
 #include <linux/types.h>
+#include <linux/path.h>
 
 struct dentry;
 struct iattr;
@@ -99,10 +100,27 @@ enum fid_type {
 	FILEID_FAT_WITH_PARENT = 0x72,
 
 	/*
+	 * 64 bit inode number, 32 bit generation number.
+	 */
+	FILEID_INO64_GEN = 0x81,
+
+	/*
+	 * 64 bit inode number, 32 bit generation number,
+	 * 64 bit parent inode number, 32 bit parent generation.
+	 */
+	FILEID_INO64_GEN_PARENT = 0x82,
+
+	/*
 	 * 128 bit child FID (struct lu_fid)
 	 * 128 bit parent FID (struct lu_fid)
 	 */
 	FILEID_LUSTRE = 0x97,
+
+	/*
+	 * 64 bit inode number, 32 bit subvolume, 32 bit generation number:
+	 */
+	FILEID_BCACHEFS_WITHOUT_PARENT = 0xb1,
+	FILEID_BCACHEFS_WITH_PARENT = 0xb2,
 
 	/*
 	 * 64 bit unique kernfs id
@@ -123,7 +141,11 @@ struct fid {
 			u32 parent_ino;
 			u32 parent_gen;
 		} i32;
- 		struct {
+		struct {
+			u64 ino;
+			u32 gen;
+		} __packed i64;
+		struct {
  			u32 block;
  			u16 partref;
  			u16 parent_partref;
@@ -135,8 +157,33 @@ struct fid {
 	};
 };
 
+enum handle_to_path_flags {
+	HANDLE_CHECK_PERMS   = (1 << 0),
+	HANDLE_CHECK_SUBTREE = (1 << 1),
+};
+
+struct handle_to_path_ctx {
+	struct path root;
+	enum handle_to_path_flags flags;
+	unsigned int fh_flags;
+};
+
 #define EXPORT_FH_CONNECTABLE	0x1 /* Encode file handle with parent */
 #define EXPORT_FH_FID		0x2 /* File handle may be non-decodeable */
+#define EXPORT_FH_DIR_ONLY	0x4 /* Only decode file handle for a directory */
+
+/*
+ * Filesystems use only lower 8 bits of file_handle type for fid_type.
+ * name_to_handle_at() uses upper 16 bits of type as user flags to be
+ * interpreted by open_by_handle_at().
+ */
+#define FILEID_USER_FLAGS_MASK	0xffff0000
+#define FILEID_USER_FLAGS(type) ((type) & FILEID_USER_FLAGS_MASK)
+
+/* Flags supported in encoded handle_type that is exported to user */
+#define FILEID_IS_CONNECTABLE	0x10000
+#define FILEID_IS_DIR		0x20000
+#define FILEID_VALID_USER_FLAGS	(FILEID_IS_CONNECTABLE | FILEID_IS_DIR)
 
 /**
  * struct export_operations - for nfsd to communicate with file systems
@@ -190,6 +237,12 @@ struct fid {
  *    is also a directory.  In the event that it cannot be found, or storage
  *    space cannot be allocated, a %ERR_PTR should be returned.
  *
+ * permission:
+ *    Allow filesystems to specify a custom permission function.
+ *
+ * open:
+ *    Allow filesystems to specify a custom open function.
+ *
  * commit_metadata:
  *    @commit_metadata should commit metadata changes to stable storage.
  *
@@ -216,6 +269,8 @@ struct export_operations {
 			  bool write, u32 *device_generation);
 	int (*commit_blocks)(struct inode *inode, struct iomap *iomaps,
 			     int nr_iomaps, struct iattr *iattr);
+	int (*permission)(struct handle_to_path_ctx *ctx, unsigned int oflags);
+	struct file * (*open)(struct path *path, unsigned int oflags);
 #define	EXPORT_OP_NOWCC			(0x1) /* don't collect v3 wcc data */
 #define	EXPORT_OP_NOSUBTREECHK		(0x2) /* no subtree checking */
 #define	EXPORT_OP_CLOSE_BEFORE_UNLINK	(0x4) /* close files before unlink */
@@ -224,6 +279,7 @@ struct export_operations {
 						  atomic attribute updates
 						*/
 #define EXPORT_OP_FLUSH_ON_CLOSE	(0x20) /* fs flushes file data on close */
+#define EXPORT_OP_ASYNC_LOCK		(0x40) /* fs can do async lock request */
 	unsigned long	flags;
 };
 
@@ -232,6 +288,33 @@ extern int exportfs_encode_inode_fh(struct inode *inode, struct fid *fid,
 				    int flags);
 extern int exportfs_encode_fh(struct dentry *dentry, struct fid *fid,
 			      int *max_len, int flags);
+
+static inline bool exportfs_can_encode_fid(const struct export_operations *nop)
+{
+	return !nop || nop->encode_fh;
+}
+
+static inline bool exportfs_can_decode_fh(const struct export_operations *nop)
+{
+	return nop && nop->fh_to_dentry;
+}
+
+static inline bool exportfs_can_encode_fh(const struct export_operations *nop,
+					  int fh_flags)
+{
+	/*
+	 * If a non-decodeable file handle was requested, we only need to make
+	 * sure that filesystem did not opt-out of encoding fid.
+	 */
+	if (fh_flags & EXPORT_FH_FID)
+		return exportfs_can_encode_fid(nop);
+
+	/*
+	 * If a decodeable file handle was requested, we need to make sure that
+	 * filesystem can also decode file handles.
+	 */
+	return exportfs_can_decode_fh(nop);
+}
 
 static inline int exportfs_encode_fid(struct inode *inode, struct fid *fid,
 				      int *max_len)
@@ -243,6 +326,7 @@ static inline int exportfs_encode_fid(struct inode *inode, struct fid *fid,
 extern struct dentry *exportfs_decode_fh_raw(struct vfsmount *mnt,
 					     struct fid *fid, int fh_len,
 					     int fileid_type,
+					     unsigned int flags,
 					     int (*acceptable)(void *, struct dentry *),
 					     void *context);
 extern struct dentry *exportfs_decode_fh(struct vfsmount *mnt, struct fid *fid,
@@ -252,10 +336,12 @@ extern struct dentry *exportfs_decode_fh(struct vfsmount *mnt, struct fid *fid,
 /*
  * Generic helpers for filesystems.
  */
-extern struct dentry *generic_fh_to_dentry(struct super_block *sb,
+int generic_encode_ino32_fh(struct inode *inode, __u32 *fh, int *max_len,
+			    struct inode *parent);
+struct dentry *generic_fh_to_dentry(struct super_block *sb,
 	struct fid *fid, int fh_len, int fh_type,
 	struct inode *(*get_inode) (struct super_block *sb, u64 ino, u32 gen));
-extern struct dentry *generic_fh_to_parent(struct super_block *sb,
+struct dentry *generic_fh_to_parent(struct super_block *sb,
 	struct fid *fid, int fh_len, int fh_type,
 	struct inode *(*get_inode) (struct super_block *sb, u64 ino, u32 gen));
 

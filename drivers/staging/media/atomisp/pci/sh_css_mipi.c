@@ -2,15 +2,6 @@
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  * Copyright (c) 2015, Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
 #include "ia_css_mipi.h"
@@ -169,12 +160,12 @@ ia_css_mipi_frame_calculate_size(const unsigned int width,
 	/* ceil(words_per_odd_line/8); mem_word = 32 bytes, 8 words */
 	mem_words_for_first_line = (words_for_first_line + 7) >> 3;
 	mem_words_per_even_line  = (words_per_even_line + 7) >> 3;
-	mem_words_for_EOF        = 1; /* last line consisit of the optional (EOL) and EOF */
+	mem_words_for_EOF        = 1; /* last line consist of the optional (EOL) and EOF */
 
 	mem_words = ((embedded_data_size_words + 7) >> 3) +
 	mem_words_for_first_line +
 	(((height + 1) >> 1) - 1) * mem_words_per_odd_line +
-	/* ceil (height/2) - 1 (first line is calculated separatelly) */
+	/* ceil (height/2) - 1 (first line is calculated separately) */
 	(height      >> 1) * mem_words_per_even_line + /* floor(height/2) */
 	mem_words_for_EOF;
 
@@ -184,35 +175,6 @@ ia_css_mipi_frame_calculate_size(const unsigned int width,
 	IA_CSS_LEAVE_ERR(err);
 	return err;
 }
-
-/*
- * Check if a source port or TPG/PRBS ID is valid
- */
-
-#if !defined(ISP2401)
-int
-ia_css_mipi_frame_enable_check_on_size(const enum mipi_port_id port,
-				       const unsigned int	size_mem_words)
-{
-	u32 idx;
-
-	int err = -EBUSY;
-
-	OP___assert(port < N_CSI_PORTS);
-	OP___assert(size_mem_words != 0);
-
-	for (idx = 0; idx < IA_CSS_MIPI_SIZE_CHECK_MAX_NOF_ENTRIES_PER_PORT &&
-	     my_css.mipi_sizes_for_check[port][idx] != 0;
-	     idx++) { /* do nothing */
-	}
-	if (idx < IA_CSS_MIPI_SIZE_CHECK_MAX_NOF_ENTRIES_PER_PORT) {
-		my_css.mipi_sizes_for_check[port][idx] = size_mem_words;
-		err = 0;
-	}
-
-	return err;
-}
-#endif
 
 void
 mipi_init(void)
@@ -518,7 +480,7 @@ free_mipi_frames(struct ia_css_pipe *pipe)
 		}
 	} else { /* pipe ==NULL */
 		/* AM TEMP: free-ing all mipi buffers just like a legacy code. */
-		for (port = CSI_PORT0_ID; port < N_CSI_PORTS; port++) {
+		for (port = 0; port < N_CSI_PORTS; port++) {
 			unsigned int i;
 
 			for (i = 0; i < my_css.num_mipi_frames[port]; i++) {
@@ -566,7 +528,7 @@ send_mipi_frames(struct ia_css_pipe *pipe)
 
 	/* Hand-over the SP-internal mipi buffers */
 	for (i = 0; i < my_css.num_mipi_frames[port]; i++) {
-		/* Need to include the ofset for port. */
+		/* Need to include the offset for port. */
 		sh_css_update_host2sp_mipi_frame(port * NUM_MIPI_FRAMES_PER_STREAM + i,
 						 my_css.mipi_frames[port][i]);
 		sh_css_update_host2sp_mipi_metadata(port * NUM_MIPI_FRAMES_PER_STREAM + i,

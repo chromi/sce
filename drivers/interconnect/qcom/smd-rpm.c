@@ -63,11 +63,9 @@ int qcom_icc_rpm_set_bus_rate(const struct rpm_clk_resource *clk, int ctx, u32 r
 }
 EXPORT_SYMBOL_GPL(qcom_icc_rpm_set_bus_rate);
 
-static int qcom_icc_rpm_smd_remove(struct platform_device *pdev)
+static void qcom_icc_rpm_smd_remove(struct platform_device *pdev)
 {
 	icc_smd_rpm = NULL;
-
-	return 0;
 }
 
 static int qcom_icc_rpm_smd_probe(struct platform_device *pdev)

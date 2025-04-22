@@ -3,10 +3,10 @@
  *  Copyright (C) 2017  Steven Rostedt, VMware Inc.
  */
 
+#include <linux/export.h>
 #include <linux/linkage.h>
 #include <asm/page_types.h>
 #include <asm/segment.h>
-#include <asm/export.h>
 #include <asm/ftrace.h>
 #include <asm/nospec-branch.h>
 #include <asm/frame.h>
@@ -187,14 +187,15 @@ SYM_CODE_END(ftrace_graph_caller)
 
 .globl return_to_handler
 return_to_handler:
-	pushl	$0
-	pushl	%edx
-	pushl	%eax
+	subl	$(PTREGS_SIZE), %esp
+	movl	$0, PT_EBP(%esp)
+	movl	%edx, PT_EDX(%esp)
+	movl	%eax, PT_EAX(%esp)
 	movl	%esp, %eax
 	call	ftrace_return_to_handler
 	movl	%eax, %ecx
-	popl	%eax
-	popl	%edx
-	addl	$4, %esp		# skip ebp
+	movl	PT_EAX(%esp), %eax
+	movl	PT_EDX(%esp), %edx
+	addl	$(PTREGS_SIZE), %esp
 	JMP_NOSPEC ecx
 #endif

@@ -12,6 +12,7 @@
 
 #define RSWITCH_MAX_NUM_QUEUES	128
 
+#define RSWITCH_NUM_AGENTS	5
 #define RSWITCH_NUM_PORTS	3
 #define rswitch_for_each_enabled_port(priv, i)		\
 	for (i = 0; i < RSWITCH_NUM_PORTS; i++)		\
@@ -20,17 +21,23 @@
 		else
 
 #define rswitch_for_each_enabled_port_continue_reverse(priv, i)	\
-	for (i--; i >= 0; i--)					\
+	for (; i-- > 0; )					\
 		if (priv->rdev[i]->disabled)			\
 			continue;				\
 		else
 
 #define TX_RING_SIZE		1024
-#define RX_RING_SIZE		1024
+#define RX_RING_SIZE		4096
 #define TS_RING_SIZE		(TX_RING_SIZE * RSWITCH_NUM_PORTS)
 
-#define PKT_BUF_SZ		1584
+#define RSWITCH_MAX_MTU		9600
+#define RSWITCH_HEADROOM	(NET_SKB_PAD + NET_IP_ALIGN)
+#define RSWITCH_DESC_BUF_SIZE	2048
+#define RSWITCH_TAILROOM	SKB_DATA_ALIGN(sizeof(struct skb_shared_info))
 #define RSWITCH_ALIGN		128
+#define RSWITCH_BUF_SIZE	(RSWITCH_HEADROOM + RSWITCH_DESC_BUF_SIZE + \
+				 RSWITCH_TAILROOM + RSWITCH_ALIGN)
+#define RSWITCH_MAP_BUF_SIZE	(RSWITCH_BUF_SIZE - RSWITCH_HEADROOM)
 #define RSWITCH_MAX_CTAG_PCP	7
 
 #define RSWITCH_TIMEOUT_US	100000
@@ -718,35 +725,28 @@ enum rswitch_etha_mode {
 
 #define EAVCC_VEM_SC_TAG	(0x3 << 16)
 
-#define MPIC_PIS_MII		0x00
-#define MPIC_PIS_GMII		0x02
-#define MPIC_PIS_XGMII		0x04
-#define MPIC_LSC_SHIFT		3
-#define MPIC_LSC_100M		(1 << MPIC_LSC_SHIFT)
-#define MPIC_LSC_1G		(2 << MPIC_LSC_SHIFT)
-#define MPIC_LSC_2_5G		(3 << MPIC_LSC_SHIFT)
-
-#define MDIO_READ_C45		0x03
-#define MDIO_WRITE_C45		0x01
+#define MPIC_PIS		GENMASK(2, 0)
+#define MPIC_PIS_GMII		2
+#define MPIC_PIS_XGMII		4
+#define MPIC_LSC		GENMASK(5, 3)
+#define MPIC_LSC_100M		1
+#define MPIC_LSC_1G		2
+#define MPIC_LSC_2_5G		3
+#define MPIC_PSMCS		GENMASK(22, 16)
+#define MPIC_PSMHT		GENMASK(26, 24)
 
 #define MPSM_PSME		BIT(0)
-#define MPSM_MFF_C45		BIT(2)
-#define MPSM_PRD_SHIFT		16
-#define MPSM_PRD_MASK		GENMASK(31, MPSM_PRD_SHIFT)
-
-/* Completion flags */
-#define MMIS1_PAACS             BIT(2) /* Address */
-#define MMIS1_PWACS             BIT(1) /* Write */
-#define MMIS1_PRACS             BIT(0) /* Read */
-#define MMIS1_CLEAR_FLAGS       0xf
-
-#define MPIC_PSMCS_SHIFT	16
-#define MPIC_PSMCS_MASK		GENMASK(22, MPIC_PSMCS_SHIFT)
-#define MPIC_PSMCS(val)		((val) << MPIC_PSMCS_SHIFT)
-
-#define MPIC_PSMHT_SHIFT	24
-#define MPIC_PSMHT_MASK		GENMASK(26, MPIC_PSMHT_SHIFT)
-#define MPIC_PSMHT(val)		((val) << MPIC_PSMHT_SHIFT)
+#define MPSM_MFF		BIT(2)
+#define MPSM_MMF_C22		0
+#define MPSM_MMF_C45		1
+#define MPSM_PDA		GENMASK(7, 3)
+#define MPSM_PRA		GENMASK(12, 8)
+#define MPSM_POP		GENMASK(14, 13)
+#define MPSM_POP_ADDRESS	0
+#define MPSM_POP_WRITE		1
+#define MPSM_POP_READ_C22	2
+#define MPSM_POP_READ_C45	3
+#define MPSM_PRD		GENMASK(31, 16)
 
 #define MLVC_PLV		BIT(16)
 
@@ -767,6 +767,10 @@ enum rswitch_gwca_mode {
 
 #define GWARIRM_ARIOG		BIT(0)
 #define GWARIRM_ARR		BIT(1)
+
+#define GWMDNC_TSDMN(num)	(((num) << 16) & GENMASK(17, 16))
+#define GWMDNC_TXDMN(num)	(((num) << 8) & GENMASK(12, 8))
+#define GWMDNC_RXDMN(num)	((num) & GENMASK(4, 0))
 
 #define GWDCC_BALR		BIT(24)
 #define GWDCC_DCP_MASK		GENMASK(18, 16)
@@ -796,6 +800,7 @@ enum rswitch_gwca_mode {
 #define CABPPFLC_INIT_VALUE	0x00800080
 
 /* MFWD */
+#define FWPC0(i)		(FWPC00 + (i) * 0x10)
 #define FWPC0_LTHTA		BIT(0)
 #define FWPC0_IP4UE		BIT(3)
 #define FWPC0_IP4TE		BIT(4)
@@ -809,15 +814,15 @@ enum rswitch_gwca_mode {
 #define FWPC0_MACHMA		BIT(27)
 #define FWPC0_VLANSA		BIT(28)
 
-#define FWPC0(i)		(FWPC00 + (i) * 0x10)
-#define FWPC0_DEFAULT		(FWPC0_LTHTA | FWPC0_IP4UE | FWPC0_IP4TE | \
-				 FWPC0_IP4OE | FWPC0_L2SE | FWPC0_IP4EA | \
-				 FWPC0_IPDSA | FWPC0_IPHLA | FWPC0_MACSDA | \
-				 FWPC0_MACHLA |	FWPC0_MACHMA | FWPC0_VLANSA)
 #define FWPC1(i)		(FWPC10 + (i) * 0x10)
+#define FWCP1_LTHFW		GENMASK(16 + (RSWITCH_NUM_AGENTS - 1), 16)
 #define FWPC1_DDE		BIT(0)
 
-#define	FWPBFC(i)		(FWPBFC0 + (i) * 0x10)
+#define FWPC2(i)		(FWPC20 + (i) * 0x10)
+#define FWCP2_LTWFW		GENMASK(16 + (RSWITCH_NUM_AGENTS - 1), 16)
+
+#define FWPBFC(i)		(FWPBFC0 + (i) * 0x10)
+#define FWPBFC_PBDV		GENMASK(RSWITCH_NUM_AGENTS - 1, 0)
 
 #define FWPBFCSDC(j, i)         (FWPBFCSDC00 + (i) * 0x10 + (j) * 0x04)
 
@@ -909,7 +914,7 @@ struct rswitch_ext_ts_desc {
 } __packed;
 
 struct rswitch_etha {
-	int index;
+	unsigned int index;
 	void __iomem *addr;
 	void __iomem *coma_addr;
 	bool external_phy;
@@ -938,42 +943,46 @@ struct rswitch_gwca_queue {
 
 	/* Common */
 	dma_addr_t ring_dma;
-	int ring_size;
-	int cur;
-	int dirty;
+	unsigned int ring_size;
+	unsigned int cur;
+	unsigned int dirty;
 
-	/* For [rt]_ring */
-	int index;
+	/* For [rt]x_ring */
+	unsigned int index;
 	bool dir_tx;
-	struct sk_buff **skbs;
 	struct net_device *ndev;	/* queue to ndev for irq */
-};
 
-struct rswitch_gwca_ts_info {
-	struct sk_buff *skb;
-	struct list_head list;
-
-	int port;
-	u8 tag;
+	union {
+		/* For TX */
+		struct {
+			struct sk_buff **skbs;
+			dma_addr_t *unmap_addrs;
+		};
+		/* For RX */
+		struct {
+			void **rx_bufs;
+			struct sk_buff *skb_fstart;
+			u16 pkt_len;
+		};
+	};
 };
 
 #define RSWITCH_NUM_IRQ_REGS	(RSWITCH_MAX_NUM_QUEUES / BITS_PER_TYPE(u32))
 struct rswitch_gwca {
-	int index;
+	unsigned int index;
 	struct rswitch_desc *linkfix_table;
 	dma_addr_t linkfix_table_dma;
 	u32 linkfix_table_size;
 	struct rswitch_gwca_queue *queues;
 	int num_queues;
 	struct rswitch_gwca_queue ts_queue;
-	struct list_head ts_info_list;
 	DECLARE_BITMAP(used, RSWITCH_MAX_NUM_QUEUES);
 	u32 tx_irq_bits[RSWITCH_NUM_IRQ_REGS];
 	u32 rx_irq_bits[RSWITCH_NUM_IRQ_REGS];
-	int speed;
 };
 
 #define NUM_QUEUES_PER_NDEV	2
+#define TS_TAGS_PER_PORT	256
 struct rswitch_device {
 	struct rswitch_private *priv;
 	struct net_device *ndev;
@@ -981,7 +990,8 @@ struct rswitch_device {
 	void __iomem *addr;
 	struct rswitch_gwca_queue *tx_queue;
 	struct rswitch_gwca_queue *rx_queue;
-	u8 ts_tag;
+	struct sk_buff *ts_skb[TS_TAGS_PER_PORT];
+	DECLARE_BITMAP(ts_skb_used, TS_TAGS_PER_PORT);
 	bool disabled;
 
 	int port;

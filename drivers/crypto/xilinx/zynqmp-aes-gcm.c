@@ -231,7 +231,10 @@ static int zynqmp_handle_aes_req(struct crypto_engine *engine,
 		err = zynqmp_aes_aead_cipher(areq);
 	}
 
+	local_bh_disable();
 	crypto_finalize_aead_request(engine, areq, err);
+	local_bh_enable();
+
 	return 0;
 }
 
@@ -421,12 +424,10 @@ err_engine:
 	return err;
 }
 
-static int zynqmp_aes_aead_remove(struct platform_device *pdev)
+static void zynqmp_aes_aead_remove(struct platform_device *pdev)
 {
 	crypto_engine_exit(aes_drv_ctx.engine);
 	crypto_engine_unregister_aead(&aes_drv_ctx.alg.aead);
-
-	return 0;
 }
 
 static const struct of_device_id zynqmp_aes_dt_ids[] = {
@@ -445,4 +446,5 @@ static struct platform_driver zynqmp_aes_driver = {
 };
 
 module_platform_driver(zynqmp_aes_driver);
+MODULE_DESCRIPTION("Xilinx ZynqMP AES Driver");
 MODULE_LICENSE("GPL");

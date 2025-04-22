@@ -9,6 +9,7 @@
 #include <linux/mfd/cs42l43.h>
 #include <linux/mfd/cs42l43-regs.h>
 #include <linux/module.h>
+#include <linux/soundwire/sdw.h>
 #include <sound/pcm.h>
 #include <sound/sdw.h>
 #include <sound/soc-component.h>
@@ -31,11 +32,7 @@ int cs42l43_sdw_add_peripheral(struct snd_pcm_substream *substream,
 		return -EINVAL;
 
 	snd_sdw_params_to_config(substream, params, &sconfig, &pconfig);
-
-	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
-		pconfig.num = dai->id;
-	else
-		pconfig.num = dai->id;
+	pconfig.num = dai->id;
 
 	ret = sdw_stream_add_slave(sdw, &sconfig, &pconfig, 1, sdw_stream);
 	if (ret) {
@@ -45,7 +42,7 @@ int cs42l43_sdw_add_peripheral(struct snd_pcm_substream *substream,
 
 	return 0;
 }
-EXPORT_SYMBOL_NS_GPL(cs42l43_sdw_add_peripheral, SND_SOC_CS42L43);
+EXPORT_SYMBOL_NS_GPL(cs42l43_sdw_add_peripheral, "SND_SOC_CS42L43");
 
 int cs42l43_sdw_remove_peripheral(struct snd_pcm_substream *substream,
 				  struct snd_soc_dai *dai)
@@ -59,7 +56,7 @@ int cs42l43_sdw_remove_peripheral(struct snd_pcm_substream *substream,
 
 	return sdw_stream_remove_slave(sdw, sdw_stream);
 }
-EXPORT_SYMBOL_NS_GPL(cs42l43_sdw_remove_peripheral, SND_SOC_CS42L43);
+EXPORT_SYMBOL_NS_GPL(cs42l43_sdw_remove_peripheral, "SND_SOC_CS42L43");
 
 int cs42l43_sdw_set_stream(struct snd_soc_dai *dai, void *sdw_stream, int direction)
 {
@@ -67,7 +64,7 @@ int cs42l43_sdw_set_stream(struct snd_soc_dai *dai, void *sdw_stream, int direct
 
 	return 0;
 }
-EXPORT_SYMBOL_NS_GPL(cs42l43_sdw_set_stream, SND_SOC_CS42L43);
+EXPORT_SYMBOL_NS_GPL(cs42l43_sdw_set_stream, "SND_SOC_CS42L43");
 
 MODULE_DESCRIPTION("CS42L43 CODEC SoundWire Driver");
 MODULE_AUTHOR("Charles Keepax <ckeepax@opensource.cirrus.com>");

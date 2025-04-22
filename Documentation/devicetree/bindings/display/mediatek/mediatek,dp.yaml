@@ -21,6 +21,8 @@ description: |
 properties:
   compatible:
     enum:
+      - mediatek,mt8188-dp-tx
+      - mediatek,mt8188-edp-tx
       - mediatek,mt8195-dp-tx
       - mediatek,mt8195-edp-tx
 
@@ -39,6 +41,9 @@ properties:
 
   interrupts:
     maxItems: 1
+
+  '#sound-dai-cells':
+    const: 0
 
   ports:
     $ref: /schemas/graph.yaml#/properties/ports
@@ -83,7 +88,21 @@ required:
   - ports
   - max-linkrate-mhz
 
-additionalProperties: false
+allOf:
+  - $ref: /schemas/sound/dai-common.yaml#
+  - if:
+      not:
+        properties:
+          compatible:
+            contains:
+              enum:
+                - mediatek,mt8188-dp-tx
+                - mediatek,mt8195-dp-tx
+    then:
+      properties:
+        '#sound-dai-cells': false
+
+unevaluatedProperties: false
 
 examples:
   - |

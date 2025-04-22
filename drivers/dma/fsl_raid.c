@@ -857,7 +857,7 @@ static void fsl_re_remove_chan(struct fsl_re_chan *chan)
 		      chan->oub_phys_addr);
 }
 
-static int fsl_re_remove(struct platform_device *ofdev)
+static void fsl_re_remove(struct platform_device *ofdev)
 {
 	struct fsl_re_drv_private *re_priv;
 	struct device *dev;
@@ -872,8 +872,6 @@ static int fsl_re_remove(struct platform_device *ofdev)
 
 	/* Unregister the driver */
 	dma_async_device_unregister(&re_priv->dma_dev);
-
-	return 0;
 }
 
 static const struct of_device_id fsl_re_ids[] = {

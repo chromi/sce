@@ -8,20 +8,21 @@
  *		Quan Nguyen <qnguyen@apm.com>.
  */
 
-#include <linux/module.h>
+#include <linux/device.h>
+#include <linux/err.h>
 #include <linux/io.h>
+#include <linux/irq.h>
+#include <linux/irqdomain.h>
+#include <linux/mod_devicetable.h>
+#include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/property.h>
+#include <linux/types.h>
+
 #include <linux/gpio/driver.h>
-#include <linux/acpi.h>
 
-#include "gpiolib.h"
 #include "gpiolib-acpi.h"
-
-/* Common property names */
-#define XGENE_NIRQ_PROPERTY		"apm,nr-irqs"
-#define XGENE_NGPIO_PROPERTY		"apm,nr-gpios"
-#define XGENE_IRQ_START_PROPERTY	"apm,irq-start"
 
 #define XGENE_DFLT_MAX_NGPIO		22
 #define XGENE_DFLT_MAX_NIRQ		6
@@ -253,18 +254,17 @@ static int xgene_gpio_sb_probe(struct platform_device *pdev)
 
 	/* Retrieve start irq pin, use default if property not found */
 	priv->irq_start = XGENE_DFLT_IRQ_START_PIN;
-	if (!device_property_read_u32(&pdev->dev,
-					XGENE_IRQ_START_PROPERTY, &val32))
+	if (!device_property_read_u32(&pdev->dev, "apm,irq-start", &val32))
 		priv->irq_start = val32;
 
 	/* Retrieve number irqs, use default if property not found */
 	priv->nirq = XGENE_DFLT_MAX_NIRQ;
-	if (!device_property_read_u32(&pdev->dev, XGENE_NIRQ_PROPERTY, &val32))
+	if (!device_property_read_u32(&pdev->dev, "apm,nr-irqs", &val32))
 		priv->nirq = val32;
 
 	/* Retrieve number gpio, use default if property not found */
 	priv->gc.ngpio = XGENE_DFLT_MAX_NGPIO;
-	if (!device_property_read_u32(&pdev->dev, XGENE_NGPIO_PROPERTY, &val32))
+	if (!device_property_read_u32(&pdev->dev, "apm,nr-gpios", &val32))
 		priv->gc.ngpio = val32;
 
 	dev_info(&pdev->dev, "Support %d gpios, %d irqs start from pin %d\n",
@@ -296,37 +296,33 @@ static int xgene_gpio_sb_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static int xgene_gpio_sb_remove(struct platform_device *pdev)
+static void xgene_gpio_sb_remove(struct platform_device *pdev)
 {
 	struct xgene_gpio_sb *priv = platform_get_drvdata(pdev);
 
 	acpi_gpiochip_free_interrupts(&priv->gc);
 
 	irq_domain_remove(priv->irq_domain);
-
-	return 0;
 }
 
 static const struct of_device_id xgene_gpio_sb_of_match[] = {
-	{.compatible = "apm,xgene-gpio-sb", },
-	{},
+	{ .compatible = "apm,xgene-gpio-sb" },
+	{}
 };
 MODULE_DEVICE_TABLE(of, xgene_gpio_sb_of_match);
 
-#ifdef CONFIG_ACPI
 static const struct acpi_device_id xgene_gpio_sb_acpi_match[] = {
-	{"APMC0D15", 0},
-	{},
+	{ "APMC0D15" },
+	{}
 };
 MODULE_DEVICE_TABLE(acpi, xgene_gpio_sb_acpi_match);
-#endif
 
 static struct platform_driver xgene_gpio_sb_driver = {
 	.driver = {
 		   .name = "xgene-gpio-sb",
 		   .of_match_table = xgene_gpio_sb_of_match,
-		   .acpi_match_table = ACPI_PTR(xgene_gpio_sb_acpi_match),
-		   },
+		   .acpi_match_table = xgene_gpio_sb_acpi_match,
+	},
 	.probe = xgene_gpio_sb_probe,
 	.remove = xgene_gpio_sb_remove,
 };

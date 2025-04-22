@@ -198,7 +198,7 @@ static int histb_pcie_host_init(struct dw_pcie_rp *pp)
 }
 
 static const struct dw_pcie_host_ops histb_pcie_host_ops = {
-	.host_init = histb_pcie_host_init,
+	.init = histb_pcie_host_init,
 };
 
 static void histb_pcie_host_disable(struct histb_pcie *hipcie)
@@ -439,7 +439,7 @@ MODULE_DEVICE_TABLE(of, histb_pcie_of_match);
 
 static struct platform_driver histb_pcie_platform_driver = {
 	.probe	= histb_pcie_probe,
-	.remove_new = histb_pcie_remove,
+	.remove = histb_pcie_remove,
 	.driver = {
 		.name = "histb-pcie",
 		.of_match_table = histb_pcie_of_match,

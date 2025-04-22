@@ -62,9 +62,13 @@
 	status = "okay";
 };
 
-/* TODO: Audio Mixer */
+&amix {
+	status = "okay";
+};
 
-/* TODO: Asynchronous Sample Rate Converter (ASRC) */
+&asrc0 {
+	status = "okay";
+};
 
 /* TODO: Display Controller */
 
@@ -165,7 +169,6 @@
 			  "gpio5-24", "UART24-FORCEOFF", "gpio5-26",
 			  "LED-4-GREEN", "gpio5-28", "LED-4-RED", "gpio5-30",
 			  "gpio5-31";
-	ngpios = <32>;
 };
 
 /* Apalis PWM3, MXM3 pin 6 */
@@ -192,13 +195,25 @@
 
 /* TODO: Apalis BKL1_PWM */
 
-/* TODO: Apalis DAP1 */
+/* Apalis DAP1 */
+&sai1 {
+	status = "okay";
+};
 
-/* TODO: Apalis Analogue Audio */
+&sai5 {
+	status = "okay";
+};
+
+&sai5_lpcg {
+	status = "okay";
+};
 
 /* TODO: Apalis SATA1 */
 
-/* TODO: Apalis SPDIF1 */
+/* Apalis SPDIF1 */
+&spdif0 {
+	status = "okay";
+};
 
 /* TODO: Apalis USBH2, Apalis USBH3 and on-module Wi-Fi via on-module HSIC Hub */
 
@@ -207,7 +222,10 @@
 	status = "okay";
 };
 
-/* TODO: Apalis USBH4 SuperSpeed */
+/* Apalis USBH4 SuperSpeed */
+&usbotg3_cdns3 {
+	status = "okay";
+};
 
 /* Apalis MMC1 */
 &usdhc2 {

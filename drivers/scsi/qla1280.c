@@ -501,7 +501,7 @@ struct qla_boards {
 };
 
 /* NOTE: the last argument in each entry is used to index ql1280_board_tbl */
-static struct pci_device_id qla1280_pci_tbl[] = {
+static const struct pci_device_id qla1280_pci_tbl[] = {
 	{PCI_VENDOR_ID_QLOGIC, PCI_DEVICE_ID_QLOGIC_ISP12160,
 		PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0},
 	{PCI_VENDOR_ID_QLOGIC, PCI_DEVICE_ID_QLOGIC_ISP1020,
@@ -716,7 +716,6 @@ enum action {
 	ABORT_COMMAND,
 	DEVICE_RESET,
 	BUS_RESET,
-	ADAPTER_RESET,
 };
 
 
@@ -898,22 +897,9 @@ qla1280_error_action(struct scsi_cmnd *cmd, enum action action)
 		}
 		break;
 
-	case ADAPTER_RESET:
 	default:
-		if (qla1280_verbose) {
-			printk(KERN_INFO
-			       "scsi(%ld): Issued ADAPTER RESET\n",
-			       ha->host_no);
-			printk(KERN_INFO "scsi(%ld): I/O processing will "
-			       "continue automatically\n", ha->host_no);
-		}
-		ha->flags.reset_active = 1;
-
-		if (qla1280_abort_isp(ha) != 0) {	/* it's dead */
-			result = FAILED;
-		}
-
-		ha->flags.reset_active = 0;
+		dprintk(1, "RESET invalid action %d\n", action);
+		return FAILED;
 	}
 
 	/*
@@ -1011,11 +997,27 @@ qla1280_eh_bus_reset(struct scsi_cmnd *cmd)
 static int
 qla1280_eh_adapter_reset(struct scsi_cmnd *cmd)
 {
-	int rc;
+	int rc = SUCCESS;
+	struct Scsi_Host *shost = cmd->device->host;
+	struct scsi_qla_host *ha = (struct scsi_qla_host *)shost->hostdata;
 
-	spin_lock_irq(cmd->device->host->host_lock);
-	rc = qla1280_error_action(cmd, ADAPTER_RESET);
-	spin_unlock_irq(cmd->device->host->host_lock);
+	spin_lock_irq(shost->host_lock);
+	if (qla1280_verbose) {
+		printk(KERN_INFO
+		       "scsi(%ld): Issued ADAPTER RESET\n",
+		       ha->host_no);
+		printk(KERN_INFO "scsi(%ld): I/O processing will "
+		       "continue automatically\n", ha->host_no);
+	}
+	ha->flags.reset_active = 1;
+
+	if (qla1280_abort_isp(ha) != 0) {	/* it's dead */
+		rc = FAILED;
+	}
+
+	ha->flags.reset_active = 0;
+
+	spin_unlock_irq(shost->host_lock);
 
 	return rc;
 }
@@ -1157,7 +1159,7 @@ qla1280_set_target_parameters(struct scsi_qla_host *ha, int bus, int target)
 
 
 /**************************************************************************
- *   qla1280_slave_configure
+ *   qla1280_sdev_configure
  *
  * Description:
  *   Determines the queue depth for a given device.  There are two ways
@@ -1168,7 +1170,7 @@ qla1280_set_target_parameters(struct scsi_qla_host *ha, int bus, int target)
  *   default queue depth (dependent on the number of hardware SCBs).
  **************************************************************************/
 static int
-qla1280_slave_configure(struct scsi_device *device)
+qla1280_sdev_configure(struct scsi_device *device, struct queue_limits *lim)
 {
 	struct scsi_qla_host *ha;
 	int default_depth = 3;
@@ -2476,7 +2478,6 @@ qla1280_mailbox_command(struct scsi_qla_host *ha, uint8_t mr, uint16_t *mb)
 	/* Load return mailbox registers. */
 	optr = mb;
 	iptr = (uint16_t *) &ha->mailbox_out[0];
-	mr = MAILBOX_REGISTER_COUNT;
 	memcpy(optr, iptr, MAILBOX_REGISTER_COUNT * sizeof(uint16_t));
 
 	if (ha->flags.reset_marker)
@@ -2866,7 +2867,7 @@ qla1280_64bit_start_scsi(struct scsi_qla_host *ha, struct srb * sp)
 			dprintk(3, "S/G Segment phys_addr=%x %x, len=0x%x\n",
 				cpu_to_le32(upper_32_bits(dma_handle)),
 				cpu_to_le32(lower_32_bits(dma_handle)),
-				cpu_to_le32(sg_dma_len(sg_next(s))));
+				cpu_to_le32(sg_dma_len(s)));
 			remseg--;
 		}
 		dprintk(5, "qla1280_64bit_start_scsi: Scatter/gather "
@@ -4120,7 +4121,7 @@ static const struct scsi_host_template qla1280_driver_template = {
 	.proc_name		= "qla1280",
 	.name			= "Qlogic ISP 1280/12160",
 	.info			= qla1280_info,
-	.slave_configure	= qla1280_slave_configure,
+	.sdev_configure		= qla1280_sdev_configure,
 	.queuecommand		= qla1280_queuecommand,
 	.eh_abort_handler	= qla1280_eh_abort,
 	.eh_device_reset_handler= qla1280_eh_device_reset,

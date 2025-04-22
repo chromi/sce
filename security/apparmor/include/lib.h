@@ -16,6 +16,8 @@
 
 #include "match.h"
 
+extern struct aa_dfa *stacksplitdfa;
+
 /*
  * DEBUG remains global (no per profile flag) since it is mostly used in sysctl
  * which is not related to profile accesses.
@@ -57,7 +59,6 @@ extern int apparmor_initialized;
 
 /* fn's in lib */
 const char *skipn_spaces(const char *str, size_t n);
-char *aa_split_fqname(char *args, char **ns_name);
 const char *aa_splitn_fqname(const char *fqname, size_t n, const char **ns_name,
 			     size_t *ns_len);
 void aa_info_message(const char *str);

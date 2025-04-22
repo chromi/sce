@@ -1008,7 +1008,7 @@ err_disable_clk:
 	return ret;
 }
 
-static int jz4780_dma_remove(struct platform_device *pdev)
+static void jz4780_dma_remove(struct platform_device *pdev)
 {
 	struct jz4780_dma_dev *jzdma = platform_get_drvdata(pdev);
 	int i;
@@ -1020,8 +1020,6 @@ static int jz4780_dma_remove(struct platform_device *pdev)
 
 	for (i = 0; i < jzdma->soc_data->nb_channels; i++)
 		tasklet_kill(&jzdma->chan[i].vchan.task);
-
-	return 0;
 }
 
 static const struct jz4780_dma_soc_data jz4740_dma_soc_data = {

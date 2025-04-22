@@ -1,7 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 
-TOOL=$(dirname $(realpath $0))/ynl-gen-c.py
+TOOL=$(dirname $(realpath $0))/pyynl/ynl_gen_c.py
 
 force=
 search=
@@ -30,8 +30,8 @@ for f in $files; do
     fi
 
     echo -e "\tGEN ${params[2]}\t$f"
-    $TOOL --mode ${params[2]} --${params[3]} --spec $KDIR/${params[0]} \
-	  $args -o $f
+    $TOOL --cmp-out --mode ${params[2]} --${params[3]} \
+	  --spec $KDIR/${params[0]} $args -o $f
 done
 
 popd >>/dev/null

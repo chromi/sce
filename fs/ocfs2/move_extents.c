@@ -492,7 +492,7 @@ static int ocfs2_validate_and_adjust_move_goal(struct inode *inode,
 	bg = (struct ocfs2_group_desc *)gd_bh->b_data;
 
 	/*
-	 * moving goal is not allowd to start with a group desc blok(#0 blk)
+	 * moving goal is not allowed to start with a group desc blok(#0 blk)
 	 * let's compromise to the latter cluster.
 	 */
 	if (range->me_goal == le64_to_cpu(bg->bg_blkno))
@@ -658,7 +658,7 @@ static int ocfs2_move_extent(struct ocfs2_move_extents_context *context,
 
 	/*
 	 * probe the victim cluster group to find a proper
-	 * region to fit wanted movement, it even will perfrom
+	 * region to fit wanted movement, it even will perform
 	 * a best-effort attempt by compromising to a threshold
 	 * around the goal.
 	 */
@@ -685,7 +685,7 @@ static int ocfs2_move_extent(struct ocfs2_move_extents_context *context,
 	}
 
 	ret = ocfs2_block_group_set_bits(handle, gb_inode, gd, gd_bh,
-					 goal_bit, len);
+					 goal_bit, len, 0, 0);
 	if (ret) {
 		ocfs2_rollback_alloc_dinode_counts(gb_inode, gb_bh, len,
 					       le16_to_cpu(gd->bg_chain));
@@ -920,7 +920,7 @@ static int ocfs2_move_extents(struct ocfs2_move_extents_context *context)
 	}
 
 	/*
-	 * rememer ip_xattr_sem also needs to be held if necessary
+	 * remember ip_xattr_sem also needs to be held if necessary
 	 */
 	down_write(&OCFS2_I(inode)->ip_alloc_sem);
 
@@ -951,8 +951,8 @@ static int ocfs2_move_extents(struct ocfs2_move_extents_context *context)
 
 	di = (struct ocfs2_dinode *)di_bh->b_data;
 	inode_set_ctime_current(inode);
-	di->i_ctime = cpu_to_le64(inode_get_ctime(inode).tv_sec);
-	di->i_ctime_nsec = cpu_to_le32(inode_get_ctime(inode).tv_nsec);
+	di->i_ctime = cpu_to_le64(inode_get_ctime_sec(inode));
+	di->i_ctime_nsec = cpu_to_le32(inode_get_ctime_nsec(inode));
 	ocfs2_update_inode_fsync_trans(handle, inode, 0);
 
 	ocfs2_journal_dirty(handle, di_bh);
@@ -1022,7 +1022,7 @@ int ocfs2_ioctl_move_extents(struct file *filp, void __user *argp)
 	context->range = &range;
 
 	/*
-	 * ok, the default theshold for the defragmentation
+	 * ok, the default threshold for the defragmentation
 	 * is 1M, since our maximum clustersize was 1M also.
 	 * any thought?
 	 */

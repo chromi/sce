@@ -215,7 +215,7 @@ err_remove_domain:
 	return ret;
 }
 
-static int tb10x_gpio_remove(struct platform_device *pdev)
+static void tb10x_gpio_remove(struct platform_device *pdev)
 {
 	struct tb10x_gpio *tb10x_gpio = platform_get_drvdata(pdev);
 
@@ -225,8 +225,6 @@ static int tb10x_gpio_remove(struct platform_device *pdev)
 		kfree(tb10x_gpio->domain->gc);
 		irq_domain_remove(tb10x_gpio->domain);
 	}
-
-	return 0;
 }
 
 static const struct of_device_id tb10x_gpio_dt_ids[] = {

@@ -1186,7 +1186,7 @@ static int chcr_handle_cipher_resp(struct skcipher_request *req,
 		else
 			bytes = rounddown(bytes, 16);
 	} else {
-		/*CTR mode counter overfloa*/
+		/*CTR mode counter overflow*/
 		bytes  = req->cryptlen - reqctx->processed;
 	}
 	err = chcr_update_cipher_iv(req, fw6_pld, reqctx->iv);
@@ -1920,6 +1920,9 @@ err:
 	return error;
 }
 
+static int chcr_hmac_init(struct ahash_request *areq);
+static int chcr_sha_init(struct ahash_request *areq);
+
 static int chcr_ahash_digest(struct ahash_request *req)
 {
 	struct chcr_ahash_req_ctx *req_ctx = ahash_request_ctx(req);
@@ -1938,7 +1941,11 @@ static int chcr_ahash_digest(struct ahash_request *req)
 	req_ctx->rxqidx = cpu % ctx->nrxq;
 	put_cpu();
 
-	rtfm->init(req);
+	if (is_hmac(crypto_ahash_tfm(rtfm)))
+		chcr_hmac_init(req);
+	else
+		chcr_sha_init(req);
+
 	bs = crypto_tfm_alg_blocksize(crypto_ahash_tfm(rtfm));
 	error = chcr_inc_wrcount(dev);
 	if (error)

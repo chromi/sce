@@ -41,7 +41,7 @@ static const struct regmap_irq_chip hi655x_irq_chip = {
 	.mask_base = HI655X_IRQ_MASK_BASE,
 };
 
-static struct regmap_config hi655x_regmap_config = {
+static const struct regmap_config hi655x_regmap_config = {
 	.reg_bits = 32,
 	.reg_stride = HI655X_STRIDE,
 	.val_bits = 8,
@@ -144,13 +144,12 @@ static int hi655x_pmic_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int hi655x_pmic_remove(struct platform_device *pdev)
+static void hi655x_pmic_remove(struct platform_device *pdev)
 {
 	struct hi655x_pmic *pmic = platform_get_drvdata(pdev);
 
 	regmap_del_irq_chip(gpiod_to_irq(pmic->gpio), pmic->irq_data);
 	mfd_remove_devices(&pdev->dev);
-	return 0;
 }
 
 static const struct of_device_id hi655x_pmic_match[] = {
@@ -160,11 +159,11 @@ static const struct of_device_id hi655x_pmic_match[] = {
 MODULE_DEVICE_TABLE(of, hi655x_pmic_match);
 
 static struct platform_driver hi655x_pmic_driver = {
-	.driver	= {
-		.name =	"hi655x-pmic",
+	.driver = {
+		.name = "hi655x-pmic",
 		.of_match_table = hi655x_pmic_match,
 	},
-	.probe  = hi655x_pmic_probe,
+	.probe = hi655x_pmic_probe,
 	.remove = hi655x_pmic_remove,
 };
 module_platform_driver(hi655x_pmic_driver);

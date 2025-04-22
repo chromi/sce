@@ -1306,7 +1306,7 @@ out_return:
 	return err;
 }
 
-static int fsldma_of_remove(struct platform_device *op)
+static void fsldma_of_remove(struct platform_device *op)
 {
 	struct fsldma_device *fdev;
 	unsigned int i;
@@ -1324,8 +1324,6 @@ static int fsldma_of_remove(struct platform_device *op)
 
 	iounmap(fdev->regs);
 	kfree(fdev);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM

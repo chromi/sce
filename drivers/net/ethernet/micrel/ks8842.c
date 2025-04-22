@@ -1228,7 +1228,7 @@ err_mem_region:
 	return err;
 }
 
-static int ks8842_remove(struct platform_device *pdev)
+static void ks8842_remove(struct platform_device *pdev)
 {
 	struct net_device *netdev = platform_get_drvdata(pdev);
 	struct ks8842_adapter *adapter = netdev_priv(netdev);
@@ -1239,7 +1239,6 @@ static int ks8842_remove(struct platform_device *pdev)
 	iounmap(adapter->hw_addr);
 	free_netdev(netdev);
 	release_mem_region(iomem->start, resource_size(iomem));
-	return 0;
 }
 
 

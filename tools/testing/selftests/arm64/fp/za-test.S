@@ -148,21 +148,16 @@ function check_za
 	b	memcmp
 endfunction
 
-// Any SME register modified here can cause corruption in the main
-// thread -- but *only* the locations modified here.
+// Modify the live SME register state, signal return will undo our changes
 function irritator_handler
 	// Increment the irritation signal count (x23):
 	ldr	x0, [x2, #ucontext_regs + 8 * 23]
 	add	x0, x0, #1
 	str	x0, [x2, #ucontext_regs + 8 * 23]
 
-	// Corrupt some random ZA data
-#if 0
-	adr	x0, .text + (irritator_handler - .text) / 16 * 16
-	movi	v0.8b, #1
-	movi	v9.16b, #2
-	movi	v31.8b, #3
-#endif
+	// This will reset ZA to all bits 0
+	smstop
+	smstart_za
 
 	ret
 endfunction
@@ -231,6 +226,8 @@ endfunction
 // Main program entry point
 .globl _start
 function _start
+	enable_gcs
+
 	mov	x23, #0		// signal count
 
 	mov	w0, #SIGINT
@@ -333,6 +330,9 @@ function barf
 //	mov	w8, #__NR_exit
 //	svc	#0
 // end hack
+
+	mrs	x13, S3_3_C4_C2_2
+
 	smstop
 	mov	x10, x0	// expected data
 	mov	x11, x1	// actual data
@@ -356,6 +356,9 @@ function barf
 	mov	x1, x12
 	bl	dumphex
 	puts	"]\n"
+	puts	"\tSVCR: "
+	mov	x0, x13
+	bl	putdecn
 
 	mov	x8, #__NR_getpid
 	svc	#0

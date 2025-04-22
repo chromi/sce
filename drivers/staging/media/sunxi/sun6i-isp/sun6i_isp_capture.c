@@ -368,8 +368,6 @@ static const struct vb2_ops sun6i_isp_capture_queue_ops = {
 	.buf_queue		= sun6i_isp_capture_buffer_queue,
 	.start_streaming	= sun6i_isp_capture_start_streaming,
 	.stop_streaming		= sun6i_isp_capture_stop_streaming,
-	.wait_prepare		= vb2_ops_wait_prepare,
-	.wait_finish		= vb2_ops_wait_finish,
 };
 
 /* Video Device */
@@ -660,7 +658,7 @@ int sun6i_isp_capture_setup(struct sun6i_isp_device *isp_dev)
 	queue->buf_struct_size = sizeof(struct sun6i_isp_buffer);
 	queue->ops = &sun6i_isp_capture_queue_ops;
 	queue->mem_ops = &vb2_dma_contig_memops;
-	queue->min_buffers_needed = 2;
+	queue->min_queued_buffers = 2;
 	queue->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
 	queue->lock = &capture->lock;
 	queue->dev = isp_dev->dev;

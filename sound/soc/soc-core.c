@@ -238,8 +238,8 @@ static inline void snd_soc_debugfs_exit(void) { }
 
 #endif
 
-static int snd_soc_is_match_dai_args(struct of_phandle_args *args1,
-				     struct of_phandle_args *args2)
+static int snd_soc_is_match_dai_args(const struct of_phandle_args *args1,
+				     const struct of_phandle_args *args2)
 {
 	if (!args1 || !args2)
 		return 0;
@@ -283,11 +283,11 @@ static int snd_soc_is_matching_dai(const struct snd_soc_dai_link_component *dlc,
 
 	/* see snd_soc_dai_name_get() */
 
-	if (strcmp(dlc->dai_name, dai->name) == 0)
+	if (dai->driver->name &&
+	    strcmp(dlc->dai_name, dai->driver->name) == 0)
 		return 1;
 
-	if (dai->driver->name &&
-	    strcmp(dai->driver->name, dlc->dai_name) == 0)
+	if (strcmp(dlc->dai_name, dai->name) == 0)
 		return 1;
 
 	if (dai->component->name &&
@@ -297,14 +297,14 @@ static int snd_soc_is_matching_dai(const struct snd_soc_dai_link_component *dlc,
 	return 0;
 }
 
-const char *snd_soc_dai_name_get(struct snd_soc_dai *dai)
+const char *snd_soc_dai_name_get(const struct snd_soc_dai *dai)
 {
 	/* see snd_soc_is_matching_dai() */
-	if (dai->name)
-		return dai->name;
-
 	if (dai->driver->name)
 		return dai->driver->name;
+
+	if (dai->name)
+		return dai->name;
 
 	if (dai->component->name)
 		return dai->component->name;
@@ -326,8 +326,8 @@ static int snd_soc_rtd_add_component(struct snd_soc_pcm_runtime *rtd,
 	}
 
 	/* see for_each_rtd_components */
-	rtd->components[rtd->num_components] = component;
-	rtd->num_components++;
+	rtd->num_components++; // increment flex array count at first
+	rtd->components[rtd->num_components - 1] = component;
 
 	return 0;
 }
@@ -420,7 +420,7 @@ EXPORT_SYMBOL_GPL(snd_soc_get_pcm_runtime);
  */
 void snd_soc_close_delayed_work(struct snd_soc_pcm_runtime *rtd)
 {
-	struct snd_soc_dai *codec_dai = asoc_rtd_to_codec(rtd, 0);
+	struct snd_soc_dai *codec_dai = snd_soc_rtd_to_codec(rtd, 0);
 	int playback = SNDRV_PCM_STREAM_PLAYBACK;
 
 	snd_soc_dpcm_mutex_lock(rtd);
@@ -494,7 +494,6 @@ static struct snd_soc_pcm_runtime *soc_new_pcm_runtime(
 	struct snd_soc_card *card, struct snd_soc_dai_link *dai_link)
 {
 	struct snd_soc_pcm_runtime *rtd;
-	struct snd_soc_component *component;
 	struct device *dev;
 	int ret;
 	int stream;
@@ -521,10 +520,10 @@ static struct snd_soc_pcm_runtime *soc_new_pcm_runtime(
 	 * for rtd
 	 */
 	rtd = devm_kzalloc(dev,
-			   sizeof(*rtd) +
-			   sizeof(component) * (dai_link->num_cpus +
-						 dai_link->num_codecs +
-						 dai_link->num_platforms),
+			   struct_size(rtd, components,
+				       dai_link->num_cpus +
+				       dai_link->num_codecs +
+				       dai_link->num_platforms),
 			   GFP_KERNEL);
 	if (!rtd) {
 		device_unregister(dev);
@@ -554,12 +553,12 @@ static struct snd_soc_pcm_runtime *soc_new_pcm_runtime(
 	 *	  ^cpu_dais         ^codec_dais
 	 *	  |--- num_cpus ---|--- num_codecs --|
 	 * see
-	 *	asoc_rtd_to_cpu()
-	 *	asoc_rtd_to_codec()
+	 *	snd_soc_rtd_to_cpu()
+	 *	snd_soc_rtd_to_codec()
 	 */
 	rtd->card	= card;
 	rtd->dai_link	= dai_link;
-	rtd->num	= card->num_rtd++;
+	rtd->id		= card->num_rtd++;
 	rtd->pmdown_time = pmdown_time;			/* default power off timeout */
 
 	/* see for_each_card_rtds */
@@ -574,6 +573,28 @@ static struct snd_soc_pcm_runtime *soc_new_pcm_runtime(
 free_rtd:
 	soc_free_pcm_runtime(rtd);
 	return NULL;
+}
+
+static void snd_soc_fill_dummy_dai(struct snd_soc_card *card)
+{
+	struct snd_soc_dai_link *dai_link;
+	int i;
+
+	/*
+	 * COMP_DUMMY() creates size 0 array on dai_link.
+	 * Fill it as dummy DAI in case of CPU/Codec here.
+	 * Do nothing for Platform.
+	 */
+	for_each_card_prelinks(card, i, dai_link) {
+		if (dai_link->num_cpus == 0 && dai_link->cpus) {
+			dai_link->num_cpus	= 1;
+			dai_link->cpus		= &snd_soc_dummy_dlc;
+		}
+		if (dai_link->num_codecs == 0 && dai_link->codecs) {
+			dai_link->num_codecs	= 1;
+			dai_link->codecs	= &snd_soc_dummy_dlc;
+		}
+	}
 }
 
 static void snd_soc_flush_all_delayed_work(struct snd_soc_card *card)
@@ -809,7 +830,8 @@ static struct device_node
 	return of_node;
 }
 
-struct of_phandle_args *snd_soc_copy_dai_args(struct device *dev, struct of_phandle_args *args)
+struct of_phandle_args *snd_soc_copy_dai_args(struct device *dev,
+					      const struct of_phandle_args *args)
 {
 	struct of_phandle_args *ret = devm_kzalloc(dev, sizeof(*ret), GFP_KERNEL);
 
@@ -1015,6 +1037,97 @@ component_dai_empty:
 	return -EINVAL;
 }
 
+#define MAX_DEFAULT_CH_MAP_SIZE 8
+static struct snd_soc_dai_link_ch_map default_ch_map_sync[MAX_DEFAULT_CH_MAP_SIZE] = {
+	{ .cpu = 0, .codec = 0 },
+	{ .cpu = 1, .codec = 1 },
+	{ .cpu = 2, .codec = 2 },
+	{ .cpu = 3, .codec = 3 },
+	{ .cpu = 4, .codec = 4 },
+	{ .cpu = 5, .codec = 5 },
+	{ .cpu = 6, .codec = 6 },
+	{ .cpu = 7, .codec = 7 },
+};
+static struct snd_soc_dai_link_ch_map default_ch_map_1cpu[MAX_DEFAULT_CH_MAP_SIZE] = {
+	{ .cpu = 0, .codec = 0 },
+	{ .cpu = 0, .codec = 1 },
+	{ .cpu = 0, .codec = 2 },
+	{ .cpu = 0, .codec = 3 },
+	{ .cpu = 0, .codec = 4 },
+	{ .cpu = 0, .codec = 5 },
+	{ .cpu = 0, .codec = 6 },
+	{ .cpu = 0, .codec = 7 },
+};
+static struct snd_soc_dai_link_ch_map default_ch_map_1codec[MAX_DEFAULT_CH_MAP_SIZE] = {
+	{ .cpu = 0, .codec = 0 },
+	{ .cpu = 1, .codec = 0 },
+	{ .cpu = 2, .codec = 0 },
+	{ .cpu = 3, .codec = 0 },
+	{ .cpu = 4, .codec = 0 },
+	{ .cpu = 5, .codec = 0 },
+	{ .cpu = 6, .codec = 0 },
+	{ .cpu = 7, .codec = 0 },
+};
+static int snd_soc_compensate_channel_connection_map(struct snd_soc_card *card,
+						     struct snd_soc_dai_link *dai_link)
+{
+	struct snd_soc_dai_link_ch_map *ch_maps;
+	int i;
+
+	/*
+	 * dai_link->ch_maps indicates how CPU/Codec are connected.
+	 * It will be a map seen from a larger number of DAI.
+	 * see
+	 *	soc.h :: [dai_link->ch_maps Image sample]
+	 */
+
+	/* it should have ch_maps if connection was N:M */
+	if (dai_link->num_cpus > 1 && dai_link->num_codecs > 1 &&
+	    dai_link->num_cpus != dai_link->num_codecs && !dai_link->ch_maps) {
+		dev_err(card->dev, "need to have ch_maps when N:M connection (%s)",
+			dai_link->name);
+		return -EINVAL;
+	}
+
+	/* do nothing if it has own maps */
+	if (dai_link->ch_maps)
+		goto sanity_check;
+
+	/* check default map size */
+	if (dai_link->num_cpus   > MAX_DEFAULT_CH_MAP_SIZE ||
+	    dai_link->num_codecs > MAX_DEFAULT_CH_MAP_SIZE) {
+		dev_err(card->dev, "soc-core.c needs update default_connection_maps");
+		return -EINVAL;
+	}
+
+	/* Compensate missing map for ... */
+	if (dai_link->num_cpus == dai_link->num_codecs)
+		dai_link->ch_maps = default_ch_map_sync;	/* for 1:1 or N:N */
+	else if (dai_link->num_cpus <  dai_link->num_codecs)
+		dai_link->ch_maps = default_ch_map_1cpu;	/* for 1:N */
+	else
+		dai_link->ch_maps = default_ch_map_1codec;	/* for N:1 */
+
+sanity_check:
+	dev_dbg(card->dev, "dai_link %s\n", dai_link->stream_name);
+	for_each_link_ch_maps(dai_link, i, ch_maps) {
+		if ((ch_maps->cpu   >= dai_link->num_cpus) ||
+		    (ch_maps->codec >= dai_link->num_codecs)) {
+			dev_err(card->dev,
+				"unexpected dai_link->ch_maps[%d] index (cpu(%d/%d) codec(%d/%d))",
+				i,
+				ch_maps->cpu,	dai_link->num_cpus,
+				ch_maps->codec,	dai_link->num_codecs);
+			return -EINVAL;
+		}
+
+		dev_dbg(card->dev, "  [%d] cpu%d <-> codec%d\n",
+			i, ch_maps->cpu, ch_maps->codec);
+	}
+
+	return 0;
+}
+
 /**
  * snd_soc_remove_pcm_runtime - Remove a pcm_runtime from card
  * @card: The ASoC card to which the pcm_runtime has
@@ -1053,7 +1166,7 @@ static int snd_soc_add_pcm_runtime(struct snd_soc_card *card,
 	struct snd_soc_pcm_runtime *rtd;
 	struct snd_soc_dai_link_component *codec, *platform, *cpu;
 	struct snd_soc_component *component;
-	int i, ret;
+	int i, id, ret;
 
 	lockdep_assert_held(&client_mutex);
 
@@ -1078,25 +1191,25 @@ static int snd_soc_add_pcm_runtime(struct snd_soc_card *card,
 		return -ENOMEM;
 
 	for_each_link_cpus(dai_link, i, cpu) {
-		asoc_rtd_to_cpu(rtd, i) = snd_soc_find_dai(cpu);
-		if (!asoc_rtd_to_cpu(rtd, i)) {
+		snd_soc_rtd_to_cpu(rtd, i) = snd_soc_find_dai(cpu);
+		if (!snd_soc_rtd_to_cpu(rtd, i)) {
 			dev_info(card->dev, "ASoC: CPU DAI %s not registered\n",
 				 cpu->dai_name);
 			goto _err_defer;
 		}
-		snd_soc_rtd_add_component(rtd, asoc_rtd_to_cpu(rtd, i)->component);
+		snd_soc_rtd_add_component(rtd, snd_soc_rtd_to_cpu(rtd, i)->component);
 	}
 
 	/* Find CODEC from registered CODECs */
 	for_each_link_codecs(dai_link, i, codec) {
-		asoc_rtd_to_codec(rtd, i) = snd_soc_find_dai(codec);
-		if (!asoc_rtd_to_codec(rtd, i)) {
+		snd_soc_rtd_to_codec(rtd, i) = snd_soc_find_dai(codec);
+		if (!snd_soc_rtd_to_codec(rtd, i)) {
 			dev_info(card->dev, "ASoC: CODEC DAI %s not registered\n",
 				 codec->dai_name);
 			goto _err_defer;
 		}
 
-		snd_soc_rtd_add_component(rtd, asoc_rtd_to_codec(rtd, i)->component);
+		snd_soc_rtd_add_component(rtd, snd_soc_rtd_to_codec(rtd, i)->component);
 	}
 
 	/* Find PLATFORM from registered PLATFORMs */
@@ -1105,9 +1218,34 @@ static int snd_soc_add_pcm_runtime(struct snd_soc_card *card,
 			if (!snd_soc_is_matching_component(platform, component))
 				continue;
 
+			if (snd_soc_component_is_dummy(component) && component->num_dai)
+				continue;
+
 			snd_soc_rtd_add_component(rtd, component);
 		}
 	}
+
+	/*
+	 * Most drivers will register their PCMs using DAI link ordering but
+	 * topology based drivers can use the DAI link id field to set PCM
+	 * device number and then use rtd + a base offset of the BEs.
+	 *
+	 * FIXME
+	 *
+	 * This should be implemented by using "dai_link" feature instead of
+	 * "component" feature.
+	 */
+	id = rtd->id;
+	for_each_rtd_components(rtd, i, component) {
+		if (!component->driver->use_dai_pcm_id)
+			continue;
+
+		if (rtd->dai_link->no_pcm)
+			id += component->driver->be_pcm_base;
+		else
+			id = rtd->dai_link->id;
+	}
+	rtd->id = id;
 
 	return 0;
 
@@ -1121,8 +1259,13 @@ int snd_soc_add_pcm_runtimes(struct snd_soc_card *card,
 			     int num_dai_link)
 {
 	for (int i = 0; i < num_dai_link; i++) {
-		int ret = snd_soc_add_pcm_runtime(card, dai_link + i);
+		int ret;
 
+		ret = snd_soc_compensate_channel_connection_map(card, dai_link + i);
+		if (ret < 0)
+			return ret;
+
+		ret = snd_soc_add_pcm_runtime(card, dai_link + i);
 		if (ret < 0)
 			return ret;
 	}
@@ -1206,7 +1349,7 @@ found:
 	 *
 	 * To avoid such issue, loop from 63 to 0 here.
 	 * Small number of SND_SOC_POSSIBLE_xxx will be Hi priority.
-	 * Basic/Default settings of each part and aboves are defined
+	 * Basic/Default settings of each part and above are defined
 	 * as Hi priority (= small number) of SND_SOC_POSSIBLE_xxx.
 	 */
 	for (i = 63; i >= 0; i--) {
@@ -1306,23 +1449,46 @@ int snd_soc_runtime_set_dai_fmt(struct snd_soc_pcm_runtime *rtd,
 {
 	struct snd_soc_dai *cpu_dai;
 	struct snd_soc_dai *codec_dai;
+	unsigned int ext_fmt;
 	unsigned int i;
 	int ret;
 
 	if (!dai_fmt)
 		return 0;
 
+	/*
+	 * dai_fmt has 4 types
+	 *	1. SND_SOC_DAIFMT_FORMAT_MASK
+	 *	2. SND_SOC_DAIFMT_CLOCK
+	 *	3. SND_SOC_DAIFMT_INV
+	 *	4. SND_SOC_DAIFMT_CLOCK_PROVIDER
+	 *
+	 * 4. CLOCK_PROVIDER is set from Codec perspective in dai_fmt. So it will be flipped
+	 * when this function calls set_fmt() for CPU (CBx_CFx -> Bx_Cx). see below.
+	 * This mean, we can't set CPU/Codec both are clock consumer for example.
+	 * New idea handles 4. in each dai->ext_fmt. It can keep compatibility.
+	 *
+	 * Legacy
+	 *	dai_fmt  includes 1, 2, 3, 4
+	 *
+	 * New idea
+	 *	dai_fmt  includes 1, 2, 3
+	 *	ext_fmt  includes 4
+	 */
 	for_each_rtd_codec_dais(rtd, i, codec_dai) {
-		ret = snd_soc_dai_set_fmt(codec_dai, dai_fmt);
+		ext_fmt = rtd->dai_link->codecs[i].ext_fmt;
+		ret = snd_soc_dai_set_fmt(codec_dai, dai_fmt | ext_fmt);
 		if (ret != 0 && ret != -ENOTSUPP)
 			return ret;
 	}
 
 	/* Flip the polarity for the "CPU" end of link */
+	/* Will effect only for 4. SND_SOC_DAIFMT_CLOCK_PROVIDER */
 	dai_fmt = snd_soc_daifmt_clock_provider_flipped(dai_fmt);
 
 	for_each_rtd_cpu_dais(rtd, i, cpu_dai) {
-		ret = snd_soc_dai_set_fmt(cpu_dai, dai_fmt);
+		ext_fmt = rtd->dai_link->cpus[i].ext_fmt;
+		ret = snd_soc_dai_set_fmt(cpu_dai, dai_fmt | ext_fmt);
 		if (ret != 0 && ret != -ENOTSUPP)
 			return ret;
 	}
@@ -1335,9 +1501,8 @@ static int soc_init_pcm_runtime(struct snd_soc_card *card,
 				struct snd_soc_pcm_runtime *rtd)
 {
 	struct snd_soc_dai_link *dai_link = rtd->dai_link;
-	struct snd_soc_dai *cpu_dai = asoc_rtd_to_cpu(rtd, 0);
-	struct snd_soc_component *component;
-	int ret, num, i;
+	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
+	int ret;
 
 	/* do machine specific initialization */
 	ret = snd_soc_link_init(rtd);
@@ -1352,30 +1517,13 @@ static int soc_init_pcm_runtime(struct snd_soc_card *card,
 	/* add DPCM sysfs entries */
 	soc_dpcm_debugfs_add(rtd);
 
-	num = rtd->num;
-
-	/*
-	 * most drivers will register their PCMs using DAI link ordering but
-	 * topology based drivers can use the DAI link id field to set PCM
-	 * device number and then use rtd + a base offset of the BEs.
-	 */
-	for_each_rtd_components(rtd, i, component) {
-		if (!component->driver->use_dai_pcm_id)
-			continue;
-
-		if (rtd->dai_link->no_pcm)
-			num += component->driver->be_pcm_base;
-		else
-			num = rtd->dai_link->id;
-	}
-
 	/* create compress_device if possible */
-	ret = snd_soc_dai_compress_new(cpu_dai, rtd, num);
+	ret = snd_soc_dai_compress_new(cpu_dai, rtd);
 	if (ret != -ENOTSUPP)
 		goto err;
 
 	/* create the pcm */
-	ret = soc_new_pcm(rtd, num);
+	ret = soc_new_pcm(rtd);
 	if (ret < 0) {
 		dev_err(card->dev, "ASoC: can't create pcm %s :%d\n",
 			dai_link->stream_name, ret);
@@ -1519,18 +1667,8 @@ static int soc_probe_component(struct snd_soc_card *card,
 	ret = snd_soc_dapm_add_routes(dapm,
 				      component->driver->dapm_routes,
 				      component->driver->num_dapm_routes);
-	if (ret < 0) {
-		if (card->disable_route_checks) {
-			dev_info(card->dev,
-				 "%s: disable_route_checks set, ignoring errors on add_routes\n",
-				 __func__);
-		} else {
-			dev_err(card->dev,
-				"%s: snd_soc_dapm_add_routes failed: %d\n",
-				__func__, ret);
-			goto err_probe;
-		}
-	}
+	if (ret < 0)
+		goto err_probe;
 
 	/* see for_each_card_components */
 	list_add(&component->card_list, &card->component_dev_list);
@@ -1752,7 +1890,7 @@ static void append_dmi_string(struct snd_soc_card *card, const char *str)
  * @flavour: The flavour "differentiator" for the card amongst its peers.
  *
  * An Intel machine driver may be used by many different devices but are
- * difficult for userspace to differentiate, since machine drivers ususally
+ * difficult for userspace to differentiate, since machine drivers usually
  * use their own name as the card short name and leave the card long name
  * blank. To differentiate such devices and fix bugs due to lack of
  * device-specific configurations, this function allows DMI info to be used
@@ -1773,7 +1911,7 @@ static void append_dmi_string(struct snd_soc_card *card, const char *str)
  * We only keep number and alphabet characters and a few separator characters
  * in the card long name since UCM in the user space uses the card long names
  * as card configuration directory names and AudoConf cannot support special
- * charactors like SPACE.
+ * characters like SPACE.
  *
  * Returns 0 on success, otherwise a negative error code.
  */
@@ -1878,25 +2016,7 @@ match:
 				dai_link->platforms->name = component->name;
 
 			/* convert non BE into BE */
-			if (!dai_link->no_pcm) {
-				dai_link->no_pcm = 1;
-
-				if (dai_link->dpcm_playback)
-					dev_warn(card->dev,
-						 "invalid configuration, dailink %s has flags no_pcm=0 and dpcm_playback=1\n",
-						 dai_link->name);
-				if (dai_link->dpcm_capture)
-					dev_warn(card->dev,
-						 "invalid configuration, dailink %s has flags no_pcm=0 and dpcm_capture=1\n",
-						 dai_link->name);
-
-				/* convert normal link into DPCM one */
-				if (!(dai_link->dpcm_playback ||
-				      dai_link->dpcm_capture)) {
-					dai_link->dpcm_playback = !dai_link->capture_only;
-					dai_link->dpcm_capture = !dai_link->playback_only;
-				}
-			}
+			dai_link->no_pcm = 1;
 
 			/*
 			 * override any BE fixups
@@ -2038,6 +2158,8 @@ static int snd_soc_bind_card(struct snd_soc_card *card)
 	mutex_lock(&client_mutex);
 	snd_soc_card_mutex_lock_root(card);
 
+	snd_soc_fill_dummy_dai(card);
+
 	snd_soc_dapm_init(&card->dapm, card, NULL);
 
 	/* check whether any platform is ignore machine FE and using topology */
@@ -2125,18 +2247,8 @@ static int snd_soc_bind_card(struct snd_soc_card *card)
 
 	ret = snd_soc_dapm_add_routes(&card->dapm, card->dapm_routes,
 				      card->num_dapm_routes);
-	if (ret < 0) {
-		if (card->disable_route_checks) {
-			dev_info(card->dev,
-				 "%s: disable_route_checks set, ignoring errors on add_routes\n",
-				 __func__);
-		} else {
-			dev_err(card->dev,
-				 "%s: snd_soc_dapm_add_routes failed: %d\n",
-				 __func__, ret);
-			goto probe_end;
-		}
-	}
+	if (ret < 0)
+		goto probe_end;
 
 	ret = snd_soc_dapm_add_routes(&card->dapm, card->of_dapm_routes,
 				      card->num_of_dapm_routes);
@@ -2368,7 +2480,7 @@ EXPORT_SYMBOL_GPL(snd_soc_add_card_controls);
 
 /**
  * snd_soc_add_dai_controls - add an array of controls to a DAI.
- * Convienience function to add a list of controls.
+ * Convenience function to add a list of controls.
  *
  * @dai: DAI to add controls to
  * @controls: array of controls to add
@@ -2672,10 +2784,12 @@ int snd_soc_component_initialize(struct snd_soc_component *component,
 	INIT_LIST_HEAD(&component->list);
 	mutex_init(&component->io_mutex);
 
-	component->name = fmt_single_name(dev, &component->id);
 	if (!component->name) {
-		dev_err(dev, "ASoC: Failed to allocate name\n");
-		return -ENOMEM;
+		component->name = fmt_single_name(dev, &component->id);
+		if (!component->name) {
+			dev_err(dev, "ASoC: Failed to allocate name\n");
+			return -ENOMEM;
+		}
 	}
 
 	component->dev		= dev;
@@ -3246,10 +3360,10 @@ unsigned int snd_soc_daifmt_parse_format(struct device_node *np,
 	 * SND_SOC_DAIFMT_INV_MASK area
 	 */
 	snprintf(prop, sizeof(prop), "%sbitclock-inversion", prefix);
-	bit = !!of_get_property(np, prop, NULL);
+	bit = of_property_read_bool(np, prop);
 
 	snprintf(prop, sizeof(prop), "%sframe-inversion", prefix);
-	frame = !!of_get_property(np, prop, NULL);
+	frame = of_property_read_bool(np, prop);
 
 	switch ((bit << 4) + frame) {
 	case 0x11:
@@ -3278,6 +3392,9 @@ unsigned int snd_soc_daifmt_parse_clock_provider_raw(struct device_node *np,
 	char prop[128];
 	unsigned int bit, frame;
 
+	if (!np)
+		return 0;
+
 	if (!prefix)
 		prefix = "";
 
@@ -3286,12 +3403,12 @@ unsigned int snd_soc_daifmt_parse_clock_provider_raw(struct device_node *np,
 	 * check "[prefix]frame-master"
 	 */
 	snprintf(prop, sizeof(prop), "%sbitclock-master", prefix);
-	bit = !!of_get_property(np, prop, NULL);
+	bit = of_property_read_bool(np, prop);
 	if (bit && bitclkmaster)
 		*bitclkmaster = of_parse_phandle(np, prop, 0);
 
 	snprintf(prop, sizeof(prop), "%sframe-master", prefix);
-	frame = !!of_get_property(np, prop, NULL);
+	frame = of_property_read_bool(np, prop);
 	if (frame && framemaster)
 		*framemaster = of_parse_phandle(np, prop, 0);
 
@@ -3304,7 +3421,7 @@ unsigned int snd_soc_daifmt_parse_clock_provider_raw(struct device_node *np,
 }
 EXPORT_SYMBOL_GPL(snd_soc_daifmt_parse_clock_provider_raw);
 
-int snd_soc_get_stream_cpu(struct snd_soc_dai_link *dai_link, int stream)
+int snd_soc_get_stream_cpu(const struct snd_soc_dai_link *dai_link, int stream)
 {
 	/*
 	 * [Normal]
@@ -3477,7 +3594,7 @@ int snd_soc_of_get_dai_name(struct device_node *of_node,
 }
 EXPORT_SYMBOL_GPL(snd_soc_of_get_dai_name);
 
-struct snd_soc_dai *snd_soc_get_dai_via_args(struct of_phandle_args *dai_args)
+struct snd_soc_dai *snd_soc_get_dai_via_args(const struct of_phandle_args *dai_args)
 {
 	struct snd_soc_dai *dai;
 	struct snd_soc_component *component;

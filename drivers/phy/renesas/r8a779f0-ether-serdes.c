@@ -214,6 +214,10 @@ static int r8a779f0_eth_serdes_hw_init(struct r8a779f0_eth_serdes_channel *chann
 	if (dd->initialized)
 		return 0;
 
+	reset_control_reset(dd->reset);
+
+	usleep_range(1000, 2000);
+
 	ret = r8a779f0_eth_serdes_common_init_ram(dd);
 	if (ret)
 		return ret;
@@ -255,6 +259,15 @@ static int r8a779f0_eth_serdes_init(struct phy *p)
 		channel->dd->initialized = true;
 
 	return ret;
+}
+
+static int r8a779f0_eth_serdes_exit(struct phy *p)
+{
+	struct r8a779f0_eth_serdes_channel *channel = phy_get_drvdata(p);
+
+	channel->dd->initialized = false;
+
+	return 0;
 }
 
 static int r8a779f0_eth_serdes_hw_init_late(struct r8a779f0_eth_serdes_channel
@@ -314,13 +327,14 @@ static int r8a779f0_eth_serdes_set_speed(struct phy *p, int speed)
 
 static const struct phy_ops r8a779f0_eth_serdes_ops = {
 	.init		= r8a779f0_eth_serdes_init,
+	.exit		= r8a779f0_eth_serdes_exit,
 	.power_on	= r8a779f0_eth_serdes_power_on,
 	.set_mode	= r8a779f0_eth_serdes_set_mode,
 	.set_speed	= r8a779f0_eth_serdes_set_speed,
 };
 
 static struct phy *r8a779f0_eth_serdes_xlate(struct device *dev,
-					     struct of_phandle_args *args)
+					     const struct of_phandle_args *args)
 {
 	struct r8a779f0_eth_serdes_drv_data *dd = dev_get_drvdata(dev);
 
@@ -356,8 +370,6 @@ static int r8a779f0_eth_serdes_probe(struct platform_device *pdev)
 	if (IS_ERR(dd->reset))
 		return PTR_ERR(dd->reset);
 
-	reset_control_reset(dd->reset);
-
 	for (i = 0; i < R8A779F0_ETH_SERDES_NUM; i++) {
 		struct r8a779f0_eth_serdes_channel *channel = &dd->channel[i];
 
@@ -392,7 +404,7 @@ static void r8a779f0_eth_serdes_remove(struct platform_device *pdev)
 
 static struct platform_driver r8a779f0_eth_serdes_driver_platform = {
 	.probe = r8a779f0_eth_serdes_probe,
-	.remove_new = r8a779f0_eth_serdes_remove,
+	.remove = r8a779f0_eth_serdes_remove,
 	.driver = {
 		.name = "r8a779f0_eth_serdes",
 		.of_match_table = r8a779f0_eth_serdes_of_table,

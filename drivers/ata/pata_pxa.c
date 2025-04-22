@@ -274,10 +274,9 @@ static int pxa_ata_probe(struct platform_device *pdev)
 	/*
 	 * Request the DMA channel
 	 */
-	data->dma_chan =
-		dma_request_slave_channel(&pdev->dev, "data");
-	if (!data->dma_chan)
-		return -EBUSY;
+	data->dma_chan = dma_request_chan(&pdev->dev, "data");
+	if (IS_ERR(data->dma_chan))
+		return PTR_ERR(data->dma_chan);
 	ret = dmaengine_slave_config(data->dma_chan, &config);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "dma configuration failed: %d\n", ret);
@@ -307,7 +306,7 @@ static void pxa_ata_remove(struct platform_device *pdev)
 
 static struct platform_driver pxa_ata_driver = {
 	.probe		= pxa_ata_probe,
-	.remove_new	= pxa_ata_remove,
+	.remove		= pxa_ata_remove,
 	.driver		= {
 		.name		= DRV_NAME,
 	},

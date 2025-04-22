@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //
-// Copyright(c) 2021-2022 Intel Corporation. All rights reserved.
+// Copyright(c) 2021-2022 Intel Corporation
 //
 // Authors: Cezary Rojewski <cezary.rojewski@intel.com>
 //          Amadeusz Slawinski <amadeuszx.slawinski@linux.intel.com>
@@ -22,7 +22,7 @@ static struct snd_soc_dai_link card_dai_links[] = {
 	{
 		.name = "DMIC",
 		.id = 0,
-		.dpcm_capture = 1,
+		.capture_only = 1,
 		.nonatomic = 1,
 		.no_pcm = 1,
 		SND_SOC_DAILINK_REG(dmic_pin, dmic_codec, platform),
@@ -30,7 +30,7 @@ static struct snd_soc_dai_link card_dai_links[] = {
 	{
 		.name = "DMIC WoV",
 		.id = 1,
-		.dpcm_capture = 1,
+		.capture_only = 1,
 		.nonatomic = 1,
 		.no_pcm = 1,
 		.ignore_suspend = 1,
@@ -77,15 +77,24 @@ static int avs_dmic_probe(struct platform_device *pdev)
 	return devm_snd_soc_register_card(dev, card);
 }
 
+static const struct platform_device_id avs_dmic_driver_ids[] = {
+	{
+		.name = "avs_dmic",
+	},
+	{},
+};
+MODULE_DEVICE_TABLE(platform, avs_dmic_driver_ids);
+
 static struct platform_driver avs_dmic_driver = {
 	.probe = avs_dmic_probe,
 	.driver = {
 		.name = "avs_dmic",
 		.pm = &snd_soc_pm_ops,
 	},
+	.id_table = avs_dmic_driver_ids,
 };
 
 module_platform_driver(avs_dmic_driver);
 
+MODULE_DESCRIPTION("Intel DMIC machine driver");
 MODULE_LICENSE("GPL");
-MODULE_ALIAS("platform:avs_dmic");

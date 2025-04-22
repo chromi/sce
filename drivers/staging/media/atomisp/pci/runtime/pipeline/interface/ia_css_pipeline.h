@@ -2,15 +2,6 @@
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  * Copyright (c) 2010 - 2015, Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
 #ifndef __IA_CSS_PIPELINE_H__
@@ -241,7 +232,6 @@ bool ia_css_pipeline_uses_params(struct ia_css_pipeline *pipeline);
  */
 bool ia_css_pipeline_get_sp_thread_id(unsigned int key, unsigned int *val);
 
-#if defined(ISP2401)
 /**
  * @brief Get the pipeline io status
  *
@@ -250,7 +240,6 @@ bool ia_css_pipeline_get_sp_thread_id(unsigned int key, unsigned int *val);
  *	Pointer to pipe_io_status
  */
 struct sh_css_sp_pipeline_io_status *ia_css_pipeline_get_pipe_io_status(void);
-#endif
 
 /**
  * @brief Map an SP thread to this pipeline

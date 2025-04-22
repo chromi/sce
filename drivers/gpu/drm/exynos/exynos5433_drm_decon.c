@@ -319,9 +319,9 @@ static void decon_win_set_bldmod(struct decon_context *ctx, unsigned int win,
 static void decon_win_set_pixfmt(struct decon_context *ctx, unsigned int win,
 				 struct drm_framebuffer *fb)
 {
-	struct exynos_drm_plane plane = ctx->planes[win];
+	struct exynos_drm_plane *plane = &ctx->planes[win];
 	struct exynos_drm_plane_state *state =
-		to_exynos_plane_state(plane.base.state);
+		to_exynos_plane_state(plane->base.state);
 	unsigned int alpha = state->base.alpha;
 	unsigned int pixel_alpha;
 	unsigned long val;
@@ -862,13 +862,11 @@ err_disable_pm_runtime:
 	return ret;
 }
 
-static int exynos5433_decon_remove(struct platform_device *pdev)
+static void exynos5433_decon_remove(struct platform_device *pdev)
 {
 	pm_runtime_disable(&pdev->dev);
 
 	component_del(&pdev->dev, &decon_component_ops);
-
-	return 0;
 }
 
 struct platform_driver exynos5433_decon_driver = {

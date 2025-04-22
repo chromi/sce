@@ -582,10 +582,10 @@ static void ocelot_port_rmon_stats_cb(struct ocelot *ocelot, int port, void *pri
 	rmon_stats->hist_tx[0] = s[OCELOT_STAT_TX_64];
 	rmon_stats->hist_tx[1] = s[OCELOT_STAT_TX_65_127];
 	rmon_stats->hist_tx[2] = s[OCELOT_STAT_TX_128_255];
-	rmon_stats->hist_tx[3] = s[OCELOT_STAT_TX_128_255];
-	rmon_stats->hist_tx[4] = s[OCELOT_STAT_TX_256_511];
-	rmon_stats->hist_tx[5] = s[OCELOT_STAT_TX_512_1023];
-	rmon_stats->hist_tx[6] = s[OCELOT_STAT_TX_1024_1526];
+	rmon_stats->hist_tx[3] = s[OCELOT_STAT_TX_256_511];
+	rmon_stats->hist_tx[4] = s[OCELOT_STAT_TX_512_1023];
+	rmon_stats->hist_tx[5] = s[OCELOT_STAT_TX_1024_1526];
+	rmon_stats->hist_tx[6] = s[OCELOT_STAT_TX_1527_MAX];
 }
 
 static void ocelot_port_pmac_rmon_stats_cb(struct ocelot *ocelot, int port,
@@ -610,10 +610,10 @@ static void ocelot_port_pmac_rmon_stats_cb(struct ocelot *ocelot, int port,
 	rmon_stats->hist_tx[0] = s[OCELOT_STAT_TX_PMAC_64];
 	rmon_stats->hist_tx[1] = s[OCELOT_STAT_TX_PMAC_65_127];
 	rmon_stats->hist_tx[2] = s[OCELOT_STAT_TX_PMAC_128_255];
-	rmon_stats->hist_tx[3] = s[OCELOT_STAT_TX_PMAC_128_255];
-	rmon_stats->hist_tx[4] = s[OCELOT_STAT_TX_PMAC_256_511];
-	rmon_stats->hist_tx[5] = s[OCELOT_STAT_TX_PMAC_512_1023];
-	rmon_stats->hist_tx[6] = s[OCELOT_STAT_TX_PMAC_1024_1526];
+	rmon_stats->hist_tx[3] = s[OCELOT_STAT_TX_PMAC_256_511];
+	rmon_stats->hist_tx[4] = s[OCELOT_STAT_TX_PMAC_512_1023];
+	rmon_stats->hist_tx[5] = s[OCELOT_STAT_TX_PMAC_1024_1526];
+	rmon_stats->hist_tx[6] = s[OCELOT_STAT_TX_PMAC_1527_MAX];
 }
 
 void ocelot_port_get_rmon_stats(struct ocelot *ocelot, int port,
@@ -821,6 +821,26 @@ void ocelot_port_get_eth_phy_stats(struct ocelot *ocelot, int port,
 }
 EXPORT_SYMBOL_GPL(ocelot_port_get_eth_phy_stats);
 
+void ocelot_port_get_ts_stats(struct ocelot *ocelot, int port,
+			      struct ethtool_ts_stats *ts_stats)
+{
+	struct ocelot_port *ocelot_port = ocelot->ports[port];
+	struct ocelot_ts_stats *stats = ocelot_port->ts_stats;
+	unsigned int start;
+
+	if (!ocelot->ptp)
+		return;
+
+	do {
+		start = u64_stats_fetch_begin(&stats->syncp);
+		ts_stats->pkts = stats->pkts;
+		ts_stats->onestep_pkts_unconfirmed = stats->onestep_pkts_unconfirmed;
+		ts_stats->lost = stats->lost;
+		ts_stats->err = stats->err;
+	} while (u64_stats_fetch_retry(&stats->syncp, start));
+}
+EXPORT_SYMBOL_GPL(ocelot_port_get_ts_stats);
+
 void ocelot_port_get_stats64(struct ocelot *ocelot, int port,
 			     struct rtnl_link_stats64 *stats)
 {
@@ -959,6 +979,23 @@ int ocelot_stats_init(struct ocelot *ocelot)
 				     sizeof(u64), GFP_KERNEL);
 	if (!ocelot->stats)
 		return -ENOMEM;
+
+	if (ocelot->ptp) {
+		for (int port = 0; port < ocelot->num_phys_ports; port++) {
+			struct ocelot_port *ocelot_port = ocelot->ports[port];
+
+			if (!ocelot_port)
+				continue;
+
+			ocelot_port->ts_stats = devm_kzalloc(ocelot->dev,
+							     sizeof(*ocelot_port->ts_stats),
+							     GFP_KERNEL);
+			if (!ocelot_port->ts_stats)
+				return -ENOMEM;
+
+			u64_stats_init(&ocelot_port->ts_stats->syncp);
+		}
+	}
 
 	snprintf(queue_name, sizeof(queue_name), "%s-stats",
 		 dev_name(ocelot->dev));

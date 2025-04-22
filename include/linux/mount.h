@@ -50,8 +50,7 @@ struct path;
 #define MNT_ATIME_MASK (MNT_NOATIME | MNT_NODIRATIME | MNT_RELATIME )
 
 #define MNT_INTERNAL_FLAGS (MNT_SHARED | MNT_WRITE_HOLD | MNT_INTERNAL | \
-			    MNT_DOOMED | MNT_SYNC_UMOUNT | MNT_MARKED | \
-			    MNT_CURSOR)
+			    MNT_DOOMED | MNT_SYNC_UMOUNT | MNT_MARKED)
 
 #define MNT_INTERNAL	0x4000
 
@@ -65,7 +64,6 @@ struct path;
 #define MNT_SYNC_UMOUNT		0x2000000
 #define MNT_MARKED		0x4000000
 #define MNT_UMOUNT		0x8000000
-#define MNT_CURSOR		0x10000000
 
 struct vfsmount {
 	struct dentry *mnt_root;	/* root of the mounted tree */
@@ -77,7 +75,7 @@ struct vfsmount {
 static inline struct mnt_idmap *mnt_idmap(const struct vfsmount *mnt)
 {
 	/* Pairs with smp_store_release() in do_idmap_mount(). */
-	return smp_load_acquire(&mnt->mnt_idmap);
+	return READ_ONCE(mnt->mnt_idmap);
 }
 
 extern int mnt_want_write(struct vfsmount *mnt);
@@ -92,8 +90,8 @@ extern bool __mnt_is_readonly(struct vfsmount *mnt);
 extern bool mnt_may_suid(struct vfsmount *mnt);
 
 extern struct vfsmount *clone_private_mount(const struct path *path);
-extern int __mnt_want_write(struct vfsmount *);
-extern void __mnt_drop_write(struct vfsmount *);
+int mnt_get_write_access(struct vfsmount *mnt);
+void mnt_put_write_access(struct vfsmount *mnt);
 
 extern struct vfsmount *fc_mount(struct fs_context *fc);
 extern struct vfsmount *vfs_create_mount(struct fs_context *fc);
@@ -115,7 +113,7 @@ extern struct vfsmount *kern_mount(struct file_system_type *);
 extern void kern_unmount(struct vfsmount *mnt);
 extern int may_umount_tree(struct vfsmount *);
 extern int may_umount(struct vfsmount *);
-extern long do_mount(const char *, const char __user *,
+int do_mount(const char *, const char __user *,
 		     const char *, unsigned long, void *);
 extern struct vfsmount *collect_mounts(const struct path *);
 extern void drop_collected_mounts(struct vfsmount *);

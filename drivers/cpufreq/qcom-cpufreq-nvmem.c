@@ -23,12 +23,27 @@
 #include <linux/nvmem-consumer.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/pm.h>
 #include <linux/pm_domain.h>
 #include <linux/pm_opp.h>
+#include <linux/pm_runtime.h>
 #include <linux/slab.h>
 #include <linux/soc/qcom/smem.h>
 
 #include <dt-bindings/arm/qcom,ids.h>
+
+enum ipq806x_versions {
+	IPQ8062_VERSION = 0,
+	IPQ8064_VERSION,
+	IPQ8065_VERSION,
+};
+
+#define IPQ6000_VERSION	BIT(2)
+
+enum ipq8074_versions {
+	IPQ8074_HAWKEYE_VERSION = 0,
+	IPQ8074_ACORN_VERSION,
+};
 
 struct qcom_cpufreq_drv;
 
@@ -37,19 +52,43 @@ struct qcom_cpufreq_match_data {
 			   struct nvmem_cell *speedbin_nvmem,
 			   char **pvs_name,
 			   struct qcom_cpufreq_drv *drv);
-	const char **genpd_names;
+	const char **pd_names;
+	unsigned int num_pd_names;
+};
+
+struct qcom_cpufreq_drv_cpu {
+	int opp_token;
+	struct dev_pm_domain_list *pd_list;
 };
 
 struct qcom_cpufreq_drv {
-	int *opp_tokens;
 	u32 versions;
 	const struct qcom_cpufreq_match_data *data;
+	struct qcom_cpufreq_drv_cpu cpus[];
 };
 
 static struct platform_device *cpufreq_dt_pdev, *cpufreq_pdev;
 
+static int qcom_cpufreq_simple_get_version(struct device *cpu_dev,
+					   struct nvmem_cell *speedbin_nvmem,
+					   char **pvs_name,
+					   struct qcom_cpufreq_drv *drv)
+{
+	u8 *speedbin;
+
+	*pvs_name = NULL;
+	speedbin = nvmem_cell_read(speedbin_nvmem, NULL);
+	if (IS_ERR(speedbin))
+		return PTR_ERR(speedbin);
+
+	dev_dbg(cpu_dev, "speedbin: %d\n", *speedbin);
+	drv->versions = 1 << *speedbin;
+	kfree(speedbin);
+	return 0;
+}
+
 static void get_krait_bin_format_a(struct device *cpu_dev,
-					  int *speed, int *pvs, int *pvs_ver,
+					  int *speed, int *pvs,
 					  u8 *buf)
 {
 	u32 pte_efuse;
@@ -148,6 +187,17 @@ static int qcom_cpufreq_kryo_name_version(struct device *cpu_dev,
 	switch (msm_id) {
 	case QCOM_ID_MSM8996:
 	case QCOM_ID_APQ8096:
+	case QCOM_ID_IPQ5332:
+	case QCOM_ID_IPQ5322:
+	case QCOM_ID_IPQ5312:
+	case QCOM_ID_IPQ5302:
+	case QCOM_ID_IPQ5300:
+	case QCOM_ID_IPQ5321:
+	case QCOM_ID_IPQ9514:
+	case QCOM_ID_IPQ9550:
+	case QCOM_ID_IPQ9554:
+	case QCOM_ID_IPQ9570:
+	case QCOM_ID_IPQ9574:
 		drv->versions = 1 << (unsigned int)(*speedbin);
 		break;
 	case QCOM_ID_MSM8996SG:
@@ -180,8 +230,7 @@ static int qcom_cpufreq_krait_name_version(struct device *cpu_dev,
 
 	switch (len) {
 	case 4:
-		get_krait_bin_format_a(cpu_dev, &speed, &pvs, &pvs_ver,
-				       speedbin);
+		get_krait_bin_format_a(cpu_dev, &speed, &pvs, speedbin);
 		break;
 	case 8:
 		get_krait_bin_format_b(cpu_dev, &speed, &pvs, &pvs_ver,
@@ -203,6 +252,150 @@ len_error:
 	return ret;
 }
 
+static int qcom_cpufreq_ipq8064_name_version(struct device *cpu_dev,
+					     struct nvmem_cell *speedbin_nvmem,
+					     char **pvs_name,
+					     struct qcom_cpufreq_drv *drv)
+{
+	int speed = 0, pvs = 0;
+	int msm_id, ret = 0;
+	u8 *speedbin;
+	size_t len;
+
+	speedbin = nvmem_cell_read(speedbin_nvmem, &len);
+	if (IS_ERR(speedbin))
+		return PTR_ERR(speedbin);
+
+	if (len != 4) {
+		dev_err(cpu_dev, "Unable to read nvmem data. Defaulting to 0!\n");
+		ret = -ENODEV;
+		goto exit;
+	}
+
+	get_krait_bin_format_a(cpu_dev, &speed, &pvs, speedbin);
+
+	ret = qcom_smem_get_soc_id(&msm_id);
+	if (ret)
+		goto exit;
+
+	switch (msm_id) {
+	case QCOM_ID_IPQ8062:
+		drv->versions = BIT(IPQ8062_VERSION);
+		break;
+	case QCOM_ID_IPQ8064:
+	case QCOM_ID_IPQ8066:
+	case QCOM_ID_IPQ8068:
+		drv->versions = BIT(IPQ8064_VERSION);
+		break;
+	case QCOM_ID_IPQ8065:
+	case QCOM_ID_IPQ8069:
+		drv->versions = BIT(IPQ8065_VERSION);
+		break;
+	default:
+		dev_err(cpu_dev,
+			"SoC ID %u is not part of IPQ8064 family, limiting to 1.0GHz!\n",
+			msm_id);
+		drv->versions = BIT(IPQ8062_VERSION);
+		break;
+	}
+
+	/* IPQ8064 speed is never fused. Only pvs values are fused. */
+	snprintf(*pvs_name, sizeof("speed0-pvsXX"), "speed0-pvs%d", pvs);
+
+exit:
+	kfree(speedbin);
+	return ret;
+}
+
+static int qcom_cpufreq_ipq6018_name_version(struct device *cpu_dev,
+					     struct nvmem_cell *speedbin_nvmem,
+					     char **pvs_name,
+					     struct qcom_cpufreq_drv *drv)
+{
+	u32 msm_id;
+	int ret;
+	u8 *speedbin;
+	*pvs_name = NULL;
+
+	ret = qcom_smem_get_soc_id(&msm_id);
+	if (ret)
+		return ret;
+
+	speedbin = nvmem_cell_read(speedbin_nvmem, NULL);
+	if (IS_ERR(speedbin))
+		return PTR_ERR(speedbin);
+
+	switch (msm_id) {
+	case QCOM_ID_IPQ6005:
+	case QCOM_ID_IPQ6010:
+	case QCOM_ID_IPQ6018:
+	case QCOM_ID_IPQ6028:
+		/* Fuse Value    Freq    BIT to set
+		 * ---------------------------------
+		 *   2’b0     No Limit     BIT(0)
+		 *   2’b1     1.5 GHz      BIT(1)
+		 */
+		drv->versions = 1 << (unsigned int)(*speedbin);
+		break;
+	case QCOM_ID_IPQ6000:
+		/*
+		 * IPQ6018 family only has one bit to advertise the CPU
+		 * speed-bin, but that is not enough for IPQ6000 which
+		 * is only rated up to 1.2GHz.
+		 * So for IPQ6000 manually set BIT(2) based on SMEM ID.
+		 */
+		drv->versions = IPQ6000_VERSION;
+		break;
+	default:
+		dev_err(cpu_dev,
+			"SoC ID %u is not part of IPQ6018 family, limiting to 1.2GHz!\n",
+			msm_id);
+		drv->versions = IPQ6000_VERSION;
+		break;
+	}
+
+	kfree(speedbin);
+	return 0;
+}
+
+static int qcom_cpufreq_ipq8074_name_version(struct device *cpu_dev,
+					     struct nvmem_cell *speedbin_nvmem,
+					     char **pvs_name,
+					     struct qcom_cpufreq_drv *drv)
+{
+	u32 msm_id;
+	int ret;
+	*pvs_name = NULL;
+
+	ret = qcom_smem_get_soc_id(&msm_id);
+	if (ret)
+		return ret;
+
+	switch (msm_id) {
+	case QCOM_ID_IPQ8070A:
+	case QCOM_ID_IPQ8071A:
+	case QCOM_ID_IPQ8172:
+	case QCOM_ID_IPQ8173:
+	case QCOM_ID_IPQ8174:
+		drv->versions = BIT(IPQ8074_ACORN_VERSION);
+		break;
+	case QCOM_ID_IPQ8072A:
+	case QCOM_ID_IPQ8074A:
+	case QCOM_ID_IPQ8076A:
+	case QCOM_ID_IPQ8078A:
+		drv->versions = BIT(IPQ8074_HAWKEYE_VERSION);
+		break;
+	default:
+		dev_err(cpu_dev,
+			"SoC ID %u is not part of IPQ8074 family, limiting to 1.4GHz!\n",
+			msm_id);
+		drv->versions = BIT(IPQ8074_ACORN_VERSION);
+		break;
+	}
+
+	return 0;
+}
+
 static const struct qcom_cpufreq_match_data match_data_kryo = {
 	.get_version = qcom_cpufreq_kryo_name_version,
 };
@@ -211,17 +404,45 @@ static const struct qcom_cpufreq_match_data match_data_krait = {
 	.get_version = qcom_cpufreq_krait_name_version,
 };
 
-static const char *qcs404_genpd_names[] = { "cpr", NULL };
+static const struct qcom_cpufreq_match_data match_data_msm8909 = {
+	.get_version = qcom_cpufreq_simple_get_version,
+	.pd_names = (const char *[]) { "perf" },
+	.num_pd_names = 1,
+};
 
 static const struct qcom_cpufreq_match_data match_data_qcs404 = {
-	.genpd_names = qcs404_genpd_names,
+	.pd_names = (const char *[]) { "cpr" },
+	.num_pd_names = 1,
 };
+
+static const struct qcom_cpufreq_match_data match_data_ipq6018 = {
+	.get_version = qcom_cpufreq_ipq6018_name_version,
+};
+
+static const struct qcom_cpufreq_match_data match_data_ipq8064 = {
+	.get_version = qcom_cpufreq_ipq8064_name_version,
+};
+
+static const struct qcom_cpufreq_match_data match_data_ipq8074 = {
+	.get_version = qcom_cpufreq_ipq8074_name_version,
+};
+
+static void qcom_cpufreq_suspend_pd_devs(struct qcom_cpufreq_drv *drv, unsigned int cpu)
+{
+	struct dev_pm_domain_list *pd_list = drv->cpus[cpu].pd_list;
+	int i;
+
+	if (!pd_list)
+		return;
+
+	for (i = 0; i < pd_list->num_pds; i++)
+		device_set_awake_path(pd_list->pd_devs[i]);
+}
 
 static int qcom_cpufreq_probe(struct platform_device *pdev)
 {
 	struct qcom_cpufreq_drv *drv;
 	struct nvmem_cell *speedbin_nvmem;
-	struct device_node *np;
 	struct device *cpu_dev;
 	char pvs_name_buffer[] = "speedXX-pvsXX-vXX";
 	char *pvs_name = pvs_name_buffer;
@@ -233,50 +454,39 @@ static int qcom_cpufreq_probe(struct platform_device *pdev)
 	if (!cpu_dev)
 		return -ENODEV;
 
-	np = dev_pm_opp_of_get_opp_desc_node(cpu_dev);
+	struct device_node *np __free(device_node) =
+		dev_pm_opp_of_get_opp_desc_node(cpu_dev);
 	if (!np)
 		return -ENOENT;
 
-	ret = of_device_is_compatible(np, "operating-points-v2-kryo-cpu");
-	if (!ret) {
-		of_node_put(np);
+	ret = of_device_is_compatible(np, "operating-points-v2-kryo-cpu") ||
+	      of_device_is_compatible(np, "operating-points-v2-krait-cpu");
+	if (!ret)
 		return -ENOENT;
-	}
 
-	drv = kzalloc(sizeof(*drv), GFP_KERNEL);
+	drv = devm_kzalloc(&pdev->dev, struct_size(drv, cpus, num_possible_cpus()),
+		           GFP_KERNEL);
 	if (!drv)
 		return -ENOMEM;
 
 	match = pdev->dev.platform_data;
 	drv->data = match->data;
-	if (!drv->data) {
-		ret = -ENODEV;
-		goto free_drv;
-	}
+	if (!drv->data)
+		return -ENODEV;
 
 	if (drv->data->get_version) {
 		speedbin_nvmem = of_nvmem_cell_get(np, NULL);
-		if (IS_ERR(speedbin_nvmem)) {
-			ret = dev_err_probe(cpu_dev, PTR_ERR(speedbin_nvmem),
-					    "Could not get nvmem cell\n");
-			goto free_drv;
-		}
+		if (IS_ERR(speedbin_nvmem))
+			return dev_err_probe(cpu_dev, PTR_ERR(speedbin_nvmem),
+					     "Could not get nvmem cell\n");
 
 		ret = drv->data->get_version(cpu_dev,
 							speedbin_nvmem, &pvs_name, drv);
 		if (ret) {
 			nvmem_cell_put(speedbin_nvmem);
-			goto free_drv;
+			return ret;
 		}
 		nvmem_cell_put(speedbin_nvmem);
-	}
-	of_node_put(np);
-
-	drv->opp_tokens = kcalloc(num_possible_cpus(), sizeof(*drv->opp_tokens),
-				  GFP_KERNEL);
-	if (!drv->opp_tokens) {
-		ret = -ENOMEM;
-		goto free_drv;
 	}
 
 	for_each_possible_cpu(cpu) {
@@ -298,18 +508,27 @@ static int qcom_cpufreq_probe(struct platform_device *pdev)
 				config.prop_name = pvs_name;
 		}
 
-		if (drv->data->genpd_names) {
-			config.genpd_names = drv->data->genpd_names;
-			config.virt_devs = NULL;
-		}
-
-		if (config.supported_hw || config.genpd_names) {
-			drv->opp_tokens[cpu] = dev_pm_opp_set_config(cpu_dev, &config);
-			if (drv->opp_tokens[cpu] < 0) {
-				ret = drv->opp_tokens[cpu];
+		if (config.supported_hw) {
+			drv->cpus[cpu].opp_token = dev_pm_opp_set_config(cpu_dev, &config);
+			if (drv->cpus[cpu].opp_token < 0) {
+				ret = drv->cpus[cpu].opp_token;
 				dev_err(cpu_dev, "Failed to set OPP config\n");
 				goto free_opp;
 			}
+		}
+
+		if (drv->data->pd_names) {
+			struct dev_pm_domain_attach_data attach_data = {
+				.pd_names = drv->data->pd_names,
+				.num_pd_names = drv->data->num_pd_names,
+				.pd_flags = PD_FLAG_DEV_LINK_ON |
+					    PD_FLAG_REQUIRED_OPP,
+			};
+
+			ret = dev_pm_domain_attach_list(cpu_dev, &attach_data,
+							&drv->cpus[cpu].pd_list);
+			if (ret < 0)
+				goto free_opp;
 		}
 	}
 
@@ -324,12 +543,10 @@ static int qcom_cpufreq_probe(struct platform_device *pdev)
 	dev_err(cpu_dev, "Failed to register platform device\n");
 
 free_opp:
-	for_each_possible_cpu(cpu)
-		dev_pm_opp_clear_config(drv->opp_tokens[cpu]);
-	kfree(drv->opp_tokens);
-free_drv:
-	kfree(drv);
-
+	for_each_possible_cpu(cpu) {
+		dev_pm_domain_detach_list(drv->cpus[cpu].pd_list);
+		dev_pm_opp_clear_config(drv->cpus[cpu].opp_token);
+	}
 	return ret;
 }
 
@@ -340,27 +557,45 @@ static void qcom_cpufreq_remove(struct platform_device *pdev)
 
 	platform_device_unregister(cpufreq_dt_pdev);
 
-	for_each_possible_cpu(cpu)
-		dev_pm_opp_clear_config(drv->opp_tokens[cpu]);
-
-	kfree(drv->opp_tokens);
-	kfree(drv);
+	for_each_possible_cpu(cpu) {
+		dev_pm_domain_detach_list(drv->cpus[cpu].pd_list);
+		dev_pm_opp_clear_config(drv->cpus[cpu].opp_token);
+	}
 }
+
+static int qcom_cpufreq_suspend(struct device *dev)
+{
+	struct qcom_cpufreq_drv *drv = dev_get_drvdata(dev);
+	unsigned int cpu;
+
+	for_each_possible_cpu(cpu)
+		qcom_cpufreq_suspend_pd_devs(drv, cpu);
+
+	return 0;
+}
+
+static DEFINE_SIMPLE_DEV_PM_OPS(qcom_cpufreq_pm_ops, qcom_cpufreq_suspend, NULL);
 
 static struct platform_driver qcom_cpufreq_driver = {
 	.probe = qcom_cpufreq_probe,
-	.remove_new = qcom_cpufreq_remove,
+	.remove = qcom_cpufreq_remove,
 	.driver = {
 		.name = "qcom-cpufreq-nvmem",
+		.pm = pm_sleep_ptr(&qcom_cpufreq_pm_ops),
 	},
 };
 
-static const struct of_device_id qcom_cpufreq_match_list[] __initconst = {
+static const struct of_device_id qcom_cpufreq_match_list[] __initconst __maybe_unused = {
 	{ .compatible = "qcom,apq8096", .data = &match_data_kryo },
+	{ .compatible = "qcom,msm8909", .data = &match_data_msm8909 },
 	{ .compatible = "qcom,msm8996", .data = &match_data_kryo },
 	{ .compatible = "qcom,qcs404", .data = &match_data_qcs404 },
-	{ .compatible = "qcom,ipq8064", .data = &match_data_krait },
+	{ .compatible = "qcom,ipq5332", .data = &match_data_kryo },
+	{ .compatible = "qcom,ipq6018", .data = &match_data_ipq6018 },
+	{ .compatible = "qcom,ipq8064", .data = &match_data_ipq8064 },
+	{ .compatible = "qcom,ipq8074", .data = &match_data_ipq8074 },
 	{ .compatible = "qcom,apq8064", .data = &match_data_krait },
+	{ .compatible = "qcom,ipq9574", .data = &match_data_kryo },
 	{ .compatible = "qcom,msm8974", .data = &match_data_krait },
 	{ .compatible = "qcom,msm8960", .data = &match_data_krait },
 	{},
@@ -375,7 +610,7 @@ MODULE_DEVICE_TABLE(of, qcom_cpufreq_match_list);
  */
 static int __init qcom_cpufreq_init(void)
 {
-	struct device_node *np = of_find_node_by_path("/");
+	struct device_node *np __free(device_node) = of_find_node_by_path("/");
 	const struct of_device_id *match;
 	int ret;
 
@@ -383,7 +618,6 @@ static int __init qcom_cpufreq_init(void)
 		return -ENODEV;
 
 	match = of_match_node(qcom_cpufreq_match_list, np);
-	of_node_put(np);
 	if (!match)
 		return -ENODEV;
 

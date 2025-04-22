@@ -75,10 +75,11 @@ int nf_conntrack_broadcast_help(struct sk_buff *skb,
 	nf_ct_expect_related(exp, 0);
 	nf_ct_expect_put(exp);
 
-	nf_ct_refresh(ct, skb, timeout * HZ);
+	nf_ct_refresh(ct, timeout * HZ);
 out:
 	return NF_ACCEPT;
 }
 EXPORT_SYMBOL_GPL(nf_conntrack_broadcast_help);
 
 MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("Broadcast connection tracking helper");

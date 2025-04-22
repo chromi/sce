@@ -559,8 +559,8 @@ static void bt1_pcie_host_deinit(struct dw_pcie_rp *pp)
 }
 
 static const struct dw_pcie_host_ops bt1_pcie_host_ops = {
-	.host_init = bt1_pcie_host_init,
-	.host_deinit = bt1_pcie_host_deinit,
+	.init = bt1_pcie_host_init,
+	.deinit = bt1_pcie_host_deinit,
 };
 
 static struct bt1_pcie *bt1_pcie_create_data(struct platform_device *pdev)
@@ -632,7 +632,7 @@ MODULE_DEVICE_TABLE(of, bt1_pcie_of_match);
 
 static struct platform_driver bt1_pcie_driver = {
 	.probe = bt1_pcie_probe,
-	.remove_new = bt1_pcie_remove,
+	.remove = bt1_pcie_remove,
 	.driver = {
 		.name	= "bt1-pcie",
 		.of_match_table = bt1_pcie_of_match,

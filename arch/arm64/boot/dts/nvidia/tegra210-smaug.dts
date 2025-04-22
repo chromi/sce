@@ -25,12 +25,39 @@
 		stdout-path = "serial0:115200n8";
 	};
 
-	memory {
+	memory@80000000 {
 		device_type = "memory";
 		reg = <0x0 0x80000000 0x0 0xc0000000>;
 	};
 
 	host1x@50000000 {
+		dsia: dsi@54300000 {
+			avdd-dsi-csi-supply = <&vdd_dsi_csi>;
+			status = "okay";
+
+			link2: panel@0 {
+				compatible = "jdi,lpm102a188a";
+				reg = <0>;
+			};
+		};
+
+		dsib: dsi@54400000 {
+			avdd-dsi-csi-supply = <&vdd_dsi_csi>;
+			nvidia,ganged-mode = <&dsia>;
+			status = "okay";
+
+			link1: panel@0 {
+				compatible = "jdi,lpm102a188a";
+				reg = <0>;
+				power-supply = <&pplcd_vdd>;
+				ddi-supply = <&pp1800_lcdio>;
+				enable-gpios = <&gpio TEGRA_GPIO(V, 1) GPIO_ACTIVE_HIGH>;
+				reset-gpios = <&gpio TEGRA_GPIO(V, 2) GPIO_ACTIVE_LOW>;
+				link2 = <&link2>;
+				backlight = <&backlight>;
+			};
+		};
+
 		dpaux: dpaux@545c0000 {
 			status = "okay";
 		};
@@ -1335,6 +1362,19 @@
 		};
 	};
 
+	i2c@7000c000 {
+		status = "okay";
+		clock-frequency = <1000000>;
+
+		touchscreen: i2c-hid-dev@20 {
+				compatible = "hid-over-i2c";
+				reg = <0x20>;
+				hid-descr-addr = <0x0020>;
+				interrupt-parent = <&gpio>;
+				interrupts = <TEGRA_GPIO(X, 1) IRQ_TYPE_EDGE_FALLING>;
+		};
+	};
+
 	i2c@7000c400 {
 		status = "okay";
 		clock-frequency = <1000000>;
@@ -1357,6 +1397,11 @@
 					compatible = "ti,bq27742";
 					reg = <0x55>;
 				};
+			};
+
+			usbc_extcon0: extcon0 {
+				compatible = "google,extcon-usbc-cros-ec";
+				google,usb-port-id = <0>;
 			};
 		};
 	};
@@ -1651,6 +1696,37 @@
 			status = "okay";
 		};
 
+		backlight: backlight@2c {
+			compatible = "ti,lp8557";
+			reg = <0x2c>;
+			power-supply = <&pplcd_vdd>;
+			enable-supply = <&pp1800_lcdio>;
+			bl-name = "lp8557-backlight";
+			dev-ctrl = /bits/ 8 <0x01>;
+			init-brt = /bits/ 8 <0x80>;
+
+			/* Full scale current, 20mA */
+			rom-11h {
+				rom-addr = /bits/ 8 <0x11>;
+				rom-val = /bits/ 8 <0x05>;
+			};
+			/* Frequency = 4.9kHz, magic undocumented val */
+			rom-12h {
+				rom-addr = /bits/ 8 <0x12>;
+				rom-val = /bits/ 8 <0x29>;
+			};
+			/* Boost freq = 1MHz, BComp option = 1 */
+			rom-13h {
+				rom-addr = /bits/ 8 <0x13>;
+				rom-val = /bits/ 8 <0x03>;
+			};
+			/* 4V OV, 6 output LED string enabled */
+			rom-14h {
+				rom-addr = /bits/ 8 <0x14>;
+				rom-val = /bits/ 8 <0xbf>;
+			};
+		};
+
 		audio-codec@2d {
 			compatible = "realtek,rt5677";
 			reg = <0x2d>;
@@ -1660,6 +1736,15 @@
 			gpio-controller;
 			#gpio-cells = <2>;
 			status = "okay";
+		};
+
+		tmp451: temperature-sensor@4c {
+			compatible = "ti,tmp451";
+			reg = <0x4c>;
+			interrupt-parent = <&gpio>;
+			interrupts = <TEGRA_GPIO(X, 4) IRQ_TYPE_LEVEL_LOW>;
+			vcc-supply = <&pp1800>;
+			#thermal-sensor-cells = <1>;
 		};
 	};
 
@@ -1931,5 +2016,13 @@
 		regulator-name = "USBC_VBUS";
 		regulator-min-microvolt = <5000000>;
 		regulator-max-microvolt = <5000000>;
+	};
+
+	vdd_dsi_csi: regulator-vdd-dsi-csi {
+		compatible = "regulator-fixed";
+		regulator-name = "AVDD_DSI_CSI_1V2";
+		regulator-min-microvolt = <1200000>;
+		regulator-max-microvolt = <1200000>;
+		vin-supply = <&pp1200_avdd>;
 	};
 };

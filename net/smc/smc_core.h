@@ -17,9 +17,11 @@
 #include <linux/pci.h>
 #include <rdma/ib_verbs.h>
 #include <net/genetlink.h>
+#include <net/smc.h>
 
 #include "smc.h"
 #include "smc_ib.h"
+#include "smc_clc.h"
 
 #define SMC_RMBS_PER_LGR_MAX	255	/* max. # of RMBs per link group */
 #define SMC_CONN_PER_LGR_MIN	16	/* min. # of connections per link group */
@@ -28,7 +30,7 @@
 					 */
 #define SMC_CONN_PER_LGR_PREFER	255	/* Preferred connections per link group used for
 					 * SMC-R v2.1 and later negotiation, vendors or
-					 * distrubutions may modify it to a value between
+					 * distributions may modify it to a value between
 					 * 16-255 as needed.
 					 */
 
@@ -120,10 +122,14 @@ struct smc_link {
 	} ____cacheline_aligned_in_smp;
 	struct completion	tx_ref_comp;
 
-	struct smc_wr_buf	*wr_rx_bufs;	/* WR recv payload buffers */
+	u8			*wr_rx_bufs;	/* WR recv payload buffers */
 	struct ib_recv_wr	*wr_rx_ibs;	/* WR recv meta data */
 	struct ib_sge		*wr_rx_sges;	/* WR recv scatter meta data */
 	/* above three vectors have wr_rx_cnt elements and use the same index */
+	int			wr_rx_sge_cnt; /* rx sge, V1 is 1, V2 is either 2 or 1 */
+	int			wr_rx_buflen;	/* buffer len for the first sge, len for the
+						 * second sge is lgr shared if rx sge is 2.
+						 */
 	dma_addr_t		wr_rx_dma_addr;	/* DMA address of wr_rx_bufs */
 	dma_addr_t		wr_rx_v2_dma_addr; /* DMA address of v2 rx buf*/
 	u64			wr_rx_id;	/* seq # of last recv WR */
@@ -179,7 +185,7 @@ struct smc_link {
 					 */
 #define SMC_LINKS_PER_LGR_MAX_PREFER	2	/* Preferred max links per link group used for
 						 * SMC-R v2.1 and later negotiation, vendors or
-						 * distrubutions may modify it to a value between
+						 * distributions may modify it to a value between
 						 * 1-2 as needed.
 						 */
 
@@ -279,6 +285,8 @@ struct smc_link_group {
 	struct rw_semaphore	sndbufs_lock;	/* protects tx buffers */
 	struct list_head	rmbs[SMC_RMBE_SIZES];	/* rx buffers */
 	struct rw_semaphore	rmbs_lock;	/* protects rx buffers */
+	u64			alloc_sndbufs;	/* stats of tx buffers */
+	u64			alloc_rmbs;	/* stats of rx buffers */
 
 	u8			id[SMC_LGR_ID_SIZE];	/* unique lgr id */
 	struct delayed_work	free_work;	/* delayed freeing of an lgr */
@@ -355,7 +363,7 @@ struct smc_link_group {
 						/* max links can be added in lgr */
 		};
 		struct { /* SMC-D */
-			u64			peer_gid;
+			struct smcd_gid		peer_gid;
 						/* Peer GID (remote) */
 			struct smcd_dev		*smcd;
 						/* ISM device for VLAN reg. */
@@ -392,6 +400,11 @@ struct smc_init_info_smcrv2 {
 	struct smc_gidlist	gidlist;
 };
 
+#define SMC_MAX_V2_ISM_DEVS	SMCD_CLC_MAX_V2_GID_ENTRIES
+				/* max # of proposed non-native ISM devices,
+				 * which can't exceed the max # of CHID-GID
+				 * entries in CLC proposal SMC-Dv2 extension.
+				 */
 struct smc_init_info {
 	u8			is_smcd;
 	u8			smc_type_v1;
@@ -401,6 +414,7 @@ struct smc_init_info {
 	u8			max_links;
 	u8			first_contact_peer;
 	u8			first_contact_local;
+	u16			feature_mask;
 	unsigned short		vlan_id;
 	u32			rc;
 	u8			negotiated_eid[SMC_MAX_EID_LEN];
@@ -416,9 +430,9 @@ struct smc_init_info {
 	u32			ib_clcqpn;
 	struct smc_init_info_smcrv2 smcrv2;
 	/* SMC-D */
-	u64			ism_peer_gid[SMC_MAX_ISM_DEVS + 1];
-	struct smcd_dev		*ism_dev[SMC_MAX_ISM_DEVS + 1];
-	u16			ism_chid[SMC_MAX_ISM_DEVS + 1];
+	struct smcd_gid		ism_peer_gid[SMC_MAX_V2_ISM_DEVS + 1];
+	struct smcd_dev		*ism_dev[SMC_MAX_V2_ISM_DEVS + 1];
+	u16			ism_chid[SMC_MAX_V2_ISM_DEVS + 1];
 	u8			ism_offered_cnt; /* # of ISM devices offered */
 	u8			ism_selected;    /* index of selected ISM dev*/
 	u8			smcd_version;
@@ -496,6 +510,11 @@ static inline bool smc_link_active(struct smc_link *lnk)
 	return lnk->state == SMC_LNK_ACTIVE;
 }
 
+static inline bool smc_link_shared_v2_rxbuf(struct smc_link *lnk)
+{
+	return lnk->wr_rx_sge_cnt > 1;
+}
+
 static inline void smc_gid_be16_convert(__u8 *buf, u8 *gid_raw)
 {
 	sprintf(buf, "%04x:%04x:%04x:%04x:%04x:%04x:%04x:%04x",
@@ -544,11 +563,12 @@ void smc_lgr_hold(struct smc_link_group *lgr);
 void smc_lgr_put(struct smc_link_group *lgr);
 void smcr_port_add(struct smc_ib_device *smcibdev, u8 ibport);
 void smcr_port_err(struct smc_ib_device *smcibdev, u8 ibport);
-void smc_smcd_terminate(struct smcd_dev *dev, u64 peer_gid,
+void smc_smcd_terminate(struct smcd_dev *dev, struct smcd_gid *peer_gid,
 			unsigned short vlan);
 void smc_smcd_terminate_all(struct smcd_dev *dev);
 void smc_smcr_terminate_all(struct smc_ib_device *smcibdev);
 int smc_buf_create(struct smc_sock *smc, bool is_smcd);
+int smcd_buf_attach(struct smc_sock *smc);
 int smc_uncompress_bufsize(u8 compressed);
 int smc_rmb_rtoken_handling(struct smc_connection *conn, struct smc_link *link,
 			    struct smc_clc_msg_accept_confirm *clc);

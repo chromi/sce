@@ -16,11 +16,12 @@
 #include <linux/spi/spi.h>
 #include <video/mipi_display.h>
 
+#include <drm/clients/drm_client_setup.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_damage_helper.h>
 #include <drm/drm_drv.h>
 #include <drm/drm_fb_dma_helper.h>
-#include <drm/drm_fbdev_generic.h>
+#include <drm/drm_fbdev_dma.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_gem_atomic_helper.h>
@@ -78,7 +79,7 @@ static inline int ili9225_command(struct mipi_dbi *dbi, u8 cmd, u16 data)
 }
 
 static void ili9225_fb_dirty(struct iosys_map *src, struct drm_framebuffer *fb,
-			     struct drm_rect *rect)
+			     struct drm_rect *rect, struct drm_format_conv_state *fmtcnv_state)
 {
 	struct mipi_dbi_dev *dbidev = drm_to_mipi_dbi_dev(fb->dev);
 	unsigned int height = rect->y2 - rect->y1;
@@ -98,7 +99,7 @@ static void ili9225_fb_dirty(struct iosys_map *src, struct drm_framebuffer *fb,
 	if (!dbi->dc || !full || swap ||
 	    fb->format->format == DRM_FORMAT_XRGB8888) {
 		tr = dbidev->tx_buf;
-		ret = mipi_dbi_buf_copy(tr, src, fb, rect, swap);
+		ret = mipi_dbi_buf_copy(tr, src, fb, rect, swap, fmtcnv_state);
 		if (ret)
 			goto err_msg;
 	} else {
@@ -171,7 +172,8 @@ static void ili9225_pipe_update(struct drm_simple_display_pipe *pipe,
 		return;
 
 	if (drm_atomic_helper_damage_merged(old_state, state, &rect))
-		ili9225_fb_dirty(&shadow_plane_state->data[0], fb, &rect);
+		ili9225_fb_dirty(&shadow_plane_state->data[0], fb, &rect,
+				 &shadow_plane_state->fmtcnv_state);
 
 	drm_dev_exit(idx);
 }
@@ -281,7 +283,8 @@ static void ili9225_pipe_enable(struct drm_simple_display_pipe *pipe,
 
 	ili9225_command(dbi, ILI9225_DISPLAY_CONTROL_1, 0x1017);
 
-	ili9225_fb_dirty(&shadow_plane_state->data[0], fb, &rect);
+	ili9225_fb_dirty(&shadow_plane_state->data[0], fb, &rect,
+			 &shadow_plane_state->fmtcnv_state);
 
 out_exit:
 	drm_dev_exit(idx);
@@ -358,9 +361,9 @@ static const struct drm_driver ili9225_driver = {
 	.driver_features	= DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC,
 	.fops			= &ili9225_fops,
 	DRM_GEM_DMA_DRIVER_OPS_VMAP,
+	DRM_FBDEV_DMA_DRIVER_OPS,
 	.name			= "ili9225",
 	.desc			= "Ilitek ILI9225",
-	.date			= "20171106",
 	.major			= 1,
 	.minor			= 0,
 };
@@ -424,7 +427,7 @@ static int ili9225_probe(struct spi_device *spi)
 
 	spi_set_drvdata(spi, drm);
 
-	drm_fbdev_generic_setup(drm, 0);
+	drm_client_setup(drm, NULL);
 
 	return 0;
 }
@@ -445,7 +448,6 @@ static void ili9225_shutdown(struct spi_device *spi)
 static struct spi_driver ili9225_spi_driver = {
 	.driver = {
 		.name = "ili9225",
-		.owner = THIS_MODULE,
 		.of_match_table = ili9225_of_match,
 	},
 	.id_table = ili9225_id,

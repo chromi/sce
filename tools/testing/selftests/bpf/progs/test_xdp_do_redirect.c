@@ -38,7 +38,7 @@ int xdp_redirect(struct xdp_md *xdp)
 	if (payload + 1 > data_end)
 		return XDP_ABORTED;
 
-	if (xdp->ingress_ifindex != ifindex_in)
+	if (xdp->ingress_ifindex != (__u32)ifindex_in)
 		return XDP_ABORTED;
 
 	if (metadata + 1 > data)
@@ -96,6 +96,18 @@ int xdp_count_pkts(struct xdp_md *xdp)
 	 * pkts_seen_zero counter above.
 	 */
 	return XDP_DROP;
+}
+
+SEC("xdp")
+int xdp_redirect_to_111(struct xdp_md *xdp)
+{
+	return bpf_redirect(111, 0);
+}
+
+SEC("xdp")
+int xdp_redirect_to_222(struct xdp_md *xdp)
+{
+	return bpf_redirect(222, 0);
 }
 
 SEC("tc")

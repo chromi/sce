@@ -6,7 +6,9 @@
  *
  * Driver allows to use AxB5xx unused pins to be used as GPIO
  */
+
 #include <linux/bitops.h>
+#include <linux/cleanup.h>
 #include <linux/err.h>
 #include <linux/gpio/driver.h>
 #include <linux/init.h>
@@ -17,8 +19,10 @@
 #include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
+#include <linux/property.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
+#include <linux/string_choices.h>
 #include <linux/types.h>
 
 #include <linux/mfd/abx500.h>
@@ -452,12 +456,11 @@ static void abx500_gpio_dbg_show_one(struct seq_file *s,
 				     unsigned offset, unsigned gpio)
 {
 	struct abx500_pinctrl *pct = pinctrl_dev_get_drvdata(pctldev);
-	const char *label = gpiochip_is_requested(chip, offset - 1);
 	u8 gpio_offset = offset - 1;
 	int mode = -1;
 	bool is_out;
 	bool pd;
-	int ret;
+	int ret = -ENOMEM;
 
 	const char *modes[] = {
 		[ABX500_DEFAULT]	= "default",
@@ -472,6 +475,10 @@ static void abx500_gpio_dbg_show_one(struct seq_file *s,
 		[ABX500_GPIO_PULL_NONE + 1]	= "pull none",
 		[ABX500_GPIO_PULL_UP]		= "pull up",
 	};
+
+	char *label __free(kfree) = gpiochip_dup_line_label(chip, offset - 1);
+	if (IS_ERR(label))
+		goto out;
 
 	ret = abx500_gpio_get_bit(chip, AB8500_GPIO_DIR1_REG,
 			gpio_offset, &is_out);
@@ -490,7 +497,7 @@ static void abx500_gpio_dbg_show_one(struct seq_file *s,
 
 		seq_printf(s, " %-9s", pull_up_down[pd]);
 	} else
-		seq_printf(s, " %-9s", chip->get(chip, offset) ? "hi" : "lo");
+		seq_printf(s, " %-9s", str_hi_lo(chip->get(chip, offset)));
 
 	mode = abx500_get_mode(pctldev, chip, offset);
 
@@ -710,8 +717,7 @@ static int abx500_dt_add_map_configs(struct pinctrl_map **map,
 	if (*num_maps == *reserved_maps)
 		return -ENOSPC;
 
-	dup_configs = kmemdup(configs, num_configs * sizeof(*dup_configs),
-			      GFP_KERNEL);
+	dup_configs = kmemdup_array(configs, num_configs, sizeof(*dup_configs), GFP_KERNEL);
 	if (!dup_configs)
 		return -ENOMEM;
 
@@ -805,19 +811,17 @@ static int abx500_dt_node_to_map(struct pinctrl_dev *pctldev,
 				 struct pinctrl_map **map, unsigned *num_maps)
 {
 	unsigned reserved_maps;
-	struct device_node *np;
 	int ret;
 
 	reserved_maps = 0;
 	*map = NULL;
 	*num_maps = 0;
 
-	for_each_child_of_node(np_config, np) {
+	for_each_child_of_node_scoped(np_config, np) {
 		ret = abx500_dt_subnode_to_map(pctldev, np, map,
 				&reserved_maps, num_maps);
 		if (ret < 0) {
 			pinctrl_utils_free_map(pctldev, *map, *num_maps);
-			of_node_put(np);
 			return ret;
 		}
 	}
@@ -862,7 +866,7 @@ static int abx500_pin_config_set(struct pinctrl_dev *pctldev,
 			pin, configs[i],
 			(param == PIN_CONFIG_OUTPUT) ? "output " : "input",
 			(param == PIN_CONFIG_OUTPUT) ?
-			(argument ? "high" : "low") :
+			str_high_low(argument) :
 			(argument ? "pull up" : "pull down"));
 
 		/* on ABx500, there is no GPIO0, so adjust the offset */
@@ -985,7 +989,6 @@ static const struct of_device_id abx500_gpio_match[] = {
 static int abx500_gpio_probe(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
-	const struct of_device_id *match;
 	struct abx500_pinctrl *pct;
 	unsigned int id = -1;
 	int ret;
@@ -1006,12 +1009,7 @@ static int abx500_gpio_probe(struct platform_device *pdev)
 	pct->chip.parent = &pdev->dev;
 	pct->chip.base = -1; /* Dynamic allocation */
 
-	match = of_match_device(abx500_gpio_match, &pdev->dev);
-	if (!match) {
-		dev_err(&pdev->dev, "gpio dt not matching\n");
-		return -ENODEV;
-	}
-	id = (unsigned long)match->data;
+	id = (unsigned long)device_get_match_data(&pdev->dev);
 
 	/* Poke in other ASIC variants here */
 	switch (id) {
@@ -1079,12 +1077,11 @@ out_rem_chip:
  * abx500_gpio_remove() - remove Ab8500-gpio driver
  * @pdev:	Platform device registered
  */
-static int abx500_gpio_remove(struct platform_device *pdev)
+static void abx500_gpio_remove(struct platform_device *pdev)
 {
 	struct abx500_pinctrl *pct = platform_get_drvdata(pdev);
 
 	gpiochip_remove(&pct->chip);
-	return 0;
 }
 
 static struct platform_driver abx500_gpio_driver = {

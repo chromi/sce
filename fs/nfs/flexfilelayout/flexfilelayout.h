@@ -83,6 +83,7 @@ struct nfs4_ff_layout_mirror {
 	nfs4_stateid			stateid;
 	const struct cred __rcu		*ro_cred;
 	const struct cred __rcu		*rw_cred;
+	struct nfs_file_localio		nfl;
 	refcount_t			ref;
 	spinlock_t			lock;
 	unsigned long			flags;
@@ -99,7 +100,7 @@ struct nfs4_ff_layout_segment {
 	u64				stripe_unit;
 	u32				flags;
 	u32				mirror_array_cnt;
-	struct nfs4_ff_layout_mirror	*mirror_array[];
+	struct nfs4_ff_layout_mirror	*mirror_array[] __counted_by(mirror_array_cnt);
 };
 
 struct nfs4_flexfile_layout {

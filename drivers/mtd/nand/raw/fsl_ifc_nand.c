@@ -21,7 +21,7 @@
 
 #define ERR_BYTE		0xFF /* Value returned for read
 					bytes when read failed	*/
-#define IFC_TIMEOUT_MSECS	500  /* Maximum number of mSecs to wait
+#define IFC_TIMEOUT_MSECS	1000 /* Maximum timeout to wait
 					for IFC NAND Machine	*/
 
 struct fsl_ifc_ctrl;
@@ -1130,7 +1130,7 @@ static struct platform_driver fsl_ifc_nand_driver = {
 		.of_match_table = fsl_ifc_nand_match,
 	},
 	.probe       = fsl_ifc_nand_probe,
-	.remove_new  = fsl_ifc_nand_remove,
+	.remove      = fsl_ifc_nand_remove,
 };
 
 module_platform_driver(fsl_ifc_nand_driver);

@@ -22,8 +22,9 @@ enum sensor_index {
 	ACCEL_IDX,
 	GYRO_IDX,
 	MAG_IDX,
-	ALS_IDX = 4,
-	HPD_IDX = 5,
+	SRA_IDX,
+	ALS_IDX,
+	HPD_IDX,
 	MAX_IDX = 15,
 };
 
@@ -88,6 +89,16 @@ struct sfh_sensor_list {
 	};
 };
 
+struct sfh_sensor_prop {
+	union {
+		u32 sprop;
+		struct {
+			u32 elist	: 16;
+			u32 feat	: 16;
+		} sf;
+	};
+};
+
 struct sfh_base_info {
 	union {
 		u32 sfh_base[24];
@@ -95,6 +106,8 @@ struct sfh_base_info {
 			struct sfh_platform_info plat_info;
 			struct sfh_firmware_info  fw_info;
 			struct sfh_sensor_list s_list;
+			u32 rsvd;
+			struct sfh_sensor_prop s_prop[16];
 		} sbase;
 	};
 };
@@ -134,6 +147,9 @@ struct sfh_mag_data {
 struct sfh_als_data {
 	struct sfh_common_data commondata;
 	u32 lux;
+	u32 light_color_temp;
+	u32 chromaticity_x;
+	u32 chromaticity_y;
 };
 
 struct hpd_status {
@@ -149,6 +165,27 @@ struct hpd_status {
 	};
 };
 
+struct sfh_op_mode {
+	union {
+		u32 val;
+		struct {
+			u32 mode		: 3;
+			u32 lidstatus		: 1;
+			u32 angle		: 10;
+			u32 inbagstatedbg	: 2;
+			u32 ontablestate	: 2;
+			u32 inbagstate		: 2;
+			u32 outbagstate		: 2;
+			u32 inbagmlcstate	: 1;
+			u32 powerstate		: 2;
+			u32 data		: 3;
+			u32 devicemode		: 4;
+		} op_mode;
+	};
+};
+
 void sfh_interface_init(struct amd_mp2_dev *mp2);
+void sfh_deinit_emp2(void);
 void amd_sfh1_1_set_desc_ops(struct amd_mp2_ops *mp2_ops);
+int amd_sfh_float_to_int(u32 flt32_val);
 #endif

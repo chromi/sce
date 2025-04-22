@@ -1041,7 +1041,7 @@ static void hns3_init_tx_spare_buffer(struct hns3_enet_ring *ring)
 		return;
 
 	order = get_order(alloc_size);
-	if (order > MAX_ORDER) {
+	if (order > MAX_PAGE_ORDER) {
 		if (net_ratelimit())
 			dev_warn(ring_to_dev(ring), "failed to allocate tx spare buffer, exceed to max order\n");
 		return;
@@ -2068,8 +2068,6 @@ static void hns3_tx_push_bd(struct hns3_enet_ring *ring, int num)
 	__iowrite64_copy(ring->tqp->mem_base, desc,
 			 (sizeof(struct hns3_desc) * HNS3_MAX_PUSH_BD_NUM) /
 			 HNS3_BYTES_PER_64BIT);
-
-	io_stop_wc();
 }
 
 static void hns3_tx_mem_doorbell(struct hns3_enet_ring *ring)
@@ -2088,8 +2086,6 @@ static void hns3_tx_mem_doorbell(struct hns3_enet_ring *ring)
 	u64_stats_update_begin(&ring->syncp);
 	ring->stats.tx_mem_doorbell += ring->pending_buf;
 	u64_stats_update_end(&ring->syncp);
-
-	io_stop_wc();
 }
 
 static void hns3_tx_doorbell(struct hns3_enet_ring *ring, int num,
@@ -2456,7 +2452,6 @@ static int hns3_nic_set_features(struct net_device *netdev,
 			return ret;
 	}
 
-	netdev->features = features;
 	return 0;
 }
 
@@ -2473,9 +2468,9 @@ static netdev_features_t hns3_features_check(struct sk_buff *skb,
 		return features;
 
 	if (skb->encapsulation)
-		len = skb_inner_transport_header(skb) - skb->data;
+		len = skb_inner_transport_offset(skb);
 	else
-		len = skb_transport_header(skb) - skb->data;
+		len = skb_transport_offset(skb);
 
 	/* Assume L4 is 60 byte as TCP is the only protocol with a
 	 * a flexible value, and it's max len is 60 bytes.
@@ -2761,7 +2756,7 @@ static int hns3_nic_change_mtu(struct net_device *netdev, int new_mtu)
 		netdev_err(netdev, "failed to change MTU in hardware %d\n",
 			   ret);
 	else
-		netdev->mtu = new_mtu;
+		WRITE_ONCE(netdev->mtu, new_mtu);
 
 	return ret;
 }
@@ -3539,6 +3534,9 @@ static int hns3_alloc_ring_buffers(struct hns3_enet_ring *ring)
 		ret = hns3_alloc_and_attach_buffer(ring, i);
 		if (ret)
 			goto out_buffer_fail;
+
+		if (!(i % HNS3_RESCHED_BD_NUM))
+			cond_resched();
 	}
 
 	return 0;
@@ -4449,7 +4447,7 @@ static void hns3_update_rx_int_coalesce(struct hns3_enet_tqp_vector *tqp_vector)
 
 	dim_update_sample(tqp_vector->event_cnt, rx_group->total_packets,
 			  rx_group->total_bytes, &sample);
-	net_dim(&rx_group->dim, sample);
+	net_dim(&rx_group->dim, &sample);
 }
 
 static void hns3_update_tx_int_coalesce(struct hns3_enet_tqp_vector *tqp_vector)
@@ -4462,7 +4460,7 @@ static void hns3_update_tx_int_coalesce(struct hns3_enet_tqp_vector *tqp_vector)
 
 	dim_update_sample(tqp_vector->event_cnt, tx_group->total_packets,
 			  tx_group->total_bytes, &sample);
-	net_dim(&tx_group->dim, sample);
+	net_dim(&tx_group->dim, &sample);
 }
 
 static int hns3_nic_common_poll(struct napi_struct *napi, int budget)
@@ -4940,8 +4938,7 @@ static void hns3_put_ring_config(struct hns3_nic_priv *priv)
 static void hns3_alloc_page_pool(struct hns3_enet_ring *ring)
 {
 	struct page_pool_params pp_params = {
-		.flags = PP_FLAG_DMA_MAP | PP_FLAG_PAGE_FRAG |
-				PP_FLAG_DMA_SYNC_DEV,
+		.flags = PP_FLAG_DMA_MAP | PP_FLAG_DMA_SYNC_DEV,
 		.order = hns3_page_order(ring),
 		.pool_size = ring->desc_num * hns3_buf_size(ring) /
 				(PAGE_SIZE << hns3_page_order(ring)),
@@ -5112,6 +5109,7 @@ int hns3_init_all_ring(struct hns3_nic_priv *priv)
 		}
 
 		u64_stats_init(&priv->ring[i].syncp);
+		cond_resched();
 	}
 
 	return 0;
@@ -5140,7 +5138,7 @@ static int hns3_init_mac_addr(struct net_device *netdev)
 	struct hns3_nic_priv *priv = netdev_priv(netdev);
 	char format_mac_addr[HNAE3_FORMAT_MAC_ADDR_LEN];
 	struct hnae3_handle *h = priv->ae_handle;
-	u8 mac_addr_temp[ETH_ALEN];
+	u8 mac_addr_temp[ETH_ALEN] = {0};
 	int ret = 0;
 
 	if (h->ae_algo->ops->get_mac_addr)
@@ -5725,6 +5723,9 @@ static int hns3_reset_notify_uninit_enet(struct hnae3_handle *handle)
 	struct net_device *netdev = handle->kinfo.netdev;
 	struct hns3_nic_priv *priv = netdev_priv(netdev);
 
+	if (!test_bit(HNS3_NIC_STATE_DOWN, &priv->state))
+		hns3_nic_net_stop(netdev);
+
 	if (!test_and_clear_bit(HNS3_NIC_STATE_INITED, &priv->state)) {
 		netdev_warn(netdev, "already uninitialized\n");
 		return 0;
@@ -6001,9 +6002,11 @@ module_init(hns3_init_module);
  */
 static void __exit hns3_exit_module(void)
 {
+	hnae3_acquire_unload_lock();
 	pci_unregister_driver(&hns3_driver);
 	hnae3_unregister_client(&client);
 	hns3_dbg_unregister_debugfs();
+	hnae3_release_unload_lock();
 }
 module_exit(hns3_exit_module);
 

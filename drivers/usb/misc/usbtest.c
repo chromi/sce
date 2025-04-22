@@ -705,7 +705,7 @@ static int is_good_config(struct usbtest_dev *tdev, int len)
 {
 	struct usb_config_descriptor	*config;
 
-	if (len < sizeof(*config))
+	if (len < (int)sizeof(*config))
 		return 0;
 	config = (struct usb_config_descriptor *) tdev->buf;
 
@@ -2021,7 +2021,8 @@ static struct urb *iso_alloc_urb(
 
 	for (i = 0; i < packets; i++) {
 		/* here, only the last packet will be short */
-		urb->iso_frame_desc[i].length = min((unsigned) bytes, maxp);
+		urb->iso_frame_desc[i].length = min_t(unsigned int,
+							bytes, maxp);
 		bytes -= urb->iso_frame_desc[i].length;
 
 		urb->iso_frame_desc[i].offset = maxp * i;

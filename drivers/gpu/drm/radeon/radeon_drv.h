@@ -33,7 +33,6 @@
 
 #include <linux/firmware.h>
 #include <linux/platform_device.h>
-#include <drm/drm_legacy.h>
 
 #include "radeon_family.h"
 
@@ -44,7 +43,6 @@
 
 #define DRIVER_NAME		"radeon"
 #define DRIVER_DESC		"ATI Radeon"
-#define DRIVER_DATE		"20080528"
 
 /* Interface history:
  *

@@ -222,7 +222,7 @@ EXPORT_SYMBOL_GPL(wm97xx_set_gpio);
 
 /*
  * Codec GPIO pin configuration, this sets pin direction, polarity,
- * stickyness and wake up.
+ * stickiness and wake up.
  */
 void wm97xx_config_gpio(struct wm97xx *wm, u32 gpio, enum wm97xx_gpio_dir dir,
 		   enum wm97xx_gpio_pol pol, enum wm97xx_gpio_sticky sticky,
@@ -403,7 +403,7 @@ static int wm97xx_read_samples(struct wm97xx *wm)
 			* is actively working with the touchscreen we
 			* don't want to lose the quick response. So we
 			* will slowly increase sleep time after the
-			* pen is up and quicky restore it to ~one task
+			* pen is up and quickly restore it to ~one task
 			* switch when pen is down again.
 			*/
 			if (wm->ts_reader_interval < HZ / 10)
@@ -756,11 +756,9 @@ batt_err:
 	return ret;
 }
 
-static int wm97xx_mfd_remove(struct platform_device *pdev)
+static void wm97xx_mfd_remove(struct platform_device *pdev)
 {
 	wm97xx_remove(&pdev->dev);
-
-	return 0;
 }
 
 static int wm97xx_suspend(struct device *dev)

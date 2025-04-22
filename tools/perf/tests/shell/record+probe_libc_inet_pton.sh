@@ -1,5 +1,5 @@
 #!/bin/sh
-# probe libc's inet_pton & backtrace it with ping
+# probe libc's inet_pton & backtrace it with ping (exclusive)
 
 # Installs a probe on libc's inet_pton function, that will use uprobes,
 # then use 'perf trace' on a ping to localhost asking for just one packet
@@ -10,7 +10,9 @@
 # SPDX-License-Identifier: GPL-2.0
 # Arnaldo Carvalho de Melo <acme@kernel.org>, 2017
 
+# shellcheck source=lib/probe.sh
 . "$(dirname "$0")/lib/probe.sh"
+# shellcheck source=lib/probe_vfs_getname.sh
 . "$(dirname "$0")/lib/probe_vfs_getname.sh"
 
 libc=$(grep -w libc /proc/self/maps | head -1 | sed -r 's/.*[[:space:]](\/.*)/\1/g')
@@ -38,17 +40,11 @@ trace_libc_inet_pton_backtrace() {
 	case "$(uname -m)" in
 	s390x)
 		eventattr='call-graph=dwarf,max-stack=4'
-		echo "(__GI_)?getaddrinfo\+0x[[:xdigit:]]+[[:space:]]\($libc|inlined\)$" >> $expected
-		echo "main\+0x[[:xdigit:]]+[[:space:]]\(.*/bin/ping.*\)$" >> $expected
-		;;
-	ppc64|ppc64le)
-		eventattr='max-stack=4'
-		echo "gaih_inet.*\+0x[[:xdigit:]]+[[:space:]]\($libc\)$" >> $expected
-		echo "getaddrinfo\+0x[[:xdigit:]]+[[:space:]]\($libc\)$" >> $expected
-		echo ".*(\+0x[[:xdigit:]]+|\[unknown\])[[:space:]]\(.*/bin/ping.*\)$" >> $expected
+		echo "((__GI_)?getaddrinfo|text_to_binary_address)\+0x[[:xdigit:]]+[[:space:]]\($libc|inlined\)$" >> $expected
+		echo "(gaih_inet|main)\+0x[[:xdigit:]]+[[:space:]]\(inlined|.*/bin/ping.*\)$" >> $expected
 		;;
 	*)
-		eventattr='max-stack=3'
+		eventattr='max-stack=4'
 		echo ".*(\+0x[[:xdigit:]]+|\[unknown\])[[:space:]]\(.*/bin/ping.*\)$" >> $expected
 		;;
 	esac
@@ -58,7 +54,10 @@ trace_libc_inet_pton_backtrace() {
 
 	# Check presence of libtraceevent support to run perf record
 	skip_no_probe_record_support "$event_name/$eventattr/"
-	[ $? -eq 2 ] && return 2
+	if [ $? -eq 2 ]; then
+		echo "WARN: Skipping test trace_libc_inet_pton_backtrace. No libtraceevent support."
+		return 2
+	fi
 
 	perf record -e $event_name/$eventattr/ -o $perf_data ping -6 -c 1 ::1 > /dev/null 2>&1
 	# check if perf data file got created in above step.
@@ -68,14 +67,25 @@ trace_libc_inet_pton_backtrace() {
 	fi
 	perf script -i $perf_data | tac | grep -m1 ^ping -B9 | tac > $perf_script
 
-	exec 3<$perf_script
 	exec 4<$expected
-	while read line <&3 && read -r pattern <&4; do
+	while read -r pattern <&4; do
+		echo "Pattern: $pattern"
 		[ -z "$pattern" ] && break
-		echo $line
-		echo "$line" | grep -E -q "$pattern"
-		if [ $? -ne 0 ] ; then
-			printf "FAIL: expected backtrace entry \"%s\" got \"%s\"\n" "$pattern" "$line"
+
+		found=0
+
+		# Search lines in the perf script result
+		exec 3<$perf_script
+		while read line <&3; do
+			[ -z "$line" ] && break
+			echo "  Matching: $line"
+			! echo "$line" | grep -E -q "$pattern"
+			found=$?
+			[ $found -eq 1 ] && break
+		done
+
+		if [ $found -ne 1 ] ; then
+			printf "FAIL: Didn't find the expected backtrace entry \"%s\"\n" "$pattern"
 			return 1
 		fi
 	done

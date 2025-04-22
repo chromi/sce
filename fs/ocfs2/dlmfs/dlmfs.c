@@ -20,6 +20,7 @@
 
 #include <linux/module.h>
 #include <linux/fs.h>
+#include <linux/fs_context.h>
 #include <linux/pagemap.h>
 #include <linux/types.h>
 #include <linux/slab.h>
@@ -80,8 +81,7 @@ static int param_set_dlmfs_capabilities(const char *val,
 static int param_get_dlmfs_capabilities(char *buffer,
 					const struct kernel_param *kp)
 {
-	return strlcpy(buffer, DLMFS_CAPABILITIES,
-		       strlen(DLMFS_CAPABILITIES) + 1);
+	return sysfs_emit(buffer, DLMFS_CAPABILITIES);
 }
 module_param_call(capabilities, param_set_dlmfs_capabilities,
 		  param_get_dlmfs_capabilities, NULL, 0444);
@@ -337,7 +337,7 @@ static struct inode *dlmfs_get_root_inode(struct super_block *sb)
 	if (inode) {
 		inode->i_ino = get_next_ino();
 		inode_init_owner(&nop_mnt_idmap, inode, NULL, mode);
-		inode->i_atime = inode->i_mtime = inode_set_ctime_current(inode);
+		simple_inode_init_ts(inode);
 		inc_nlink(inode);
 
 		inode->i_fop = &simple_dir_operations;
@@ -360,7 +360,7 @@ static struct inode *dlmfs_get_inode(struct inode *parent,
 
 	inode->i_ino = get_next_ino();
 	inode_init_owner(&nop_mnt_idmap, inode, parent, mode);
-	inode->i_atime = inode->i_mtime = inode_set_ctime_current(inode);
+	simple_inode_init_ts(inode);
 
 	ip = DLMFS_I(inode);
 	ip->ip_conn = DLMFS_I(parent)->ip_conn;
@@ -507,9 +507,7 @@ bail:
 	return status;
 }
 
-static int dlmfs_fill_super(struct super_block * sb,
-			    void * data,
-			    int silent)
+static int dlmfs_fill_super(struct super_block *sb, struct fs_context *fc)
 {
 	sb->s_maxbytes = MAX_LFS_FILESIZE;
 	sb->s_blocksize = PAGE_SIZE;
@@ -557,17 +555,27 @@ static const struct inode_operations dlmfs_file_inode_operations = {
 	.setattr	= dlmfs_file_setattr,
 };
 
-static struct dentry *dlmfs_mount(struct file_system_type *fs_type,
-	int flags, const char *dev_name, void *data)
+static int dlmfs_get_tree(struct fs_context *fc)
 {
-	return mount_nodev(fs_type, flags, data, dlmfs_fill_super);
+	return get_tree_nodev(fc, dlmfs_fill_super);
+}
+
+static const struct fs_context_operations dlmfs_context_ops = {
+	.get_tree       = dlmfs_get_tree,
+};
+
+static int dlmfs_init_fs_context(struct fs_context *fc)
+{
+	fc->ops = &dlmfs_context_ops;
+
+	return 0;
 }
 
 static struct file_system_type dlmfs_fs_type = {
 	.owner		= THIS_MODULE,
 	.name		= "ocfs2_dlmfs",
-	.mount		= dlmfs_mount,
 	.kill_sb	= kill_litter_super,
+	.init_fs_context = dlmfs_init_fs_context,
 };
 MODULE_ALIAS_FS("ocfs2_dlmfs");
 
@@ -579,7 +587,7 @@ static int __init init_dlmfs_fs(void)
 	dlmfs_inode_cache = kmem_cache_create("dlmfs_inode_cache",
 				sizeof(struct dlmfs_inode_private),
 				0, (SLAB_HWCACHE_ALIGN|SLAB_RECLAIM_ACCOUNT|
-					SLAB_MEM_SPREAD|SLAB_ACCOUNT),
+					SLAB_ACCOUNT),
 				dlmfs_init_once);
 	if (!dlmfs_inode_cache) {
 		status = -ENOMEM;

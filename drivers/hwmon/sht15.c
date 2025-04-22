@@ -1017,7 +1017,7 @@ err_release_reg:
 	return ret;
 }
 
-static int sht15_remove(struct platform_device *pdev)
+static void sht15_remove(struct platform_device *pdev)
 {
 	struct sht15_data *data = platform_get_drvdata(pdev);
 	int ret;
@@ -1033,8 +1033,6 @@ static int sht15_remove(struct platform_device *pdev)
 		regulator_unregister_notifier(data->reg, &data->nb);
 		regulator_disable(data->reg);
 	}
-
-	return 0;
 }
 
 static const struct platform_device_id sht15_device_ids[] = {

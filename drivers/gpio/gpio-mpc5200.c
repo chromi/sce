@@ -165,13 +165,11 @@ static int mpc52xx_wkup_gpiochip_probe(struct platform_device *ofdev)
 	return 0;
 }
 
-static int mpc52xx_gpiochip_remove(struct platform_device *ofdev)
+static void mpc52xx_gpiochip_remove(struct platform_device *ofdev)
 {
 	struct mpc52xx_gpiochip *chip = platform_get_drvdata(ofdev);
 
 	of_mm_gpiochip_remove(&chip->mmchip);
-
-	return 0;
 }
 
 static const struct of_device_id mpc52xx_wkup_gpiochip_match[] = {

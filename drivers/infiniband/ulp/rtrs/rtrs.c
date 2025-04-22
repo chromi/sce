@@ -242,8 +242,8 @@ static int create_cq(struct rtrs_con *con, int cq_vector, int nr_cqe,
 		cq = ib_cq_pool_get(cm_id->device, nr_cqe, cq_vector, poll_ctx);
 
 	if (IS_ERR(cq)) {
-		rtrs_err(con->path, "Creating completion queue failed, errno: %ld\n",
-			  PTR_ERR(cq));
+		rtrs_err(con->path, "Creating completion queue failed, errno: %pe\n",
+			  cq);
 		return PTR_ERR(cq);
 	}
 	con->cq = cq;
@@ -255,7 +255,7 @@ static int create_cq(struct rtrs_con *con, int cq_vector, int nr_cqe,
 static int create_qp(struct rtrs_con *con, struct ib_pd *pd,
 		     u32 max_send_wr, u32 max_recv_wr, u32 max_sge)
 {
-	struct ib_qp_init_attr init_attr = {NULL};
+	struct ib_qp_init_attr init_attr = {};
 	struct rdma_cm_id *cm_id = con->cm_id;
 	int ret;
 
@@ -583,6 +583,9 @@ static void dev_free(struct kref *ref)
 	mutex_lock(&pool->mutex);
 	list_del(&dev->entry);
 	mutex_unlock(&pool->mutex);
+
+	if (pool->ops && pool->ops->deinit)
+		pool->ops->deinit(dev);
 
 	ib_dealloc_pd(dev->ib_pd);
 	kfree(dev);
