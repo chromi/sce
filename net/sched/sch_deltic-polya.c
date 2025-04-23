@@ -361,6 +361,7 @@ static struct Qdisc_ops deltic_qdisc_ops __read_mostly = {
 	.destroy	=	deltic_destroy,
 	.owner		=	THIS_MODULE,
 };
+MODULE_ALIAS_NET_SCH("deltic_polya");
 
 static int __init deltic_module_init(void)
 {

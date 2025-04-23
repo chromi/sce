@@ -867,6 +867,7 @@ static struct Qdisc_ops cnq_qdisc_ops __read_mostly = {
 	.destroy	=	cnq_destroy,
 	.owner		=	THIS_MODULE,
 };
+MODULE_ALIAS_NET_SCH("cnq_cobalt");
 
 static int __init cnq_module_init(void)
 {

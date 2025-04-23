@@ -562,6 +562,7 @@ static struct Qdisc_ops cobalt_qdisc_ops __read_mostly = {
 	.destroy	=	cobalt_destroy,
 	.owner		=	THIS_MODULE,
 };
+MODULE_ALIAS_NET_SCH("cobalt");
 
 static int __init cobalt_module_init(void)
 {

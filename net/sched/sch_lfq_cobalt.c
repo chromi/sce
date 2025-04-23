@@ -1023,6 +1023,7 @@ static struct Qdisc_ops lfq_qdisc_ops __read_mostly = {
 	.destroy	=	lfq_destroy,
 	.owner		=	THIS_MODULE,
 };
+MODULE_ALIAS_NET_SCH("lfq_cobalt");
 
 static int __init lfq_module_init(void)
 {

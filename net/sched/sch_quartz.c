@@ -407,6 +407,7 @@ struct Qdisc_ops quartz_qdisc_ops __read_mostly = {
 	.dump		=	quartz_dump,
 	.owner		=	THIS_MODULE,
 };
+MODULE_ALIAS_NET_SCH("quartz");
 
 static int __init quartz_module_init(void)
 {

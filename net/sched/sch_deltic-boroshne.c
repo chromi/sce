@@ -912,6 +912,7 @@ static struct Qdisc_ops boroshne_qdisc_ops __read_mostly = {
 	.destroy	=	boroshne_destroy,
 	.owner		=	THIS_MODULE,
 };
+MODULE_ALIAS_NET_SCH("deltic_boroshne");
 
 static int __init boroshne_module_init(void)
 {
